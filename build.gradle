@@ -27,6 +27,7 @@ sourceSets.main.resources {
 }
 
 repositories {
+    mavenCentral()
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -112,28 +113,191 @@ configurations {
     runtimeClasspath.extendsFrom localRuntime
 }
 
+static String detectOverrunglOs() {
+    def name = System.getProperty("os.name")
+    if (name == "FreeBSD") "freebsd"
+    else if (name.startsWithAny("Linux", "SunOS", "Unit")) "linux"
+    else if (name.startsWithAny("Mac OS X", "Darwin")) "macos"
+    else if (name.startsWith("Windows")) "windows"
+    else throw new Error("unrecognized platform $name. Please set \"overrunglOs\" manually")
+}
+
+def overrunglOs = detectOverrunglOs()
+
+static String detectOverrunglArch(String overrunglOs) {
+    def arch = System.getProperty("os.arch")
+    switch(overrunglOs) {
+        case "freebsd": return "x64"
+        case "linux":
+            if (arch.startsWithAny("arm", "aarch64")) {
+                return arch.contains("64") || arch.startsWith("armv8") ? "arm64" : "arm32"
+            }
+            else if (arch.startsWith("ppc")) return "ppc64le"
+            else if (arch.startsWith("riscv")) return "riscv64"
+            else return "x64"
+        case "macos": return arch.startsWith("aarch64") ? "arm64" : "x64"
+        case "windows": return arch.startsWith("aarch64") ? "arm64" : "x64"
+        default: throw new Error("Unrecognized architecture $arch for platform $overrunglOs. Please set \\\"overrunglArch\\\" manually")
+    }
+}
+
+def overrunglArch = detectOverrunglArch(overrunglOs)
+def overrunglNatives = "natives-$overrunglOs-$overrunglArch"
+
+static String nativeArtifactExtension(String os) {
+    switch (os) {
+        case "macos": return "dylib"
+        case "windows": return "dll"
+        default: return "so"
+    }
+}
+
+static String nativeArtifactPrefix(String os) {
+    return os == "windows" ? "" : "lib"
+}
+
+static String nativeTaskSuffix(String platformId) {
+    platformId.split("-").collect { it.capitalize() }.join("")
+}
+
+static boolean nativeUsesZig(Map config) {
+    return config.os in ["linux", "freebsd"]
+}
+
+static boolean nativeCanBuildOnHost(String hostOs, Map config, File zigExecutable) {
+    if (hostOs == "windows") {
+        if (config.os == "windows") {
+            return config.arch == "x64"
+        }
+        if (config.os == "macos") {
+            return false
+        }
+        if (config.os == "freebsd") {
+            return false
+        }
+        if (config.os == "linux") {
+            return zigExecutable.exists() && config.arch in ["x64", "arm64", "arm32", "ppc64le"]
+        }
+    }
+    if (config.os == "macos") {
+        return hostOs == "macos"
+    }
+    if (nativeUsesZig(config)) {
+        return zigExecutable.exists()
+    }
+    return true
+}
+
+def nativeProjectDir = file("native")
+def nativeLibraryBaseName = "relativity_craft_rapier"
+def zigExecutable = file("tools/zig-windows-x86_64-0.13.0/zig.exe")
+def nativeTargetMatrix = [
+        "freebsd-x64" : [os: "freebsd", arch: "x64", triple: "x86_64-unknown-freebsd"],
+        "linux-x64"   : [os: "linux", arch: "x64", triple: "x86_64-unknown-linux-gnu"],
+        "linux-arm64" : [os: "linux", arch: "arm64", triple: "aarch64-unknown-linux-gnu"],
+        "linux-arm32" : [os: "linux", arch: "arm32", triple: "armv7-unknown-linux-gnueabihf"],
+        "linux-ppc64le": [os: "linux", arch: "ppc64le", triple: "powerpc64le-unknown-linux-gnu"],
+        "linux-riscv64": [os: "linux", arch: "riscv64", triple: "riscv64gc-unknown-linux-gnu"],
+        "macos-x64"   : [os: "macos", arch: "x64", triple: "x86_64-apple-darwin"],
+        "macos-arm64" : [os: "macos", arch: "arm64", triple: "aarch64-apple-darwin"],
+        "windows-x64" : [os: "windows", arch: "x64", triple: "x86_64-pc-windows-msvc"],
+        "windows-arm64": [os: "windows", arch: "arm64", triple: "aarch64-pc-windows-msvc"],
+]
+
+def currentNativePlatform = "${overrunglOs}-${overrunglArch}".toString()
+if (!nativeTargetMatrix.containsKey(currentNativePlatform)) {
+    throw new GradleException("No Rust target mapping configured for $currentNativePlatform")
+}
+
+def sourceNativeResourcesDir = file("src/main/resources/natives")
+def generatedNativeHeadersDir = layout.buildDirectory.dir("generated/native-headers")
+
+def nativePackageTaskNames = []
+def nativeHeaderTaskNames = []
+def nativeBuildTaskNames = []
+def previousNativeBuildTaskName = null
+
+nativeTargetMatrix.each { platformId, config ->
+    def suffix = nativeTaskSuffix(platformId)
+    def buildTaskName = "cargoBuildNative${suffix}"
+    def packageTaskName = "packageNative${suffix}"
+    def headerTaskName = "syncNativeHeader${suffix}"
+    def artifactName = "${nativeArtifactPrefix(config.os)}${nativeLibraryBaseName}.${nativeArtifactExtension(config.os)}"
+    def usesZig = nativeUsesZig(config)
+    def canBuildOnHost = nativeCanBuildOnHost(overrunglOs, config, zigExecutable)
+    def artifactFile = new File(nativeProjectDir, "target/${config.triple}/release/${artifactName}")
+    def mustRunAfterTaskName = previousNativeBuildTaskName
+
+    tasks.register(buildTaskName, Exec) {
+        group = "native"
+        description = "Builds the Rust Rapier library for ${platformId}"
+        workingDir = nativeProjectDir
+        if (mustRunAfterTaskName != null) {
+            mustRunAfter mustRunAfterTaskName
+        }
+        onlyIf {
+            canBuildOnHost
+        }
+        if (usesZig) {
+            environment "CARGO_ZIGBUILD_ZIG_PATH", zigExecutable.absolutePath
+            environment "PATH", "${zigExecutable.parentFile.absolutePath}${File.pathSeparator}${System.getenv('PATH')}"
+            commandLine "cargo", "zigbuild", "--release", "--target", config.triple
+        } else {
+            commandLine "cargo", "build", "--release", "--target", config.triple
+        }
+    }
+    previousNativeBuildTaskName = buildTaskName
+
+    tasks.register(packageTaskName, Sync) {
+        group = "native"
+        description = "Copies the native Rapier library for ${platformId} into src/main/resources/natives"
+        dependsOn buildTaskName
+        onlyIf {
+            artifactFile.exists()
+        }
+        from(artifactFile)
+        into(new File(sourceNativeResourcesDir, "natives-${config.os}-${config.arch}"))
+    }
+
+    tasks.register(headerTaskName, Sync) {
+        group = "native"
+        description = "Copies the generated C header after building ${platformId}"
+        dependsOn buildTaskName
+        from(new File(nativeProjectDir, "include"))
+        into(generatedNativeHeadersDir.map { it.dir(platformId) })
+    }
+
+    nativePackageTaskNames.add(packageTaskName)
+    nativeHeaderTaskNames.add(headerTaskName)
+    nativeBuildTaskNames.add(buildTaskName)
+}
+
+def currentNativeSuffix = nativeTaskSuffix(currentNativePlatform)
+def packageCurrentNativeTaskName = "packageNative${currentNativeSuffix}"
+def syncCurrentNativeHeaderTaskName = "syncNativeHeader${currentNativeSuffix}"
+
+tasks.register("buildNativeCurrent") {
+    group = "native"
+    description = "Builds and packages the current platform native library"
+    dependsOn packageCurrentNativeTaskName, syncCurrentNativeHeaderTaskName
+}
+
+tasks.register("buildNativeAll") {
+    group = "native"
+    description = "Builds and packages all configured native targets. Cross toolchains must already be installed."
+    dependsOn nativePackageTaskNames + nativeHeaderTaskNames
+}
+
+if ((findProperty("includeNativeCurrent") ?: "false").toBoolean()) {
+    tasks.named("processResources").configure {
+        dependsOn packageCurrentNativeTaskName
+    }
+}
+
 dependencies {
-    // Example optional mod dependency with JEI
-    // The JEI API is declared for compile time use, while the full JEI artifact is used at runtime
-    // compileOnly "mezz.jei:jei-${mc_version}-common-api:${jei_version}"
-    // compileOnly "mezz.jei:jei-${mc_version}-neoforge-api:${jei_version}"
-    // We add the full version to localRuntime, not runtimeOnly, so that we do not publish a dependency on it
-    // localRuntime "mezz.jei:jei-${mc_version}-neoforge:${jei_version}"
-
-    // Example mod dependency using a mod jar from ./libs with a flat dir repository
-    // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
-    // The group id is ignored when searching -- in this case, it is "blank"
-    // implementation "blank:coolmod-${mc_version}:${coolmod_version}"
-
-    // Example mod dependency using a file as dependency
-    // implementation files("libs/coolmod-${mc_version}-${coolmod_version}.jar")
-
-    // Example project dependency using a sister or child project:
-    // implementation project(":myproject")
-
-    // For more info:
-    // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
-    // http://www.gradle.org/docs/current/userguide/dependency_management.html
+    implementation(platform("io.github.over-run:overrungl-bom:$overrungl_version"))
+    implementation("io.github.over-run:overrungl")
+    jarJar("io.github.over-run:overrungl")
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
