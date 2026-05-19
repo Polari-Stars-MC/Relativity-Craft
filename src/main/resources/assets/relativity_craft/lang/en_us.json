@@ -1,0 +1,13 @@
+{
+  "itemGroup.relativity_craft": "Example Mod Tab",
+  "block.relativity_craft.example_block": "Example Block",
+  "item.relativity_craft.example_item": "Example Item",
+
+  "relativity_craft.configuration.title": "Relativity Craft Configs",
+  "relativity_craft.configuration.section.relativity_craft.common.toml": "Relativity Craft Configs",
+  "relativity_craft.configuration.section.relativity_craft.common.toml.title": "Relativity Craft Configs",
+  "relativity_craft.configuration.items": "Item List",
+  "relativity_craft.configuration.logDirtBlock": "Log Dirt Block",
+  "relativity_craft.configuration.magicNumberIntroduction": "Magic Number Text",
+  "relativity_craft.configuration.magicNumber": "Magic Number"
+}
