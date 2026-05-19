@@ -210,6 +210,7 @@ if (!nativeTargetMatrix.containsKey(currentNativePlatform)) {
 }
 
 def sourceNativeResourcesDir = file("src/main/resources/natives")
+def sourceNativeClasspathDir = file("src/main/resources/overrungl.relativity_craft_rapier")
 def generatedNativeHeadersDir = layout.buildDirectory.dir("generated/native-headers")
 
 def nativePackageTaskNames = []
@@ -221,6 +222,7 @@ nativeTargetMatrix.each { platformId, config ->
     def suffix = nativeTaskSuffix(platformId)
     def buildTaskName = "cargoBuildNative${suffix}"
     def packageTaskName = "packageNative${suffix}"
+    def packageClasspathTaskName = "packageNativeClasspath${suffix}"
     def headerTaskName = "syncNativeHeader${suffix}"
     def artifactName = "${nativeArtifactPrefix(config.os)}${nativeLibraryBaseName}.${nativeArtifactExtension(config.os)}"
     def usesZig = nativeUsesZig(config)
@@ -259,6 +261,17 @@ nativeTargetMatrix.each { platformId, config ->
         into(new File(sourceNativeResourcesDir, "natives-${config.os}-${config.arch}"))
     }
 
+    tasks.register(packageClasspathTaskName, Sync) {
+        group = "native"
+        description = "Copies the native Rapier library for ${platformId} into OverrunGL classpath resources"
+        dependsOn buildTaskName
+        onlyIf {
+            artifactFile.exists()
+        }
+        from(artifactFile)
+        into(new File(sourceNativeClasspathDir, "${config.os}-${config.arch}"))
+    }
+
     tasks.register(headerTaskName, Sync) {
         group = "native"
         description = "Copies the generated C header after building ${platformId}"
@@ -268,18 +281,20 @@ nativeTargetMatrix.each { platformId, config ->
     }
 
     nativePackageTaskNames.add(packageTaskName)
+    nativePackageTaskNames.add(packageClasspathTaskName)
     nativeHeaderTaskNames.add(headerTaskName)
     nativeBuildTaskNames.add(buildTaskName)
 }
 
 def currentNativeSuffix = nativeTaskSuffix(currentNativePlatform)
 def packageCurrentNativeTaskName = "packageNative${currentNativeSuffix}"
+def packageCurrentNativeClasspathTaskName = "packageNativeClasspath${currentNativeSuffix}"
 def syncCurrentNativeHeaderTaskName = "syncNativeHeader${currentNativeSuffix}"
 
 tasks.register("buildNativeCurrent") {
     group = "native"
     description = "Builds and packages the current platform native library"
-    dependsOn packageCurrentNativeTaskName, syncCurrentNativeHeaderTaskName
+    dependsOn packageCurrentNativeTaskName, packageCurrentNativeClasspathTaskName, syncCurrentNativeHeaderTaskName
 }
 
 tasks.register("buildNativeAll") {
@@ -290,7 +305,7 @@ tasks.register("buildNativeAll") {
 
 if ((findProperty("includeNativeCurrent") ?: "false").toBoolean()) {
     tasks.named("processResources").configure {
-        dependsOn packageCurrentNativeTaskName
+        dependsOn packageCurrentNativeTaskName, packageCurrentNativeClasspathTaskName
     }
 }
 
