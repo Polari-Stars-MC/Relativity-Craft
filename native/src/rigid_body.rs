@@ -239,6 +239,15 @@ pub extern "C" fn rc_world_remove_rigid_body(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_world_remove_rigid_body_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    remove_attached_colliders: RcBool,
+) -> u8 {
+    rc_world_remove_rigid_body(world, handle, remove_attached_colliders).0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_get_status(
     world: *const RcWorldHandle,
     handle: RcRigidBodyHandle,
@@ -292,6 +301,19 @@ pub extern "C" fn rc_rigid_body_get_translation(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_get_translation_out(
+    world: *const RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    out_translation: *mut RcVec3,
+) {
+    let Some(out_translation) = (unsafe { out_translation.as_mut() }) else {
+        return;
+    };
+
+    *out_translation = rc_rigid_body_get_translation(world, handle);
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_get_rotation(
     world: *const RcWorldHandle,
     handle: RcRigidBodyHandle,
@@ -306,6 +328,19 @@ pub extern "C" fn rc_rigid_body_get_rotation(
         .get(unpack_rigid_body_handle(handle))
         .map(|body| quat_from_rapier(*body.rotation()))
         .unwrap_or_default()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_get_rotation_out(
+    world: *const RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    out_rotation: *mut RcQuat,
+) {
+    let Some(out_rotation) = (unsafe { out_rotation.as_mut() }) else {
+        return;
+    };
+
+    *out_rotation = rc_rigid_body_get_rotation(world, handle);
 }
 
 #[unsafe(no_mangle)]
@@ -331,6 +366,17 @@ pub extern "C" fn rc_rigid_body_set_pose(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_set_pose_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    translation: RcVec3,
+    rotation: RcQuat,
+    wake_up: RcBool,
+) -> u8 {
+    rc_rigid_body_set_pose(world, handle, translation, rotation, wake_up).0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_get_linvel(
     world: *const RcWorldHandle,
     handle: RcRigidBodyHandle,
@@ -345,6 +391,19 @@ pub extern "C" fn rc_rigid_body_get_linvel(
         .get(unpack_rigid_body_handle(handle))
         .map(|body| vec3_from_rapier(body.linvel()))
         .unwrap_or_default()
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_get_linvel_out(
+    world: *const RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    out_linvel: *mut RcVec3,
+) {
+    let Some(out_linvel) = (unsafe { out_linvel.as_mut() }) else {
+        return;
+    };
+
+    *out_linvel = rc_rigid_body_get_linvel(world, handle);
 }
 
 #[unsafe(no_mangle)]
@@ -363,6 +422,16 @@ pub extern "C" fn rc_rigid_body_set_linvel(
 
     body.set_linvel(vec3_to_rapier(linvel), wake_up.0 != 0);
     RcBool::TRUE
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_set_linvel_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    linvel: RcVec3,
+    wake_up: RcBool,
+) -> u8 {
+    rc_rigid_body_set_linvel(world, handle, linvel, wake_up).0
 }
 
 #[unsafe(no_mangle)]
@@ -416,6 +485,16 @@ pub extern "C" fn rc_rigid_body_add_force(
 
     body.add_force(vec3_to_rapier(force), wake_up.0 != 0);
     RcBool::TRUE
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_add_force_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    force: RcVec3,
+    wake_up: RcBool,
+) -> u8 {
+    rc_rigid_body_add_force(world, handle, force, wake_up).0
 }
 
 #[unsafe(no_mangle)]
@@ -506,6 +585,11 @@ pub extern "C" fn rc_rigid_body_sleep(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_sleep_flag(world: *mut RcWorldHandle, handle: RcRigidBodyHandle) -> u8 {
+    rc_rigid_body_sleep(world, handle).0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_wake_up(
     world: *mut RcWorldHandle,
     handle: RcRigidBodyHandle,
@@ -523,6 +607,15 @@ pub extern "C" fn rc_rigid_body_wake_up(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_wake_up_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+    strong: RcBool,
+) -> u8 {
+    rc_rigid_body_wake_up(world, handle, strong).0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_is_sleeping(
     world: *const RcWorldHandle,
     handle: RcRigidBodyHandle,
@@ -537,4 +630,12 @@ pub extern "C" fn rc_rigid_body_is_sleeping(
         .get(unpack_rigid_body_handle(handle))
         .map(|body| body.is_sleeping().into())
         .unwrap_or(RcBool::FALSE)
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_is_sleeping_flag(
+    world: *const RcWorldHandle,
+    handle: RcRigidBodyHandle,
+) -> u8 {
+    rc_rigid_body_is_sleeping(world, handle).0
 }

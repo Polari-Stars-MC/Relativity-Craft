@@ -99,3 +99,12 @@ pub extern "C" fn rc_world_get_gravity(world: *const RcWorldHandle) -> RcVec3 {
 
     crate::ffi::vec3_from_rapier(world.inner.gravity)
 }
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_get_gravity_out(world: *const RcWorldHandle, out_gravity: *mut RcVec3) {
+    let Some(out_gravity) = (unsafe { out_gravity.as_mut() }) else {
+        return;
+    };
+
+    *out_gravity = rc_world_get_gravity(world);
+}

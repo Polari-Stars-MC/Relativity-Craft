@@ -15,7 +15,7 @@ import java.lang.invoke.MethodHandle;
 public final class RelativityCraftRapier {
     private static final String MODULE = "relativity_craft_rapier";
     private static final String BASENAME = "relativity_craft_rapier";
-    private static final String VERSION = "0.1.1";
+    private static final String VERSION = "0.1.3";
 
     static final GroupLayout RC_VEC3 = MemoryLayout.structLayout(
         ValueLayout.JAVA_FLOAT.withName("x"),
@@ -55,8 +55,8 @@ public final class RelativityCraftRapier {
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_WORLD_GET_GRAVITY = downcall(
-        "rc_world_get_gravity",
-        FunctionDescriptor.of(RC_VEC3, ValueLayout.ADDRESS)
+        "rc_world_get_gravity_out",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_CREATE = downcall(
         "rc_rigid_body_builder_create",
@@ -103,44 +103,44 @@ public final class RelativityCraftRapier {
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_REMOVE_RIGID_BODY = downcall(
-        "rc_world_remove_rigid_body",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
+        "rc_world_remove_rigid_body_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_TRANSLATION = downcall(
-        "rc_rigid_body_get_translation",
-        FunctionDescriptor.of(RC_VEC3, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        "rc_rigid_body_get_translation_out",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_LINVEL = downcall(
-        "rc_rigid_body_get_linvel",
-        FunctionDescriptor.of(RC_VEC3, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        "rc_rigid_body_get_linvel_out",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_ROTATION = downcall(
-        "rc_rigid_body_get_rotation",
-        FunctionDescriptor.of(RC_QUAT, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        "rc_rigid_body_get_rotation_out",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_SET_POSE = downcall(
-        "rc_rigid_body_set_pose",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_QUAT, RC_BOOL)
+        "rc_rigid_body_set_pose_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_QUAT, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_SET_LINVEL = downcall(
-        "rc_rigid_body_set_linvel",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
+        "rc_rigid_body_set_linvel_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_ADD_FORCE = downcall(
-        "rc_rigid_body_add_force",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
+        "rc_rigid_body_add_force_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_SLEEP = downcall(
-        "rc_rigid_body_sleep",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        "rc_rigid_body_sleep_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_RIGID_BODY_WAKE_UP = downcall(
-        "rc_rigid_body_wake_up",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
+        "rc_rigid_body_wake_up_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_IS_SLEEPING = downcall(
-        "rc_rigid_body_is_sleeping",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+        "rc_rigid_body_is_sleeping_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_CREATE = downcall(
         "rc_collider_builder_create",
@@ -175,8 +175,8 @@ public final class RelativityCraftRapier {
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_WORLD_REMOVE_COLLIDER = downcall(
-        "rc_world_remove_collider",
-        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
+        "rc_world_remove_collider_flag",
+        FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_WORLD_INSERT_STATIC_TRIMESH = downcall(
         "rc_world_insert_static_trimesh",
@@ -268,8 +268,10 @@ public final class RelativityCraftRapier {
     }
 
     static RcVec3 worldGetGravity(MemorySegment world) {
-        try {
-            return decodeVec3((MemorySegment) RC_WORLD_GET_GRAVITY.invokeExact(world));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(RC_VEC3);
+            RC_WORLD_GET_GRAVITY.invokeExact(world, out);
+            return decodeVec3(out);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_get_gravity", t);
         }
@@ -357,35 +359,41 @@ public final class RelativityCraftRapier {
 
     static RcBool worldRemoveRigidBody(MemorySegment world, long handle, RcBool removeAttachedColliders) {
         try {
-            return decodeBool((MemorySegment) RC_WORLD_REMOVE_RIGID_BODY.invokeExact(
+            return RcBool.of((byte) RC_WORLD_REMOVE_RIGID_BODY.invokeExact(
                 world,
                 handle,
                 encodeBool(Arena.ofAuto(), removeAttachedColliders)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_remove_rigid_body", t);
         }
     }
 
     static RcVec3 rigidBodyGetTranslation(MemorySegment world, long handle) {
-        try {
-            return decodeVec3((MemorySegment) RC_RIGID_BODY_GET_TRANSLATION.invokeExact(world, handle));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(RC_VEC3);
+            RC_RIGID_BODY_GET_TRANSLATION.invokeExact(world, handle, out);
+            return decodeVec3(out);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_get_translation", t);
         }
     }
 
     static RcVec3 rigidBodyGetLinearVelocity(MemorySegment world, long handle) {
-        try {
-            return decodeVec3((MemorySegment) RC_RIGID_BODY_GET_LINVEL.invokeExact(world, handle));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(RC_VEC3);
+            RC_RIGID_BODY_GET_LINVEL.invokeExact(world, handle, out);
+            return decodeVec3(out);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_get_linvel", t);
         }
     }
 
     static RcQuat rigidBodyGetRotation(MemorySegment world, long handle) {
-        try {
-            return decodeQuat((MemorySegment) RC_RIGID_BODY_GET_ROTATION.invokeExact(world, handle));
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment out = arena.allocate(RC_QUAT);
+            RC_RIGID_BODY_GET_ROTATION.invokeExact(world, handle, out);
+            return decodeQuat(out);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_get_rotation", t);
         }
@@ -393,13 +401,13 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodySetPose(MemorySegment world, long handle, RcVec3 translation, RcQuat rotation, RcBool wakeUp) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_SET_POSE.invokeExact(
+            return RcBool.of((byte) RC_RIGID_BODY_SET_POSE.invokeExact(
                 world,
                 handle,
                 encodeVec3(Arena.ofAuto(), translation),
                 encodeQuat(Arena.ofAuto(), rotation),
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_set_pose", t);
         }
@@ -407,12 +415,12 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodySetLinearVelocity(MemorySegment world, long handle, RcVec3 velocity, RcBool wakeUp) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_SET_LINVEL.invokeExact(
+            return RcBool.of((byte) RC_RIGID_BODY_SET_LINVEL.invokeExact(
                 world,
                 handle,
                 encodeVec3(Arena.ofAuto(), velocity),
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_set_linvel", t);
         }
@@ -420,12 +428,12 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodyAddForce(MemorySegment world, long handle, RcVec3 force, RcBool wakeUp) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_ADD_FORCE.invokeExact(
+            return RcBool.of((byte) RC_RIGID_BODY_ADD_FORCE.invokeExact(
                 world,
                 handle,
                 encodeVec3(Arena.ofAuto(), force),
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_add_force", t);
         }
@@ -433,7 +441,7 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodySleep(MemorySegment world, long handle) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_SLEEP.invokeExact(world, handle));
+            return RcBool.of((byte) RC_RIGID_BODY_SLEEP.invokeExact(world, handle) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_sleep", t);
         }
@@ -441,11 +449,11 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodyWakeUp(MemorySegment world, long handle, RcBool strong) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_WAKE_UP.invokeExact(
+            return RcBool.of((byte) RC_RIGID_BODY_WAKE_UP.invokeExact(
                 world,
                 handle,
                 encodeBool(Arena.ofAuto(), strong)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_wake_up", t);
         }
@@ -453,7 +461,7 @@ public final class RelativityCraftRapier {
 
     static RcBool rigidBodyIsSleeping(MemorySegment world, long handle) {
         try {
-            return decodeBool((MemorySegment) RC_RIGID_BODY_IS_SLEEPING.invokeExact(world, handle));
+            return RcBool.of((byte) RC_RIGID_BODY_IS_SLEEPING.invokeExact(world, handle) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_is_sleeping", t);
         }
@@ -517,11 +525,11 @@ public final class RelativityCraftRapier {
 
     static RcBool worldRemoveCollider(MemorySegment world, long handle, RcBool wakeUp) {
         try {
-            return decodeBool((MemorySegment) RC_WORLD_REMOVE_COLLIDER.invokeExact(
+            return RcBool.of((byte) RC_WORLD_REMOVE_COLLIDER.invokeExact(
                 world,
                 handle,
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ));
+            ) != 0);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_remove_collider", t);
         }
