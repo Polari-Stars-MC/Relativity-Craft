@@ -1,5 +1,6 @@
 #![allow(clippy::missing_safety_doc)]
 
+mod compat;
 mod collider;
 mod controller;
 mod events;

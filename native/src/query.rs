@@ -132,6 +132,38 @@ pub extern "C" fn rc_query_intersect_aabb_count(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_query_intersect_aabb_count_all(
+    world: *const RcWorldHandle,
+    aabb: RcAabb,
+) -> u32 {
+    rc_query_intersect_aabb_count(world, aabb, RcQueryFilterDesc::default())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_query_intersect_aabb_rigid_body_count_all(
+    world: *const RcWorldHandle,
+    aabb: RcAabb,
+) -> u32 {
+    crate::compat::rc_query_intersect_aabb_rigid_body_count(world, aabb, RcQueryFilterDesc::default())
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_query_intersect_aabb_rigid_bodies_all(
+    world: *const RcWorldHandle,
+    aabb: RcAabb,
+    out_handles: *mut crate::ffi::RcRigidBodyHandle,
+    capacity: u32,
+) -> u32 {
+    crate::compat::rc_query_intersect_aabb_rigid_bodies(
+        world,
+        aabb,
+        RcQueryFilterDesc::default(),
+        out_handles,
+        capacity,
+    )
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_query_cast_shape(
     world: *const RcWorldHandle,
     shape_desc: RcShapeDesc,

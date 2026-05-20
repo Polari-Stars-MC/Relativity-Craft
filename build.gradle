@@ -191,13 +191,10 @@ static boolean nativeCanBuildOnHost(String hostOs, Map config, File zigExecutabl
 def nativeProjectDir = file("native")
 def nativeLibraryBaseName = "relativity_craft_rapier"
 def zigExecutable = file("tools/zig-windows-x86_64-0.13.0/zig.exe")
+// Match the desktop platforms Minecraft itself targets in practice.
 def nativeTargetMatrix = [
-        "freebsd-x64" : [os: "freebsd", arch: "x64", triple: "x86_64-unknown-freebsd"],
         "linux-x64"   : [os: "linux", arch: "x64", triple: "x86_64-unknown-linux-gnu"],
         "linux-arm64" : [os: "linux", arch: "arm64", triple: "aarch64-unknown-linux-gnu"],
-        "linux-arm32" : [os: "linux", arch: "arm32", triple: "armv7-unknown-linux-gnueabihf"],
-        "linux-ppc64le": [os: "linux", arch: "ppc64le", triple: "powerpc64le-unknown-linux-gnu"],
-        "linux-riscv64": [os: "linux", arch: "riscv64", triple: "riscv64gc-unknown-linux-gnu"],
         "macos-x64"   : [os: "macos", arch: "x64", triple: "x86_64-apple-darwin"],
         "macos-arm64" : [os: "macos", arch: "arm64", triple: "aarch64-apple-darwin"],
         "windows-x64" : [os: "windows", arch: "x64", triple: "x86_64-pc-windows-msvc"],
@@ -209,19 +206,16 @@ if (!nativeTargetMatrix.containsKey(currentNativePlatform)) {
     throw new GradleException("No Rust target mapping configured for $currentNativePlatform")
 }
 
-def sourceNativeResourcesDir = file("src/main/resources/natives")
 def sourceNativeClasspathDir = file("src/main/resources/overrungl.relativity_craft_rapier")
 def generatedNativeHeadersDir = layout.buildDirectory.dir("generated/native-headers")
 
 def nativePackageTaskNames = []
 def nativeHeaderTaskNames = []
-def nativeBuildTaskNames = []
 def previousNativeBuildTaskName = null
 
 nativeTargetMatrix.each { platformId, config ->
     def suffix = nativeTaskSuffix(platformId)
     def buildTaskName = "cargoBuildNative${suffix}"
-    def packageTaskName = "packageNative${suffix}"
     def packageClasspathTaskName = "packageNativeClasspath${suffix}"
     def headerTaskName = "syncNativeHeader${suffix}"
     def artifactName = "${nativeArtifactPrefix(config.os)}${nativeLibraryBaseName}.${nativeArtifactExtension(config.os)}"
@@ -250,17 +244,6 @@ nativeTargetMatrix.each { platformId, config ->
     }
     previousNativeBuildTaskName = buildTaskName
 
-    tasks.register(packageTaskName, Sync) {
-        group = "native"
-        description = "Copies the native Rapier library for ${platformId} into src/main/resources/natives"
-        dependsOn buildTaskName
-        onlyIf {
-            artifactFile.exists()
-        }
-        from(artifactFile)
-        into(new File(sourceNativeResourcesDir, "natives-${config.os}-${config.arch}"))
-    }
-
     tasks.register(packageClasspathTaskName, Sync) {
         group = "native"
         description = "Copies the native Rapier library for ${platformId} into OverrunGL classpath resources"
@@ -280,21 +263,18 @@ nativeTargetMatrix.each { platformId, config ->
         into(generatedNativeHeadersDir.map { it.dir(platformId) })
     }
 
-    nativePackageTaskNames.add(packageTaskName)
     nativePackageTaskNames.add(packageClasspathTaskName)
     nativeHeaderTaskNames.add(headerTaskName)
-    nativeBuildTaskNames.add(buildTaskName)
 }
 
 def currentNativeSuffix = nativeTaskSuffix(currentNativePlatform)
-def packageCurrentNativeTaskName = "packageNative${currentNativeSuffix}"
 def packageCurrentNativeClasspathTaskName = "packageNativeClasspath${currentNativeSuffix}"
 def syncCurrentNativeHeaderTaskName = "syncNativeHeader${currentNativeSuffix}"
 
 tasks.register("buildNativeCurrent") {
     group = "native"
     description = "Builds and packages the current platform native library"
-    dependsOn packageCurrentNativeTaskName, packageCurrentNativeClasspathTaskName, syncCurrentNativeHeaderTaskName
+    dependsOn packageCurrentNativeClasspathTaskName, syncCurrentNativeHeaderTaskName
 }
 
 tasks.register("buildNativeAll") {
@@ -305,14 +285,14 @@ tasks.register("buildNativeAll") {
 
 if ((findProperty("includeNativeCurrent") ?: "false").toBoolean()) {
     tasks.named("processResources").configure {
-        dependsOn packageCurrentNativeTaskName, packageCurrentNativeClasspathTaskName
+        dependsOn packageCurrentNativeClasspathTaskName
     }
 }
 
 dependencies {
     implementation(platform("io.github.over-run:overrungl-bom:$overrungl_version"))
     implementation("io.github.over-run:overrungl")
-    jarJar("io.github.over-run:overrungl")
+    jarJar("io.github.over-run:overrungl:$overrungl_version")
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

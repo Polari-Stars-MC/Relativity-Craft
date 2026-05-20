@@ -1,6 +1,6 @@
 {
   "required": true,
-  "package": "org.polaris2023.mixin",
+  "package": "org.polaris2023.relativity.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [],
   "injectors": {

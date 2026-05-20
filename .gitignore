@@ -41,4 +41,7 @@ repo/
 
 ### Rust Native ###
 native/target/
+
 tools/
+
+old/

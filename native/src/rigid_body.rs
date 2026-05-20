@@ -490,6 +490,22 @@ pub extern "C" fn rc_rigid_body_enable_ccd(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_rigid_body_sleep(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+) -> RcBool {
+    let Some(world) = (unsafe { world.as_mut() }) else {
+        return RcBool::FALSE;
+    };
+    let Some(body) = world.inner.bodies.get_mut(unpack_rigid_body_handle(handle)) else {
+        return RcBool::FALSE;
+    };
+
+    body.sleep();
+    RcBool::TRUE
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_wake_up(
     world: *mut RcWorldHandle,
     handle: RcRigidBodyHandle,

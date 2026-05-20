@@ -58,11 +58,41 @@ typedef struct RcRigidBodyBuilderHandle RcRigidBodyBuilderHandle;
 
 typedef struct RcWorldHandle RcWorldHandle;
 
+typedef uint64_t RcRigidBodyHandle;
+
 typedef struct RcVec3 {
   float x;
   float y;
   float z;
 } RcVec3;
+
+typedef struct RcAabb {
+  struct RcVec3 mins;
+  struct RcVec3 maxs;
+} RcAabb;
+
+typedef struct RcInteractionGroups {
+  uint32_t memberships;
+  uint32_t filter;
+} RcInteractionGroups;
+
+typedef struct RcBool {
+  uint8_t _0;
+} RcBool;
+#define RcBool_FALSE (RcBool){ ._0 = 0 }
+#define RcBool_TRUE (RcBool){ ._0 = 1 }
+
+typedef uint64_t RcColliderHandle;
+
+typedef struct RcQueryFilterDesc {
+  uint32_t flags;
+  struct RcInteractionGroups groups;
+  struct RcBool use_groups;
+  RcColliderHandle exclude_collider;
+  struct RcBool use_exclude_collider;
+  RcRigidBodyHandle exclude_rigid_body;
+  struct RcBool use_exclude_rigid_body;
+} RcQueryFilterDesc;
 
 typedef struct RcShapeDesc {
   enum RcShapeType shape_type;
@@ -78,21 +108,6 @@ typedef struct RcQuat {
   float k;
   float w;
 } RcQuat;
-
-typedef struct RcBool {
-  uint8_t _0;
-} RcBool;
-#define RcBool_FALSE (RcBool){ ._0 = 0 }
-#define RcBool_TRUE (RcBool){ ._0 = 1 }
-
-typedef struct RcInteractionGroups {
-  uint32_t memberships;
-  uint32_t filter;
-} RcInteractionGroups;
-
-typedef uint64_t RcColliderHandle;
-
-typedef uint64_t RcRigidBodyHandle;
 
 typedef struct RcEffectiveCharacterMovement {
   struct RcVec3 translation;
@@ -154,25 +169,10 @@ typedef struct RcRayHit {
   uint32_t feature;
 } RcRayHit;
 
-typedef struct RcQueryFilterDesc {
-  uint32_t flags;
-  struct RcInteractionGroups groups;
-  struct RcBool use_groups;
-  RcColliderHandle exclude_collider;
-  struct RcBool use_exclude_collider;
-  RcRigidBodyHandle exclude_rigid_body;
-  struct RcBool use_exclude_rigid_body;
-} RcQueryFilterDesc;
-
 typedef struct RcPointProjection {
   struct RcVec3 point;
   struct RcBool is_inside;
 } RcPointProjection;
-
-typedef struct RcAabb {
-  struct RcVec3 mins;
-  struct RcVec3 maxs;
-} RcAabb;
 
 typedef struct RcShapeCastHit {
   RcColliderHandle collider;
@@ -194,6 +194,24 @@ typedef struct RcShapeCastOptions {
 #ifdef __cplusplus
 extern "C" {
 #endif // __cplusplus
+
+RcRigidBodyHandle rc_world_insert_static_trimesh(struct RcWorldHandle *world,
+                                                 const float *vertices_xyz,
+                                                 uint32_t vertex_xyz_len,
+                                                 const uint32_t *indices,
+                                                 uint32_t index_len,
+                                                 float friction,
+                                                 float restitution);
+
+uint32_t rc_query_intersect_aabb_rigid_body_count(const struct RcWorldHandle *world,
+                                                  struct RcAabb aabb,
+                                                  struct RcQueryFilterDesc filter);
+
+uint32_t rc_query_intersect_aabb_rigid_bodies(const struct RcWorldHandle *world,
+                                              struct RcAabb aabb,
+                                              struct RcQueryFilterDesc filter,
+                                              RcRigidBodyHandle *out_handles,
+                                              uint32_t capacity);
 
 struct RcColliderBuilderHandle *rc_collider_builder_create(enum RcShapeType shape_type,
                                                            struct RcVec3 shape_data);
@@ -426,6 +444,16 @@ uint32_t rc_query_intersect_aabb_count(const struct RcWorldHandle *world,
                                        struct RcAabb aabb,
                                        struct RcQueryFilterDesc filter);
 
+uint32_t rc_query_intersect_aabb_count_all(const struct RcWorldHandle *world, struct RcAabb aabb);
+
+uint32_t rc_query_intersect_aabb_rigid_body_count_all(const struct RcWorldHandle *world,
+                                                      struct RcAabb aabb);
+
+uint32_t rc_query_intersect_aabb_rigid_bodies_all(const struct RcWorldHandle *world,
+                                                  struct RcAabb aabb,
+                                                  RcRigidBodyHandle *out_handles,
+                                                  uint32_t capacity);
+
 struct RcShapeCastHit rc_query_cast_shape(const struct RcWorldHandle *world,
                                           struct RcShapeDesc shape_desc,
                                           struct RcVec3 translation,
@@ -542,6 +570,8 @@ struct RcBool rc_rigid_body_apply_torque_impulse(struct RcWorldHandle *world,
 struct RcBool rc_rigid_body_enable_ccd(struct RcWorldHandle *world,
                                        RcRigidBodyHandle handle,
                                        struct RcBool enabled);
+
+struct RcBool rc_rigid_body_sleep(struct RcWorldHandle *world, RcRigidBodyHandle handle);
 
 struct RcBool rc_rigid_body_wake_up(struct RcWorldHandle *world,
                                     RcRigidBodyHandle handle,
