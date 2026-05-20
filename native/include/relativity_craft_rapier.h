@@ -265,6 +265,10 @@ struct RcBool rc_world_remove_collider(struct RcWorldHandle *world,
                                        RcColliderHandle handle,
                                        struct RcBool wake_up);
 
+uint8_t rc_world_remove_collider_flag(struct RcWorldHandle *world,
+                                      RcColliderHandle handle,
+                                      struct RcBool wake_up);
+
 struct RcVec3 rc_collider_get_translation(const struct RcWorldHandle *world,
                                           RcColliderHandle handle);
 
@@ -513,6 +517,10 @@ struct RcBool rc_world_remove_rigid_body(struct RcWorldHandle *world,
                                          RcRigidBodyHandle handle,
                                          struct RcBool remove_attached_colliders);
 
+uint8_t rc_world_remove_rigid_body_flag(struct RcWorldHandle *world,
+                                        RcRigidBodyHandle handle,
+                                        struct RcBool remove_attached_colliders);
+
 enum RcBodyStatus rc_rigid_body_get_status(const struct RcWorldHandle *world,
                                            RcRigidBodyHandle handle);
 
@@ -524,8 +532,16 @@ struct RcBool rc_rigid_body_set_status(struct RcWorldHandle *world,
 struct RcVec3 rc_rigid_body_get_translation(const struct RcWorldHandle *world,
                                             RcRigidBodyHandle handle);
 
+void rc_rigid_body_get_translation_out(const struct RcWorldHandle *world,
+                                       RcRigidBodyHandle handle,
+                                       struct RcVec3 *out_translation);
+
 struct RcQuat rc_rigid_body_get_rotation(const struct RcWorldHandle *world,
                                          RcRigidBodyHandle handle);
+
+void rc_rigid_body_get_rotation_out(const struct RcWorldHandle *world,
+                                    RcRigidBodyHandle handle,
+                                    struct RcQuat *out_rotation);
 
 struct RcBool rc_rigid_body_set_pose(struct RcWorldHandle *world,
                                      RcRigidBodyHandle handle,
@@ -533,12 +549,27 @@ struct RcBool rc_rigid_body_set_pose(struct RcWorldHandle *world,
                                      struct RcQuat rotation,
                                      struct RcBool wake_up);
 
+uint8_t rc_rigid_body_set_pose_flag(struct RcWorldHandle *world,
+                                    RcRigidBodyHandle handle,
+                                    struct RcVec3 translation,
+                                    struct RcQuat rotation,
+                                    struct RcBool wake_up);
+
 struct RcVec3 rc_rigid_body_get_linvel(const struct RcWorldHandle *world, RcRigidBodyHandle handle);
+
+void rc_rigid_body_get_linvel_out(const struct RcWorldHandle *world,
+                                  RcRigidBodyHandle handle,
+                                  struct RcVec3 *out_linvel);
 
 struct RcBool rc_rigid_body_set_linvel(struct RcWorldHandle *world,
                                        RcRigidBodyHandle handle,
                                        struct RcVec3 linvel,
                                        struct RcBool wake_up);
+
+uint8_t rc_rigid_body_set_linvel_flag(struct RcWorldHandle *world,
+                                      RcRigidBodyHandle handle,
+                                      struct RcVec3 linvel,
+                                      struct RcBool wake_up);
 
 struct RcVec3 rc_rigid_body_get_angvel(const struct RcWorldHandle *world, RcRigidBodyHandle handle);
 
@@ -551,6 +582,11 @@ struct RcBool rc_rigid_body_add_force(struct RcWorldHandle *world,
                                       RcRigidBodyHandle handle,
                                       struct RcVec3 force,
                                       struct RcBool wake_up);
+
+uint8_t rc_rigid_body_add_force_flag(struct RcWorldHandle *world,
+                                     RcRigidBodyHandle handle,
+                                     struct RcVec3 force,
+                                     struct RcBool wake_up);
 
 struct RcBool rc_rigid_body_add_torque(struct RcWorldHandle *world,
                                        RcRigidBodyHandle handle,
@@ -573,12 +609,20 @@ struct RcBool rc_rigid_body_enable_ccd(struct RcWorldHandle *world,
 
 struct RcBool rc_rigid_body_sleep(struct RcWorldHandle *world, RcRigidBodyHandle handle);
 
+uint8_t rc_rigid_body_sleep_flag(struct RcWorldHandle *world, RcRigidBodyHandle handle);
+
 struct RcBool rc_rigid_body_wake_up(struct RcWorldHandle *world,
                                     RcRigidBodyHandle handle,
                                     struct RcBool strong);
 
+uint8_t rc_rigid_body_wake_up_flag(struct RcWorldHandle *world,
+                                   RcRigidBodyHandle handle,
+                                   struct RcBool strong);
+
 struct RcBool rc_rigid_body_is_sleeping(const struct RcWorldHandle *world,
                                         RcRigidBodyHandle handle);
+
+uint8_t rc_rigid_body_is_sleeping_flag(const struct RcWorldHandle *world, RcRigidBodyHandle handle);
 
 struct RcWorldHandle *rc_world_create(struct RcVec3 gravity);
 
@@ -589,6 +633,8 @@ void rc_world_step(struct RcWorldHandle *world, float delta_seconds);
 void rc_world_set_gravity(struct RcWorldHandle *world, struct RcVec3 gravity);
 
 struct RcVec3 rc_world_get_gravity(const struct RcWorldHandle *world);
+
+void rc_world_get_gravity_out(const struct RcWorldHandle *world, struct RcVec3 *out_gravity);
 
 #ifdef __cplusplus
 }  // extern "C"

@@ -267,6 +267,15 @@ pub extern "C" fn rc_world_remove_collider(
 }
 
 #[unsafe(no_mangle)]
+pub extern "C" fn rc_world_remove_collider_flag(
+    world: *mut RcWorldHandle,
+    handle: RcColliderHandle,
+    wake_up: RcBool,
+) -> u8 {
+    rc_world_remove_collider(world, handle, wake_up).0
+}
+
+#[unsafe(no_mangle)]
 pub extern "C" fn rc_collider_get_translation(
     world: *const RcWorldHandle,
     handle: RcColliderHandle,
