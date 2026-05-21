@@ -38,24 +38,7 @@ public final class PhysicalizedVolumeMapping {
     }
 
     public static PhysicalizedVolumeMapping interpolated(PhysicalizedVolumeEntity entity, float partialTicks) {
-        Vec3 position = entity.getPosition(partialTicks);
-        Quaternion previous = Quaternion.normalized(
-                entity.previousRotationQx(),
-                entity.previousRotationQy(),
-                entity.previousRotationQz(),
-                entity.previousRotationQw()
-        );
-        Quaternion current = Quaternion.normalized(
-                entity.rotationQx(),
-                entity.rotationQy(),
-                entity.rotationQz(),
-                entity.rotationQw()
-        );
-        return new PhysicalizedVolumeMapping(
-                entity,
-                new Vec3(position.x, position.y + entity.sizeY() * 0.5, position.z),
-                previous.slerp(current, Mth.clamp(partialTicks, 0.0F, 1.0F))
-        );
+        return current(entity);
     }
 
     public Vec3 worldToLocal(Vec3 world) {

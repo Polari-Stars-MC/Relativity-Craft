@@ -24,6 +24,7 @@ public final class PhysicalizedRaycaster {
     private static final double DEFAULT_REACH = 4.5;
     private static final double QUERY_EPSILON = 1.0E-4;
     private static final double RAY_EPSILON = 1.0E-7;
+    private static final double FACE_EPSILON = 1.0E-4;
 
     private PhysicalizedRaycaster() {
     }
@@ -157,7 +158,7 @@ public final class PhysicalizedRaycaster {
 
             Vec3 worldLocation = mapping.localToWorld(localLocation);
             double worldDistance = origin.distanceTo(worldLocation);
-            Direction localFace = blockHit.getDirection();
+            Direction localFace = resolveLocalFace(blockHit.getDirection(), cell, localLocation, localDirection);
             Direction worldFace = mapping.localFaceToWorld(localFace);
             PhysicalizedHit hit = new PhysicalizedHit(
                     entity,
@@ -174,6 +175,47 @@ public final class PhysicalizedRaycaster {
             }
         }
         return Optional.ofNullable(best);
+    }
+
+    private static Direction resolveLocalFace(
+            Direction clippedFace,
+            PhysicalizedBlockSnapshot cell,
+            Vec3 localLocation,
+            Vec3 localDirection
+    ) {
+        Direction best = clippedFace;
+        double bestDistance = distanceToCellFace(cell, localLocation, clippedFace);
+        double bestOpposition = rayOpposition(localDirection, clippedFace);
+        for (Direction face : Direction.values()) {
+            double distance = distanceToCellFace(cell, localLocation, face);
+            if (distance > FACE_EPSILON) {
+                continue;
+            }
+            double opposition = rayOpposition(localDirection, face);
+            if (bestDistance > FACE_EPSILON || opposition > bestOpposition + RAY_EPSILON) {
+                best = face;
+                bestDistance = distance;
+                bestOpposition = opposition;
+            }
+        }
+        return best;
+    }
+
+    private static double distanceToCellFace(PhysicalizedBlockSnapshot cell, Vec3 localLocation, Direction face) {
+        return switch (face) {
+            case WEST -> Math.abs(localLocation.x - cell.localX());
+            case EAST -> Math.abs(localLocation.x - (cell.localX() + 1.0));
+            case DOWN -> Math.abs(localLocation.y - cell.localY());
+            case UP -> Math.abs(localLocation.y - (cell.localY() + 1.0));
+            case NORTH -> Math.abs(localLocation.z - cell.localZ());
+            case SOUTH -> Math.abs(localLocation.z - (cell.localZ() + 1.0));
+        };
+    }
+
+    private static double rayOpposition(Vec3 localDirection, Direction face) {
+        return -(localDirection.x * face.getStepX()
+                + localDirection.y * face.getStepY()
+                + localDirection.z * face.getStepZ());
     }
 
     private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, double maxDistance) {

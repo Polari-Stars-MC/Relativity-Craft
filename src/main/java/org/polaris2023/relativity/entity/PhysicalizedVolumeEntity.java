@@ -119,7 +119,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public PhysicalizedVolumeSnapshot snapshot() {
-        return snapshot;
+        return snapshotOrEmpty();
     }
 
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot) {
@@ -247,19 +247,28 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public EntityDimensions getDimensions(Pose pose) {
-        float width = Math.max(this.sizeX(), this.sizeZ());
-        float height = this.sizeY();
+        float width = Math.max(this.contentSizeX(), this.contentSizeZ());
+        float height = this.contentSizeY();
         return EntityDimensions.scalable(width, height).withEyeHeight(height * 0.5F);
     }
 
     @Override
     protected AABB makeBoundingBox(Vec3 position) {
-        double halfX = this.sizeX() * 0.5;
-        double halfY = this.sizeY() * 0.5;
-        double halfZ = this.sizeZ() * 0.5;
-        double centerX = position.x;
-        double centerY = position.y + halfY;
-        double centerZ = position.z;
+        PhysicalizedVolumeSnapshot currentSnapshot = snapshotOrEmpty();
+        double selectionHalfX = this.sizeX() * 0.5;
+        double selectionHalfY = this.sizeY() * 0.5;
+        double selectionHalfZ = this.sizeZ() * 0.5;
+        double halfX = this.contentSizeX() * 0.5;
+        double halfY = this.contentSizeY() * 0.5;
+        double halfZ = this.contentSizeZ() * 0.5;
+        Vec3 localOffset = new Vec3(
+                currentSnapshot.occupiedCenterX() - selectionHalfX,
+                currentSnapshot.occupiedCenterY() - selectionHalfY,
+                currentSnapshot.occupiedCenterZ() - selectionHalfZ
+        );
+        double selectionCenterX = position.x;
+        double selectionCenterY = position.y + selectionHalfY;
+        double selectionCenterZ = position.z;
 
         float qx = this.rotationQx();
         float qy = this.rotationQy();
@@ -267,7 +276,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         float qw = this.rotationQw();
         float length = qx * qx + qy * qy + qz * qz + qw * qw;
         if (length <= 1.0E-6F) {
-            return new AABB(centerX - halfX, position.y, centerZ - halfZ, centerX + halfX, position.y + this.sizeY(), centerZ + halfZ);
+            double centerX = selectionCenterX + localOffset.x;
+            double centerY = selectionCenterY + localOffset.y;
+            double centerZ = selectionCenterZ + localOffset.z;
+            return new AABB(centerX - halfX, centerY - halfY, centerZ - halfZ, centerX + halfX, centerY + halfY, centerZ + halfZ);
         }
 
         float invLength = (float) (1.0 / Math.sqrt(length));
@@ -295,6 +307,13 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         double m20 = 2.0 * (xz - wy);
         double m21 = 2.0 * (yz + wx);
         double m22 = 1.0 - 2.0 * (xx + yy);
+
+        double rotatedOffsetX = m00 * localOffset.x + m01 * localOffset.y + m02 * localOffset.z;
+        double rotatedOffsetY = m10 * localOffset.x + m11 * localOffset.y + m12 * localOffset.z;
+        double rotatedOffsetZ = m20 * localOffset.x + m21 * localOffset.y + m22 * localOffset.z;
+        double centerX = selectionCenterX + rotatedOffsetX;
+        double centerY = selectionCenterY + rotatedOffsetY;
+        double centerZ = selectionCenterZ + rotatedOffsetZ;
 
         double extentX = Math.abs(m00) * halfX + Math.abs(m01) * halfY + Math.abs(m02) * halfZ;
         double extentY = Math.abs(m10) * halfX + Math.abs(m11) * halfY + Math.abs(m12) * halfZ;
@@ -424,12 +443,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         output.putFloat("Qy", this.rotationQy());
         output.putFloat("Qz", this.rotationQz());
         output.putFloat("Qw", this.rotationQw());
-        this.snapshot.write(output);
+        this.snapshotOrEmpty().write(output);
     }
 
     @Override
     public void writeSpawnData(RegistryFriendlyByteBuf buffer) {
-        this.snapshot.write(buffer);
+        this.snapshotOrEmpty().write(buffer);
     }
 
     @Override
@@ -482,6 +501,22 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     private static int positive(int value) {
         return Math.max(1, value);
+    }
+
+    private PhysicalizedVolumeSnapshot snapshotOrEmpty() {
+        return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
+    }
+
+    private int contentSizeX() {
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeX());
+    }
+
+    private int contentSizeY() {
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeY());
+    }
+
+    private int contentSizeZ() {
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeZ());
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

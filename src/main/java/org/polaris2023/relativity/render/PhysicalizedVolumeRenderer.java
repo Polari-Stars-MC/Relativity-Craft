@@ -1,7 +1,6 @@
 package org.polaris2023.relativity.render;
 
 import com.mojang.blaze3d.vertex.PoseStack;
-import com.mojang.blaze3d.vertex.VertexConsumer;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import net.minecraft.client.Minecraft;
@@ -11,7 +10,6 @@ import net.minecraft.client.renderer.block.MovingBlockRenderState;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.entity.EntityRenderer;
 import net.minecraft.client.renderer.entity.EntityRendererProvider;
-import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.world.level.block.RenderShape;
@@ -20,13 +18,6 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
 public final class PhysicalizedVolumeRenderer extends EntityRenderer<PhysicalizedVolumeEntity, PhysicalizedVolumeRenderState> {
-    private static final int FACE_TOP_COLOR = 0x6670E6FF;
-    private static final int FACE_SIDE_COLOR = 0x4A33B5E5;
-    private static final int FACE_BOTTOM_COLOR = 0x365A5A66;
-    private static final int OUTLINE_COLOR = 0xE65FE6FF;
-    private static final int EDGE_COLOR = 0xF2FFFFFF;
-    private static final float OUTLINE_WIDTH = 3.0F;
-
     public PhysicalizedVolumeRenderer(EntityRendererProvider.Context context) {
         super(context);
         this.shadowRadius = 0.0F;
@@ -40,6 +31,9 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
     @Override
     public void extractRenderState(PhysicalizedVolumeEntity entity, PhysicalizedVolumeRenderState state, float partialTicks) {
         super.extractRenderState(entity, state, partialTicks);
+        state.x = entity.getX();
+        state.y = entity.getY();
+        state.z = entity.getZ();
         state.sizeX = entity.sizeX();
         state.sizeY = entity.sizeY();
         state.sizeZ = entity.sizeZ();
@@ -75,28 +69,15 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         poseStack.translate(0.0F, halfY, 0.0F);
         Quaternionf rotation = interpolatedRotation(state);
         poseStack.mulPose(rotation);
-        if (state.cells.isEmpty()) {
-            submitNodeCollector.submitCustomGeometry(
-                    poseStack,
-                    RenderTypes.debugQuads(),
-                    (pose, buffer) -> renderVolumeFaces(pose, buffer, -halfX, -halfY, -halfZ, halfX, halfY, halfZ)
-            );
-        } else {
+        if (!state.cells.isEmpty()) {
             submitCapturedBlocks(state, poseStack, submitNodeCollector, rotation, halfX, halfY, halfZ);
         }
-        submitNodeCollector.submitCustomGeometry(
-                poseStack,
-                RenderTypes.linesTranslucent(),
-                (pose, buffer) -> renderVolumeOutline(pose, buffer, -halfX, -halfY, -halfZ, halfX, halfY, halfZ)
-        );
         poseStack.popPose();
         super.submit(state, poseStack, submitNodeCollector, camera);
     }
 
     private static Quaternionf interpolatedRotation(PhysicalizedVolumeRenderState state) {
-        Quaternionf previous = new Quaternionf(state.previousQx, state.previousQy, state.previousQz, state.previousQw).normalize();
-        Quaternionf current = new Quaternionf(state.qx, state.qy, state.qz, state.qw).normalize();
-        return previous.slerp(current, state.partialTick).normalize();
+        return new Quaternionf(state.qx, state.qy, state.qz, state.qw).normalize();
     }
 
     private static void submitCapturedBlocks(
@@ -158,89 +139,5 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                 state.y + halfY + localCenter.y(),
                 state.z + localCenter.z()
         );
-    }
-
-    private static void renderVolumeFaces(
-            PoseStack.Pose pose,
-            VertexConsumer buffer,
-            float minX,
-            float minY,
-            float minZ,
-            float maxX,
-            float maxY,
-            float maxZ
-    ) {
-        quad(pose, buffer, minX, maxY, minZ, minX, maxY, maxZ, maxX, maxY, maxZ, maxX, maxY, minZ, FACE_TOP_COLOR);
-        quad(pose, buffer, minX, minY, maxZ, minX, minY, minZ, maxX, minY, minZ, maxX, minY, maxZ, FACE_BOTTOM_COLOR);
-        quad(pose, buffer, minX, minY, minZ, minX, maxY, minZ, maxX, maxY, minZ, maxX, minY, minZ, FACE_SIDE_COLOR);
-        quad(pose, buffer, maxX, minY, maxZ, maxX, maxY, maxZ, minX, maxY, maxZ, minX, minY, maxZ, FACE_SIDE_COLOR);
-        quad(pose, buffer, minX, minY, maxZ, minX, maxY, maxZ, minX, maxY, minZ, minX, minY, minZ, FACE_SIDE_COLOR);
-        quad(pose, buffer, maxX, minY, minZ, maxX, maxY, minZ, maxX, maxY, maxZ, maxX, minY, maxZ, FACE_SIDE_COLOR);
-    }
-
-    private static void renderVolumeOutline(
-            PoseStack.Pose pose,
-            VertexConsumer buffer,
-            float minX,
-            float minY,
-            float minZ,
-            float maxX,
-            float maxY,
-            float maxZ
-    ) {
-        line(pose, buffer, minX, minY, minZ, maxX, minY, minZ, EDGE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, minY, minZ, maxX, minY, maxZ, EDGE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, minY, maxZ, minX, minY, maxZ, EDGE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, minX, minY, maxZ, minX, minY, minZ, EDGE_COLOR, OUTLINE_WIDTH);
-
-        line(pose, buffer, minX, maxY, minZ, maxX, maxY, minZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, maxY, minZ, maxX, maxY, maxZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, maxY, maxZ, minX, maxY, maxZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, minX, maxY, maxZ, minX, maxY, minZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-
-        line(pose, buffer, minX, minY, minZ, minX, maxY, minZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, minY, minZ, maxX, maxY, minZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, maxX, minY, maxZ, maxX, maxY, maxZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-        line(pose, buffer, minX, minY, maxZ, minX, maxY, maxZ, OUTLINE_COLOR, OUTLINE_WIDTH);
-    }
-
-    private static void quad(
-            PoseStack.Pose pose,
-            VertexConsumer buffer,
-            float x1,
-            float y1,
-            float z1,
-            float x2,
-            float y2,
-            float z2,
-            float x3,
-            float y3,
-            float z3,
-            float x4,
-            float y4,
-            float z4,
-            int color
-    ) {
-        buffer.addVertex(pose, x1, y1, z1).setColor(color);
-        buffer.addVertex(pose, x2, y2, z2).setColor(color);
-        buffer.addVertex(pose, x3, y3, z3).setColor(color);
-        buffer.addVertex(pose, x4, y4, z4).setColor(color);
-    }
-
-    private static void line(
-            PoseStack.Pose pose,
-            VertexConsumer buffer,
-            float x1,
-            float y1,
-            float z1,
-            float x2,
-            float y2,
-            float z2,
-            int color,
-            float width
-    ) {
-        Vector3f normal = new Vector3f(x2 - x1, y2 - y1, z2 - z1).normalize();
-        buffer.addVertex(pose, x1, y1, z1).setColor(color).setNormal(pose, normal).setLineWidth(width);
-        buffer.addVertex(pose, x2, y2, z2).setColor(color).setNormal(pose, normal).setLineWidth(width);
     }
 }

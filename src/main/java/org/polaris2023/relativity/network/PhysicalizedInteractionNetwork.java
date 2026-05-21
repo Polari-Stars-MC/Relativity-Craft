@@ -71,11 +71,22 @@ public final class PhysicalizedInteractionNetwork {
         if (action == BreakAction.STOP) {
             PhysicalizedInteractionHandler.stopBreaking(player, volume);
         } else {
-            hitFromPayload(player, volume, payload.localX(), payload.localY(), payload.localZ(), payload.localHitX(), payload.localHitY(), payload.localHitZ(), payload.localFace())
-                    .ifPresentOrElse(
-                            hit -> PhysicalizedInteractionHandler.continueBreakingHit(player, hit),
-                            () -> PhysicalizedInteractionHandler.continueBreaking(player, volume)
-                    );
+            Optional<PhysicalizedHit> hit = hitFromPayload(
+                    player,
+                    volume,
+                    payload.localX(),
+                    payload.localY(),
+                    payload.localZ(),
+                    payload.localHitX(),
+                    payload.localHitY(),
+                    payload.localHitZ(),
+                    payload.localFace()
+            );
+            if (hit.isPresent()) {
+                PhysicalizedInteractionHandler.continueBreakingHit(player, hit.get());
+            } else if (payload.localX() < 0 || payload.localY() < 0 || payload.localZ() < 0) {
+                PhysicalizedInteractionHandler.continueBreaking(player, volume);
+            }
         }
     }
 
@@ -85,11 +96,22 @@ public final class PhysicalizedInteractionNetwork {
         }
         Entity entity = player.level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
-            hitFromPayload(player, volume, payload.localX(), payload.localY(), payload.localZ(), payload.localHitX(), payload.localHitY(), payload.localHitZ(), payload.localFace())
-                    .ifPresentOrElse(
-                            hit -> PhysicalizedInteractionHandler.useHit(player, handById(payload.hand()), hit),
-                            () -> PhysicalizedInteractionHandler.use(player, handById(payload.hand()), volume)
-                    );
+            Optional<PhysicalizedHit> hit = hitFromPayload(
+                    player,
+                    volume,
+                    payload.localX(),
+                    payload.localY(),
+                    payload.localZ(),
+                    payload.localHitX(),
+                    payload.localHitY(),
+                    payload.localHitZ(),
+                    payload.localFace()
+            );
+            if (hit.isPresent()) {
+                PhysicalizedInteractionHandler.useHit(player, handById(payload.hand()), hit.get());
+            } else if (payload.localX() < 0 || payload.localY() < 0 || payload.localZ() < 0) {
+                PhysicalizedInteractionHandler.use(player, handById(payload.hand()), volume);
+            }
         }
     }
 

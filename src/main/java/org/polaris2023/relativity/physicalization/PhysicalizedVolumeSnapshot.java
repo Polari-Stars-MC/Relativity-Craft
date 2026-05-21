@@ -157,6 +157,54 @@ public final class PhysicalizedVolumeSnapshot {
         return cells.size();
     }
 
+    public int occupiedMinX() {
+        return occupiedMin(CoordinateAxis.X);
+    }
+
+    public int occupiedMinY() {
+        return occupiedMin(CoordinateAxis.Y);
+    }
+
+    public int occupiedMinZ() {
+        return occupiedMin(CoordinateAxis.Z);
+    }
+
+    public int occupiedMaxX() {
+        return occupiedMax(CoordinateAxis.X, sizeX);
+    }
+
+    public int occupiedMaxY() {
+        return occupiedMax(CoordinateAxis.Y, sizeY);
+    }
+
+    public int occupiedMaxZ() {
+        return occupiedMax(CoordinateAxis.Z, sizeZ);
+    }
+
+    public int occupiedSizeX() {
+        return occupiedMaxX() - occupiedMinX() + 1;
+    }
+
+    public int occupiedSizeY() {
+        return occupiedMaxY() - occupiedMinY() + 1;
+    }
+
+    public int occupiedSizeZ() {
+        return occupiedMaxZ() - occupiedMinZ() + 1;
+    }
+
+    public double occupiedCenterX() {
+        return (occupiedMinX() + occupiedMaxX() + 1) * 0.5;
+    }
+
+    public double occupiedCenterY() {
+        return (occupiedMinY() + occupiedMaxY() + 1) * 0.5;
+    }
+
+    public double occupiedCenterZ() {
+        return (occupiedMinZ() + occupiedMaxZ() + 1) * 0.5;
+    }
+
     public List<PhysicalizedBlockSnapshot> cells() {
         return cells;
     }
@@ -302,6 +350,53 @@ public final class PhysicalizedVolumeSnapshot {
 
     private static long pack(int x, int y, int z) {
         return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
+    private int occupiedMin(CoordinateAxis axis) {
+        if (cells.isEmpty()) {
+            return 0;
+        }
+
+        int min = Integer.MAX_VALUE;
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            min = Math.min(min, axis.of(cell));
+        }
+        return min;
+    }
+
+    private int occupiedMax(CoordinateAxis axis, int size) {
+        if (cells.isEmpty()) {
+            return Math.max(0, size - 1);
+        }
+
+        int max = Integer.MIN_VALUE;
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            max = Math.max(max, axis.of(cell));
+        }
+        return max;
+    }
+
+    private enum CoordinateAxis {
+        X {
+            @Override
+            int of(PhysicalizedBlockSnapshot cell) {
+                return cell.localX();
+            }
+        },
+        Y {
+            @Override
+            int of(PhysicalizedBlockSnapshot cell) {
+                return cell.localY();
+            }
+        },
+        Z {
+            @Override
+            int of(PhysicalizedBlockSnapshot cell) {
+                return cell.localZ();
+            }
+        };
+
+        abstract int of(PhysicalizedBlockSnapshot cell);
     }
 
     public record ExpandedPlacement(PhysicalizedVolumeSnapshot snapshot, int shiftX, int shiftY, int shiftZ) {
