@@ -1,29 +1,45 @@
 package org.polaris2023.relativity.interaction;
 
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.mixin.BlockItemPlacementAccessor;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.core.BlockPos;
+import net.minecraft.core.Direction;
+import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.sounds.SoundSource;
+import net.minecraft.util.Mth;
 import net.minecraft.world.Containers;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.item.context.BlockPlaceContext;
+import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ButtonBlock;
+import net.minecraft.world.level.block.EntityBlock;
+import net.minecraft.world.level.block.GameMasterBlock;
 import net.minecraft.world.level.block.LeverBlock;
 import net.minecraft.world.level.block.RedStoneWireBlock;
 import net.minecraft.world.level.block.RepeaterBlock;
+import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.block.state.properties.AttachFace;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RedstoneSide;
+import net.minecraft.world.level.gameevent.GameEvent;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.Map;
 import java.util.Optional;
@@ -31,9 +47,8 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicalizedInteractionHandler {
-    private static final double PLACEMENT_EPSILON = 1.0E-4;
-    private static final Map<BreakKey, Float> BREAK_PROGRESS = new ConcurrentHashMap<>();
-    private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new ConcurrentHashMap<>();
+    private static final Map<UUID, ActiveBreak> ACTIVE_BREAKS = new ConcurrentHashMap<>();
+    private static final Map<BreakKey, Long> LAST_COMPLETED_BREAK_TICKS = new ConcurrentHashMap<>();
 
     private PhysicalizedInteractionHandler() {
     }
@@ -62,8 +77,8 @@ public final class PhysicalizedInteractionHandler {
             }
         }
 
-        if (stack.getItem() instanceof BlockItem blockItem) {
-            return placeBlock(player, hand, stack, blockItem, hit);
+        if (stack.getItem() instanceof BlockItem) {
+            return placeBlock(player, hand, stack, hit);
         }
         return InteractionResult.PASS;
     }
@@ -88,78 +103,150 @@ public final class PhysicalizedInteractionHandler {
         if (state.isAir()) {
             return true;
         }
-
-        BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ());
-        BreakKey previous = ACTIVE_BREAKS.put(player.getUUID(), key);
-        if (previous != null && !previous.equals(key)) {
-            clearBreak(level, previous);
-        }
-        if (!key.equals(previous)) {
-            state.attack(level, hit.visualBlockPos(), player);
-        }
-
-        float progress = player.gameMode.isCreative() ? 1.0F : BREAK_PROGRESS.getOrDefault(key, 0.0F)
-                + state.getDestroyProgress(player, level, hit.visualBlockPos());
-
-        if (progress < 1.0F) {
-            BREAK_PROGRESS.put(key, progress);
-            int stage = Math.max(0, Math.min(9, (int) (progress * 10.0F)));
-            level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), stage);
-            PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, stage);
+        if (state.getBlock() instanceof GameMasterBlock && !player.canUseGameMasterBlocks()) {
             return true;
         }
 
-        BREAK_PROGRESS.remove(key);
-        ACTIVE_BREAKS.remove(player.getUUID(), key);
-        level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), -1);
-        PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, -1);
-        destroyPhysicalizedCell(level, player, hit);
+        BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ(), cell.stateId());
+        long gameTime = level.getGameTime();
+        Long lastBreakTick = LAST_COMPLETED_BREAK_TICKS.get(key);
+        if (lastBreakTick != null && lastBreakTick == gameTime) {
+            return true;
+        }
+
+        ActiveBreak active = ACTIVE_BREAKS.get(player.getUUID());
+        if (active == null || !active.key.equals(key)) {
+            if (active != null) {
+                clearBreakState(level, player, active);
+            }
+            active = new ActiveBreak(key);
+            ACTIVE_BREAKS.put(player.getUUID(), active);
+            state.attack(level, hit.visualBlockPos(), player);
+        }
+
+        if (active.lastUpdateTick == gameTime) {
+            return true;
+        }
+
+        if (player.getAbilities().instabuild) {
+            return finishBreaking(level, player, hit, key);
+        }
+
+        float progressStep = destroyProgress(player, hit);
+        if (progressStep <= 0.0F) {
+            active.lastUpdateTick = gameTime;
+            return true;
+        }
+
+        active.progress += progressStep;
+        active.lastUpdateTick = gameTime;
+        if (active.progress >= 1.0D) {
+            return finishBreaking(level, player, hit, key);
+        }
+
+        int stage = Mth.clamp((int) (active.progress * 10.0D), 0, 9);
+        if (stage != active.stage) {
+            active.stage = stage;
+            PhysicalizedInteractionNetwork.sendBreakOverlay(hit.entity(), hit.cell(), stage);
+        }
         return true;
     }
 
     public static void stopBreaking(ServerPlayer player, PhysicalizedVolumeEntity target) {
-        BreakKey key = ACTIVE_BREAKS.remove(player.getUUID());
-        if (key == null || key.entityId() != target.getId()) {
+        ActiveBreak active = ACTIVE_BREAKS.get(player.getUUID());
+        if (active == null || active.key.entityId() != target.getId()) {
             return;
         }
-        BREAK_PROGRESS.remove(key);
+        ACTIVE_BREAKS.remove(player.getUUID(), active);
         if (player.level() instanceof ServerLevel level) {
-            clearBreak(level, key);
+            clearBreakState(level, player, active);
         }
     }
 
-    private static InteractionResult placeBlock(ServerPlayer player, InteractionHand hand, ItemStack stack, BlockItem blockItem, PhysicalizedHit hit) {
+    public static Optional<BlockState> resolvePlacementState(Level level, Player player, InteractionHand hand, ItemStack stack, PhysicalizedHit hit) {
+        if (!(stack.getItem() instanceof BlockItem blockItem)) {
+            return Optional.empty();
+        }
+
+        BlockPos targetPos = placementTarget(hit);
+        if (!player.mayUseItemAt(targetPos, hit.worldFace(), stack)) {
+            return Optional.empty();
+        }
+
+        PhysicalizedBlockPlaceContext context = new PhysicalizedBlockPlaceContext(player, hand, stack, hit, targetPos);
+        if (!blockItem.getBlock().isEnabled(level.enabledFeatures()) || !context.canPlace()) {
+            return Optional.empty();
+        }
+
+        BlockPlaceContext updatedContext = ((BlockItemPlacementAccessor) blockItem).relativityCraft$updatePlacementContext(context);
+        if (updatedContext == null) {
+            return Optional.empty();
+        }
+
+        PhysicalizedVolumeEntity entity = hit.entity();
+        BlockState placementState = PhysicalizedCollisionShapes.withIgnoredVolume(
+                entity,
+                () -> ((BlockItemPlacementAccessor) blockItem).relativityCraft$getPlacementState(updatedContext)
+        );
+        if (placementState != null && !placementState.isAir()) {
+            return usablePlacementState(level, player, targetPos, placementState, hit, entity);
+        }
+
+        BlockState fallbackState = fallbackPlacementState(blockItem, updatedContext, hit);
+        if (fallbackState == null || fallbackState.isAir()) {
+            return Optional.empty();
+        }
+        return usablePlacementState(level, player, targetPos, fallbackState, hit, entity);
+    }
+
+    private static Optional<BlockState> usablePlacementState(
+            Level level,
+            Player player,
+            BlockPos targetPos,
+            BlockState state,
+            PhysicalizedHit hit,
+            PhysicalizedVolumeEntity entity
+    ) {
+        if (!canSurvivePlacement(level, targetPos, state, hit)) {
+            return Optional.empty();
+        }
+        boolean unobstructed = PhysicalizedCollisionShapes.withIgnoredVolume(
+                entity,
+                () -> level.isUnobstructed(state, targetPos, CollisionContext.placementContext(player))
+        );
+        return unobstructed ? Optional.of(state) : Optional.empty();
+    }
+
+    private static InteractionResult placeBlock(ServerPlayer player, InteractionHand hand, ItemStack stack, PhysicalizedHit hit) {
         if (!(player.level() instanceof ServerLevel level)) {
             return InteractionResult.PASS;
         }
 
         PhysicalizedVolumeEntity entity = hit.entity();
-        int localX = hit.cell().localX() + hit.localFace().getStepX();
-        int localY = hit.cell().localY() + hit.localFace().getStepY();
-        int localZ = hit.cell().localZ() + hit.localFace().getStepZ();
+        BlockPos localTarget = placementLocalPos(hit);
+        int localX = localTarget.getX();
+        int localY = localTarget.getY();
+        int localZ = localTarget.getZ();
         if (localX >= 0 && localY >= 0 && localZ >= 0
                 && localX < entity.snapshot().sizeX() && localY < entity.snapshot().sizeY() && localZ < entity.snapshot().sizeZ()
-                && entity.snapshot().cellAt(localX, localY, localZ).isPresent()) {
+                && entity.snapshot().cellAtOrNull(localX, localY, localZ) != null) {
             return InteractionResult.FAIL;
         }
 
         BlockPos targetPos = placementTarget(hit);
-        if (!player.mayUseItemAt(targetPos, hit.worldFace(), stack)) {
+        Optional<BlockState> placementState = resolvePlacementState(level, player, hand, stack, hit);
+        if (placementState.isEmpty()) {
             return InteractionResult.FAIL;
         }
-
-        PhysicalizedBlockPlaceContext context = new PhysicalizedBlockPlaceContext(player, hand, stack, targetPos, hit.worldFace(), hit.worldLocation());
-        BlockState placementState = blockItem.getBlock().getStateForPlacement(context);
-        if (placementState == null || placementState.isAir()) {
-            return InteractionResult.FAIL;
-        }
+        BlockState stateToPlace = placementState.get();
 
         PhysicalizedVolumeMapping oldMapping = PhysicalizedVolumeMapping.current(entity);
         Vec3 oldCenter = oldMapping.centeredLocalToWorld(Vec3.ZERO);
         int oldSizeX = entity.snapshot().sizeX();
         int oldSizeY = entity.snapshot().sizeY();
         int oldSizeZ = entity.snapshot().sizeZ();
-        PhysicalizedVolumeSnapshot.ExpandedPlacement placement = entity.snapshot().withCellExpanded(localX, localY, localZ, placementState, null);
+        CompoundTag blockEntityNbt = placedBlockEntityNbt(level, targetPos, stateToPlace);
+        PhysicalizedVolumeSnapshot.ExpandedPlacement placement = entity.snapshot().withCellExpanded(localX, localY, localZ, stateToPlace, blockEntityNbt);
         Vec3 localCenterShift = new Vec3(
                 placement.snapshot().sizeX() * 0.5 - oldSizeX * 0.5 - placement.shiftX(),
                 placement.snapshot().sizeY() * 0.5 - oldSizeY * 0.5 - placement.shiftY(),
@@ -167,22 +254,39 @@ public final class PhysicalizedInteractionHandler {
         );
         Vec3 nextCenter = oldCenter.add(oldMapping.localNormalToWorld(localCenterShift));
 
-        PhysicsWorldManager.global().unregister(entity);
-        entity.updateSnapshot(placement.snapshot());
-        entity.setPos(nextCenter.x, nextCenter.y - entity.sizeY() * 0.5, nextCenter.z);
-        PhysicsWorldManager.global().register(entity);
-
         int placedX = localX + placement.shiftX();
         int placedY = localY + placement.shiftY();
         int placedZ = localZ + placement.shiftZ();
+        if (!canOccupyPlacedCell(level, entity, placement.snapshot(), stateToPlace, placedX, placedY, placedZ, nextCenter)) {
+            return InteractionResult.FAIL;
+        }
+
+        rebuildVolumeAndWake(level, entity, () -> entity.updateSnapshotAndSnap(
+                placement.snapshot(),
+                nextCenter.x,
+                nextCenter.y,
+                nextCenter.z
+        ));
+
         if (!player.hasInfiniteMaterials()) {
             stack.shrink(1);
         }
-        placementState.getBlock().setPlacedBy(level, PhysicalizedVolumeMapping.current(entity).visualBlockPos(
-                new PhysicalizedBlockSnapshot(placedX, placedY, placedZ, Block.getId(placementState), null)
-        ), placementState, player, stack);
-        PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
+        BlockPos placedVisualPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(
+                new PhysicalizedBlockSnapshot(placedX, placedY, placedZ, Block.getId(stateToPlace), null)
+        );
+        stateToPlace.getBlock().setPlacedBy(level, placedVisualPos, stateToPlace, player, stack);
+        SoundType soundType = stateToPlace.getSoundType(level, targetPos, player);
+        level.playSound(
+                null,
+                targetPos,
+                soundType.getPlaceSound(),
+                SoundSource.BLOCKS,
+                (soundType.getVolume() + 1.0F) / 2.0F,
+                soundType.getPitch() * 0.8F
+        );
+        level.gameEvent(GameEvent.BLOCK_PLACE, targetPos, GameEvent.Context.of(player, stateToPlace));
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, placedX, placedY, placedZ);
+        player.swing(hand, true);
         return InteractionResult.SUCCESS;
     }
 
@@ -236,8 +340,7 @@ public final class PhysicalizedInteractionHandler {
     }
 
     private static void replacePhysicalizedCellState(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, BlockState state) {
-        entity.updateSnapshot(entity.snapshot().withCellState(cell, state, cell.blockEntityNbt()));
-        PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
+        rebuildVolumeAndWake(level, entity, () -> entity.updateSnapshot(entity.snapshot().withCellState(cell, state, cell.blockEntityNbt())));
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, cell.localX(), cell.localY(), cell.localZ());
     }
 
@@ -246,21 +349,24 @@ public final class PhysicalizedInteractionHandler {
         if (hit.isPresent() && hit.get().entity() == target) {
             return hit;
         }
-        return PhysicalizedRaycaster.raycastEntity(
+        return PhysicalizedRaycaster.raycastInteractionEntity(
                 target,
                 player.getEyePosition(),
                 player.getLookAngle().normalize(),
-                Math.max(4.5, player.blockInteractionRange())
+                PhysicalizedRaycaster.interactionReach(player)
         );
     }
 
-    private static BlockPos placementTarget(PhysicalizedHit hit) {
-        Vec3 normal = new Vec3(hit.worldFace().getStepX(), hit.worldFace().getStepY(), hit.worldFace().getStepZ());
-        BlockPos target = BlockPos.containing(hit.worldLocation().add(normal.scale(PLACEMENT_EPSILON)));
-        if (target.equals(hit.visualBlockPos())) {
-            return hit.visualBlockPos().relative(hit.worldFace());
-        }
-        return target;
+    public static BlockPos placementTarget(PhysicalizedHit hit) {
+        return hit.visualBlockPos().relative(hit.worldFace());
+    }
+
+    public static BlockPos placementLocalPos(PhysicalizedHit hit) {
+        return new BlockPos(
+                hit.cell().localX() + hit.localFace().getStepX(),
+                hit.cell().localY() + hit.localFace().getStepY(),
+                hit.cell().localZ() + hit.localFace().getStepZ()
+        );
     }
 
     private static void destroyPhysicalizedCell(ServerLevel level, ServerPlayer player, PhysicalizedHit hit) {
@@ -268,35 +374,237 @@ public final class PhysicalizedInteractionHandler {
         PhysicalizedBlockSnapshot cell = hit.cell();
         BlockState state = cell.state();
         BlockPos dropPos = hit.visualBlockPos();
+        BlockState destroyedState = state.getBlock().playerWillDestroy(level, dropPos, state, player);
+        ItemStack tool = player.getMainHandItem();
+        ItemStack toolBefore = tool.copy();
+        boolean canHarvest = player.hasCorrectToolForDrops(destroyedState);
         BlockEntity blockEntity = cell.hasBlockEntityNbt()
                 ? BlockEntity.loadStatic(dropPos, state, cell.blockEntityNbt(), level.registryAccess())
                 : null;
 
         level.levelEvent(player, 2001, dropPos, Block.getId(state));
+        level.gameEvent(GameEvent.BLOCK_DESTROY, dropPos, GameEvent.Context.of(player, state));
+        if (!player.getAbilities().instabuild) {
+            tool.mineBlock(level, destroyedState, dropPos, player);
+        }
         if (!player.preventsBlockDrops()) {
             if (blockEntity instanceof net.minecraft.world.Container container) {
                 Containers.dropContents(level, dropPos, container);
             }
-            state.getBlock().playerDestroy(level, player, dropPos, state, blockEntity, player.getMainHandItem());
+            if (canHarvest) {
+                destroyedState.getBlock().playerDestroy(level, player, dropPos, destroyedState, blockEntity, toolBefore);
+            }
         }
 
-        entity.updateSnapshot(entity.snapshot().withoutCell(cell));
+        PhysicalizedVolumeSnapshot nextSnapshot = entity.snapshot().withoutCell(cell);
         PhysicalizedRedstoneMapping.global().clearCell(entity, cell);
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, cell.localX(), cell.localY(), cell.localZ());
-        if (entity.snapshot().blockCount() <= 0) {
+        if (nextSnapshot.blockCount() <= 0) {
+            PhysicsWorldManager.global().unregister(entity);
             entity.discard();
         } else {
-            PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
+            PhysicalizedVolumeMapping oldMapping = PhysicalizedVolumeMapping.current(entity);
+            PhysicalizedVolumeSnapshot.CompactedSnapshot compacted = nextSnapshot.compacted();
+            Vec3 localCenterShift = new Vec3(
+                    compacted.offsetX() + compacted.snapshot().sizeX() * 0.5 - entity.snapshot().sizeX() * 0.5,
+                    compacted.offsetY() + compacted.snapshot().sizeY() * 0.5 - entity.snapshot().sizeY() * 0.5,
+                    compacted.offsetZ() + compacted.snapshot().sizeZ() * 0.5 - entity.snapshot().sizeZ() * 0.5
+            );
+            Vec3 nextCenter = oldMapping.centeredLocalToWorld(localCenterShift);
+            rebuildVolumeAndWake(level, entity, () -> entity.updateSnapshotAndSnap(
+                    compacted.snapshot(),
+                    nextCenter.x,
+                    nextCenter.y,
+                    nextCenter.z
+            ));
         }
     }
 
-    private static void clearBreak(ServerLevel level, BreakKey key) {
-        if (level.getEntity(key.entityId()) instanceof PhysicalizedVolumeEntity volume) {
-            volume.snapshot().cellAt(key.localX(), key.localY(), key.localZ())
-                    .ifPresent(cell -> PhysicalizedInteractionNetwork.sendBreakOverlay(volume, cell, -1));
+    private static BlockState fallbackPlacementState(BlockItem blockItem, BlockPlaceContext context, PhysicalizedHit hit) {
+        BlockState fallbackState = blockItem.getBlock().getStateForPlacement(context);
+        if (fallbackState != null && !fallbackState.isAir()) {
+            return fallbackState;
+        }
+        return faceAttachedPlacementState(blockItem, context, hit);
+    }
+
+    private static BlockState faceAttachedPlacementState(BlockItem blockItem, BlockPlaceContext context, PhysicalizedHit hit) {
+        BlockState baseState = blockItem.getBlock().defaultBlockState();
+        if (!baseState.hasProperty(BlockStateProperties.ATTACH_FACE)
+                || !baseState.hasProperty(BlockStateProperties.HORIZONTAL_FACING)) {
+            return null;
+        }
+
+        BlockPos placedLocalPos = placementLocalPos(hit);
+        for (Direction direction : context.getNearestLookingDirections()) {
+            BlockState state;
+            if (direction.getAxis() == Direction.Axis.Y) {
+                state = baseState
+                        .setValue(BlockStateProperties.ATTACH_FACE, direction == Direction.UP ? AttachFace.CEILING : AttachFace.FLOOR)
+                        .setValue(BlockStateProperties.HORIZONTAL_FACING, context.getHorizontalDirection());
+            } else {
+                state = baseState
+                        .setValue(BlockStateProperties.ATTACH_FACE, AttachFace.WALL)
+                        .setValue(BlockStateProperties.HORIZONTAL_FACING, direction.getOpposite());
+            }
+
+            if (canSurviveOnPhysicalizedSupport(state, hit, placedLocalPos)) {
+                return state;
+            }
+        }
+        return null;
+    }
+
+    private static boolean canSurvivePlacement(Level level, BlockPos targetPos, BlockState placementState, PhysicalizedHit hit) {
+        if (placementState.canSurvive(level, targetPos)) {
+            return true;
+        }
+        return canSurviveOnPhysicalizedSupport(placementState, hit, placementLocalPos(hit));
+    }
+
+    private static boolean canSurviveOnPhysicalizedSupport(BlockState placementState, PhysicalizedHit hit, BlockPos placedLocalPos) {
+        SupportFace support = supportFaceForPlacement(placementState, hit, placedLocalPos);
+        if (support == null) {
+            return false;
+        }
+
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(hit.entity().snapshot());
+        BlockState supportState = localLevel.getBlockState(support.pos());
+        return !supportState.isAir() && supportState.isFaceSturdy(localLevel, support.pos(), support.face());
+    }
+
+    private static SupportFace supportFaceForPlacement(BlockState placementState, PhysicalizedHit hit, BlockPos placedLocalPos) {
+        if (placementState.hasProperty(BlockStateProperties.ATTACH_FACE)
+                && placementState.hasProperty(BlockStateProperties.HORIZONTAL_FACING)) {
+            Direction connected = switch (placementState.getValue(BlockStateProperties.ATTACH_FACE)) {
+                case CEILING -> Direction.DOWN;
+                case FLOOR -> Direction.UP;
+                case WALL -> placementState.getValue(BlockStateProperties.HORIZONTAL_FACING);
+            };
+            return new SupportFace(placedLocalPos.relative(connected.getOpposite()), connected);
+        }
+
+        if (hit.localFace() == Direction.UP) {
+            return new SupportFace(placedLocalPos.below(), Direction.UP);
+        }
+        if (hit.localFace().getAxis().isHorizontal()) {
+            return new SupportFace(placedLocalPos.relative(hit.localFace().getOpposite()), hit.localFace());
+        }
+        return null;
+    }
+
+    private static boolean finishBreaking(ServerLevel level, ServerPlayer player, PhysicalizedHit hit, BreakKey key) {
+        ACTIVE_BREAKS.remove(player.getUUID());
+        clearBreak(level, player, hit.entity(), hit.cell());
+        if (LAST_COMPLETED_BREAK_TICKS.size() > 4096) {
+            LAST_COMPLETED_BREAK_TICKS.clear();
+        }
+        LAST_COMPLETED_BREAK_TICKS.put(key, level.getGameTime());
+        destroyPhysicalizedCell(level, player, hit);
+        player.swing(InteractionHand.MAIN_HAND, true);
+        return true;
+    }
+
+    private static boolean canOccupyPlacedCell(
+            ServerLevel level,
+            PhysicalizedVolumeEntity entity,
+            PhysicalizedVolumeSnapshot snapshot,
+            BlockState state,
+            int localX,
+            int localY,
+            int localZ,
+            Vec3 nextCenter
+    ) {
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
+        BlockPos localPos = new BlockPos(localX, localY, localZ);
+        VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+        if (shape.isEmpty()) {
+            return true;
+        }
+
+        PhysicalizedVolumeMapping placementMapping = PhysicalizedVolumeMapping.posed(
+                entity,
+                nextCenter,
+                snapshot.sizeX(),
+                snapshot.sizeY(),
+                snapshot.sizeZ()
+        );
+        for (AABB localPart : shape.toAabbs()) {
+            PhysicalizedOrientedBox worldPart = PhysicalizedOrientedBox.fromLocalBox(placementMapping, localPart.move(localPos));
+            if (!PhysicalizedCollisionShapes.noCollisionExceptVolume(level, entity, worldPart)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static void rebuildVolumeAndWake(ServerLevel level, PhysicalizedVolumeEntity entity, Runnable mutation) {
+        Vec3 motion = entity.getDeltaMovement();
+        if (entity.nativeBodyHandle() != 0L) {
+            PhysicsWorldManager.global().unregister(entity);
+        }
+        mutation.run();
+        if (PhysicsWorldManager.global().register(entity)) {
+            entity.setDeltaMovement(Vec3.ZERO);
+        } else {
+            entity.setDeltaMovement(motion);
+        }
+        PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
+    }
+
+    private static CompoundTag placedBlockEntityNbt(ServerLevel level, BlockPos pos, BlockState state) {
+        if (!(state.getBlock() instanceof EntityBlock entityBlock)) {
+            return null;
+        }
+
+        BlockEntity blockEntity = entityBlock.newBlockEntity(pos, state);
+        if (blockEntity == null) {
+            return null;
+        }
+
+        CompoundTag nbt = blockEntity.saveWithFullMetadata(level.registryAccess());
+        return nbt.isEmpty() ? null : nbt;
+    }
+
+    private static void clearBreakState(ServerLevel level, ServerPlayer player, ActiveBreak active) {
+        if (level.getEntity(active.key.entityId()) instanceof PhysicalizedVolumeEntity volume) {
+            Optional<PhysicalizedBlockSnapshot> cell = volume.snapshot().cellAt(active.key.localX(), active.key.localY(), active.key.localZ());
+            if (cell.isPresent()) {
+                clearBreak(level, player, volume, cell.get());
+            } else {
+                PhysicalizedInteractionNetwork.sendBreakOverlay(volume, active.key.localX(), active.key.localY(), active.key.localZ(), -1);
+            }
         }
     }
 
-    private record BreakKey(UUID playerId, int entityId, int localX, int localY, int localZ) {
+    private static void clearBreak(ServerLevel level, ServerPlayer player, PhysicalizedVolumeEntity volume, PhysicalizedBlockSnapshot cell) {
+        level.destroyBlockProgress(player.getId(), PhysicalizedVolumeMapping.current(volume).visualBlockPos(cell), -1);
+        PhysicalizedInteractionNetwork.sendBreakOverlay(volume, cell, -1);
+    }
+
+    private static float destroyProgress(ServerPlayer player, PhysicalizedHit hit) {
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(hit.entity().snapshot());
+        return hit.cell().state().getDestroyProgress(
+                player,
+                localLevel,
+                new BlockPos(hit.cell().localX(), hit.cell().localY(), hit.cell().localZ())
+        );
+    }
+
+    private record BreakKey(UUID playerId, int entityId, int localX, int localY, int localZ, int stateId) {
+    }
+
+    private static final class ActiveBreak {
+        private final BreakKey key;
+        private double progress;
+        private int stage = -1;
+        private long lastUpdateTick = Long.MIN_VALUE;
+
+        private ActiveBreak(BreakKey key) {
+            this.key = key;
+        }
+    }
+
+    private record SupportFace(BlockPos pos, Direction face) {
     }
 }

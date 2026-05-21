@@ -7,6 +7,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.phys.AABB;
@@ -32,8 +33,52 @@ public final class PhysicalizedRaycaster {
         if (!(player.level() instanceof ServerLevel level)) {
             return Optional.empty();
         }
-        double reach = Math.max(DEFAULT_REACH, player.blockInteractionRange());
-        return raycast(level, player.getEyePosition(), player.getLookAngle().normalize(), reach);
+        return raycastInteraction(level, player.getEyePosition(), player.getLookAngle().normalize(), interactionReach(player));
+    }
+
+    public static double interactionReach(Player player) {
+        return Math.max(DEFAULT_REACH, Math.max(player.blockInteractionRange(), player.entityInteractionRange()));
+    }
+
+    public static Optional<PhysicalizedHit> raycastInteraction(Level level, Vec3 origin, Vec3 direction, double reach) {
+        return raycastInteraction(level, origin, direction, reach, false, 0.0F);
+    }
+
+    public static Optional<PhysicalizedHit> raycastInteraction(Level level, Vec3 origin, Vec3 direction, double reach, float partialTicks) {
+        return raycastInteraction(level, origin, direction, reach, true, partialTicks);
+    }
+
+    private static Optional<PhysicalizedHit> raycastInteraction(
+            Level level,
+            Vec3 origin,
+            Vec3 direction,
+            double reach,
+            boolean useInterpolatedPose,
+            float partialTicks
+    ) {
+        Vec3 normalizedDirection = direction.normalize();
+        if (normalizedDirection.lengthSqr() < RAY_EPSILON) {
+            return Optional.empty();
+        }
+        Vec3 end = origin.add(normalizedDirection.scale(reach));
+        AABB swept = new AABB(origin, end).inflate(QUERY_EPSILON);
+        List<PhysicalizedVolumeEntity> candidates = candidates(level, swept, reach);
+
+        PhysicalizedHit best = null;
+        for (PhysicalizedVolumeEntity entity : candidates) {
+            if (!rayIntersectsReach(entity.getBoundingBox(), origin, normalizedDirection, reach)) {
+                continue;
+            }
+            double traceDistance = interactionTraceDistance(entity.getBoundingBox(), reach);
+            Optional<PhysicalizedHit> hit = useInterpolatedPose
+                    ? raycastEntity(entity, origin, normalizedDirection, traceDistance, partialTicks)
+                    : raycastEntity(entity, origin, normalizedDirection, traceDistance);
+            if (hit.isPresent() && hit.get().distance() <= reach + QUERY_EPSILON
+                    && (best == null || hit.get().distance() < best.distance())) {
+                best = hit.get();
+            }
+        }
+        return Optional.ofNullable(best);
     }
 
     public static Optional<PhysicalizedHit> raycast(Level level, Vec3 origin, Vec3 direction, double maxDistance) {
@@ -98,6 +143,16 @@ public final class PhysicalizedRaycaster {
         return raycastEntity(entity, PhysicalizedVolumeMapping.current(entity), origin, direction, maxDistance);
     }
 
+    public static Optional<PhysicalizedHit> raycastInteractionEntity(PhysicalizedVolumeEntity entity, Vec3 origin, Vec3 direction, double reach) {
+        Vec3 normalizedDirection = direction.normalize();
+        if (normalizedDirection.lengthSqr() < RAY_EPSILON
+                || !rayIntersectsReach(entity.getBoundingBox(), origin, normalizedDirection, reach)) {
+            return Optional.empty();
+        }
+        return raycastEntity(entity, origin, normalizedDirection, interactionTraceDistance(entity.getBoundingBox(), reach))
+                .filter(hit -> hit.distance() <= reach + QUERY_EPSILON);
+    }
+
     public static Optional<PhysicalizedHit> raycastEntity(
             PhysicalizedVolumeEntity entity,
             Vec3 origin,
@@ -106,6 +161,27 @@ public final class PhysicalizedRaycaster {
             float partialTicks
     ) {
         return raycastEntity(entity, PhysicalizedVolumeMapping.interpolated(entity, partialTicks), origin, direction, maxDistance);
+    }
+
+    public static Optional<PhysicalizedHit> raycastInteractionEntity(
+            PhysicalizedVolumeEntity entity,
+            Vec3 origin,
+            Vec3 direction,
+            double reach,
+            float partialTicks
+    ) {
+        Vec3 normalizedDirection = direction.normalize();
+        if (normalizedDirection.lengthSqr() < RAY_EPSILON
+                || !rayIntersectsReach(entity.getBoundingBox(), origin, normalizedDirection, reach)) {
+            return Optional.empty();
+        }
+        return raycastEntity(
+                entity,
+                PhysicalizedVolumeMapping.interpolated(entity, partialTicks),
+                origin,
+                normalizedDirection,
+                interactionTraceDistance(entity.getBoundingBox(), reach)
+        ).filter(hit -> hit.distance() <= reach + QUERY_EPSILON);
     }
 
     private static Optional<PhysicalizedHit> raycastEntity(
@@ -188,6 +264,18 @@ public final class PhysicalizedRaycaster {
             }
         }
         return candidates;
+    }
+
+    private static boolean rayIntersectsReach(AABB box, Vec3 origin, Vec3 direction, double reach) {
+        AABB expanded = box.inflate(QUERY_EPSILON);
+        return expanded.contains(origin) || expanded.clip(origin, origin.add(direction.scale(reach))).isPresent();
+    }
+
+    private static double interactionTraceDistance(AABB box, double reach) {
+        double x = box.getXsize();
+        double y = box.getYsize();
+        double z = box.getZsize();
+        return reach + Math.sqrt(x * x + y * y + z * z) + 1.0;
     }
 
     public static BlockPos visualBlockPos(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell) {

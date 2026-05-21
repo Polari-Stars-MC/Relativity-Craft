@@ -235,6 +235,19 @@ public final class PhysicalizedClientInteractions {
         return minecraft.getDeltaTracker().getGameTimeDeltaPartialTick(true);
     }
 
+    public static net.minecraft.world.InteractionResult handlePhysicalizedUse(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
+        if (minecraft.player == null || minecraft.level == null) {
+            return net.minecraft.world.InteractionResult.PASS;
+        }
+        if (minecraft.player.getItemInHand(hand).getItem() instanceof net.minecraft.world.item.BlockItem) {
+            return net.minecraft.world.InteractionResult.SUCCESS;
+        }
+        if (!minecraft.player.isSecondaryUseActive() && hit.cell().hasBlockEntityNbt()) {
+            return net.minecraft.world.InteractionResult.SUCCESS;
+        }
+        return net.minecraft.world.InteractionResult.SUCCESS;
+    }
+
     private static void sendBreakCommand(PhysicalizedHit hit, PhysicalizedInteractionNetwork.BreakAction action) {
         ClientPacketDistributor.sendToServer(new PhysicalizedInteractionNetwork.BreakCommandPayload(
                 hit.entity().getId(),
@@ -242,6 +255,8 @@ public final class PhysicalizedClientInteractions {
                 hit.cell().localX(),
                 hit.cell().localY(),
                 hit.cell().localZ(),
+                hit.cell().stateId(),
+                hit.entity().snapshot().blockCount(),
                 hit.localLocation().x,
                 hit.localLocation().y,
                 hit.localLocation().z,
@@ -253,6 +268,8 @@ public final class PhysicalizedClientInteractions {
         ClientPacketDistributor.sendToServer(new PhysicalizedInteractionNetwork.BreakCommandPayload(
                 entityId,
                 PhysicalizedInteractionNetwork.BreakAction.STOP.ordinal(),
+                -1,
+                -1,
                 -1,
                 -1,
                 -1,
@@ -270,6 +287,8 @@ public final class PhysicalizedClientInteractions {
                 hit.cell().localX(),
                 hit.cell().localY(),
                 hit.cell().localZ(),
+                hit.cell().stateId(),
+                hit.entity().snapshot().blockCount(),
                 hit.localLocation().x,
                 hit.localLocation().y,
                 hit.localLocation().z,

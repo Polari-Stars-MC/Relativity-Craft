@@ -10,6 +10,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
@@ -31,6 +32,11 @@ import java.util.List;
 import java.util.UUID;
 
 public final class PhysicalizedVolumeEntity extends Entity implements IEntityWithComplexSpawn {
+    private static final double CLIENT_RENDER_MIN_BLEND = 0.12;
+    private static final double CLIENT_RENDER_MAX_BLEND = 0.32;
+    private static final double CLIENT_RENDER_BLEND_SCALE = 0.03;
+    private static final double CLIENT_RENDER_SNAP_DISTANCE_SQR = 256.0;
+
     private static final EntityDataAccessor<String> DATA_VOLUME_ID = SynchedEntityData.defineId(
             PhysicalizedVolumeEntity.class,
             EntityDataSerializers.STRING
@@ -78,6 +84,21 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private int breakLocalY = -1;
     private int breakLocalZ = -1;
     private int breakProgress = -1;
+    private boolean clientRenderPoseReady;
+    private double clientRenderXOld;
+    private double clientRenderYOld;
+    private double clientRenderZOld;
+    private double clientRenderX;
+    private double clientRenderY;
+    private double clientRenderZ;
+    private float clientRenderQxOld;
+    private float clientRenderQyOld;
+    private float clientRenderQzOld;
+    private float clientRenderQwOld = 1.0F;
+    private float clientRenderQx;
+    private float clientRenderQy;
+    private float clientRenderQz;
+    private float clientRenderQw = 1.0F;
 
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
@@ -119,11 +140,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public PhysicalizedVolumeSnapshot snapshot() {
-        return snapshot;
+        return snapshotOrEmpty();
     }
 
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot) {
         this.setSnapshot(snapshot, true);
+    }
+
+    public void updateSnapshotAndSnap(PhysicalizedVolumeSnapshot snapshot, double centerX, double centerY, double centerZ) {
+        this.setSnapshot(snapshot, false);
+        this.snapNativeSnapshot(centerX, centerY, centerZ, this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw());
+        if (!this.level().isClientSide()) {
+            PhysicalizedInteractionNetwork.sendSnapshot(this);
+        }
     }
 
     public void receiveSnapshot(PhysicalizedVolumeSnapshot snapshot) {
@@ -160,6 +189,50 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     public float previousRotationQw() {
         return qwOld;
+    }
+
+    public Vec3 renderPosition(float partialTicks) {
+        if (!clientRenderPoseReady) {
+            return this.getPosition(partialTicks);
+        }
+        double partial = Mth.clamp(partialTicks, 0.0F, 1.0F);
+        return new Vec3(
+                Mth.lerp(partial, clientRenderXOld, clientRenderX),
+                Mth.lerp(partial, clientRenderYOld, clientRenderY),
+                Mth.lerp(partial, clientRenderZOld, clientRenderZ)
+        );
+    }
+
+    public float renderPreviousRotationQx() {
+        return clientRenderPoseReady ? clientRenderQxOld : previousRotationQx();
+    }
+
+    public float renderPreviousRotationQy() {
+        return clientRenderPoseReady ? clientRenderQyOld : previousRotationQy();
+    }
+
+    public float renderPreviousRotationQz() {
+        return clientRenderPoseReady ? clientRenderQzOld : previousRotationQz();
+    }
+
+    public float renderPreviousRotationQw() {
+        return clientRenderPoseReady ? clientRenderQwOld : previousRotationQw();
+    }
+
+    public float renderRotationQx() {
+        return clientRenderPoseReady ? clientRenderQx : rotationQx();
+    }
+
+    public float renderRotationQy() {
+        return clientRenderPoseReady ? clientRenderQy : rotationQy();
+    }
+
+    public float renderRotationQz() {
+        return clientRenderPoseReady ? clientRenderQz : rotationQz();
+    }
+
+    public float renderRotationQw() {
+        return clientRenderPoseReady ? clientRenderQw : rotationQw();
     }
 
     public long nativeBodyHandle() {
@@ -212,6 +285,13 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setDeltaMovement(Vec3.ZERO);
     }
 
+    public void snapNativeSnapshot(double centerX, double centerY, double centerZ, float qx, float qy, float qz, float qw) {
+        this.setPhysicsRotation(qx, qy, qz, qw);
+        this.snapTo(centerX, centerY - this.sizeY() * 0.5, centerZ, this.getYRot(), this.getXRot());
+        this.updatePreviousPhysicsRotation();
+        this.setDeltaMovement(Vec3.ZERO);
+    }
+
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder entityData) {
         entityData.define(DATA_VOLUME_ID, "");
@@ -254,6 +334,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     protected AABB makeBoundingBox(Vec3 position) {
+        PhysicalizedVolumeSnapshot currentSnapshot = snapshotOrEmpty();
         double selectionHalfX = this.sizeX() * 0.5;
         double selectionHalfY = this.sizeY() * 0.5;
         double selectionHalfZ = this.sizeZ() * 0.5;
@@ -261,9 +342,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         double halfY = this.contentSizeY() * 0.5;
         double halfZ = this.contentSizeZ() * 0.5;
         Vec3 localOffset = new Vec3(
-                this.snapshot.occupiedCenterX() - selectionHalfX,
-                this.snapshot.occupiedCenterY() - selectionHalfY,
-                this.snapshot.occupiedCenterZ() - selectionHalfZ
+                currentSnapshot.occupiedCenterX() - selectionHalfX,
+                currentSnapshot.occupiedCenterY() - selectionHalfY,
+                currentSnapshot.occupiedCenterZ() - selectionHalfZ
         );
         double selectionCenterX = position.x;
         double selectionCenterY = position.y + selectionHalfY;
@@ -377,6 +458,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.updatePreviousPhysicsRotation();
         super.tick();
         if (this.level().isClientSide()) {
+            this.advanceClientRenderPose();
             return;
         }
 
@@ -442,12 +524,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         output.putFloat("Qy", this.rotationQy());
         output.putFloat("Qz", this.rotationQz());
         output.putFloat("Qw", this.rotationQw());
-        this.snapshot.write(output);
+        this.snapshot().write(output);
     }
 
     @Override
     public void writeSpawnData(RegistryFriendlyByteBuf buffer) {
-        this.snapshot.write(buffer);
+        this.snapshot().write(buffer);
     }
 
     @Override
@@ -488,6 +570,70 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.qwOld = this.rotationQw();
     }
 
+    private void advanceClientRenderPose() {
+        double actualX = this.getX();
+        double actualY = this.getY();
+        double actualZ = this.getZ();
+        if (!clientRenderPoseReady || squaredDistance(clientRenderX, clientRenderY, clientRenderZ, actualX, actualY, actualZ) > CLIENT_RENDER_SNAP_DISTANCE_SQR) {
+            clientRenderPoseReady = true;
+            clientRenderXOld = actualX;
+            clientRenderYOld = actualY;
+            clientRenderZOld = actualZ;
+            clientRenderX = actualX;
+            clientRenderY = actualY;
+            clientRenderZ = actualZ;
+            clientRenderQxOld = this.rotationQx();
+            clientRenderQyOld = this.rotationQy();
+            clientRenderQzOld = this.rotationQz();
+            clientRenderQwOld = this.rotationQw();
+            clientRenderQx = clientRenderQxOld;
+            clientRenderQy = clientRenderQyOld;
+            clientRenderQz = clientRenderQzOld;
+            clientRenderQw = clientRenderQwOld;
+            return;
+        }
+
+        clientRenderXOld = clientRenderX;
+        clientRenderYOld = clientRenderY;
+        clientRenderZOld = clientRenderZ;
+        clientRenderQxOld = clientRenderQx;
+        clientRenderQyOld = clientRenderQy;
+        clientRenderQzOld = clientRenderQz;
+        clientRenderQwOld = clientRenderQw;
+        double positionBlend = renderBlend(squaredDistance(clientRenderX, clientRenderY, clientRenderZ, actualX, actualY, actualZ));
+        clientRenderX = Mth.lerp(positionBlend, clientRenderX, actualX);
+        clientRenderY = Mth.lerp(positionBlend, clientRenderY, actualY);
+        clientRenderZ = Mth.lerp(positionBlend, clientRenderZ, actualZ);
+
+        SmoothQuaternion next = SmoothQuaternion.slerp(
+                clientRenderQx,
+                clientRenderQy,
+                clientRenderQz,
+                clientRenderQw,
+                this.rotationQx(),
+                this.rotationQy(),
+                this.rotationQz(),
+                this.rotationQw(),
+                positionBlend
+        );
+        clientRenderQx = next.x();
+        clientRenderQy = next.y();
+        clientRenderQz = next.z();
+        clientRenderQw = next.w();
+    }
+
+    private static double squaredDistance(double x1, double y1, double z1, double x2, double y2, double z2) {
+        double dx = x1 - x2;
+        double dy = y1 - y2;
+        double dz = z1 - z2;
+        return dx * dx + dy * dy + dz * dz;
+    }
+
+    private static double renderBlend(double distanceSqr) {
+        double blend = CLIENT_RENDER_MIN_BLEND + Math.sqrt(Math.max(0.0, distanceSqr)) * CLIENT_RENDER_BLEND_SCALE;
+        return Mth.clamp(blend, CLIENT_RENDER_MIN_BLEND, CLIENT_RENDER_MAX_BLEND);
+    }
+
     private void setSnapshot(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients) {
         this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
         this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
@@ -502,16 +648,20 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return Math.max(1, value);
     }
 
+    private PhysicalizedVolumeSnapshot snapshotOrEmpty() {
+        return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
+    }
+
     private int contentSizeX() {
-        return Math.max(1, this.snapshot.occupiedSizeX());
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeX());
     }
 
     private int contentSizeY() {
-        return Math.max(1, this.snapshot.occupiedSizeY());
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeY());
     }
 
     private int contentSizeZ() {
-        return Math.max(1, this.snapshot.occupiedSizeZ());
+        return Math.max(1, this.snapshotOrEmpty().occupiedSizeZ());
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {
@@ -522,5 +672,51 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return InteractionResult.SUCCESS;
         }
         return InteractionResult.PASS;
+    }
+
+    private record SmoothQuaternion(float x, float y, float z, float w) {
+        private static SmoothQuaternion slerp(
+                float fromX,
+                float fromY,
+                float fromZ,
+                float fromW,
+                float toX,
+                float toY,
+                float toZ,
+                float toW,
+                double alpha
+        ) {
+            double dot = fromX * toX + fromY * toY + fromZ * toZ + fromW * toW;
+            if (dot < 0.0) {
+                dot = -dot;
+                toX = -toX;
+                toY = -toY;
+                toZ = -toZ;
+                toW = -toW;
+            }
+
+            double scaleFrom;
+            double scaleTo;
+            if (dot > 0.9995) {
+                scaleFrom = 1.0 - alpha;
+                scaleTo = alpha;
+            } else {
+                double theta = Math.acos(Math.max(-1.0, Math.min(1.0, dot)));
+                double sinTheta = Math.sin(theta);
+                scaleFrom = Math.sin((1.0 - alpha) * theta) / sinTheta;
+                scaleTo = Math.sin(alpha * theta) / sinTheta;
+            }
+
+            float nx = (float) (fromX * scaleFrom + toX * scaleTo);
+            float ny = (float) (fromY * scaleFrom + toY * scaleTo);
+            float nz = (float) (fromZ * scaleFrom + toZ * scaleTo);
+            float nw = (float) (fromW * scaleFrom + toW * scaleTo);
+            float length = nx * nx + ny * ny + nz * nz + nw * nw;
+            if (length <= 1.0E-6F) {
+                return new SmoothQuaternion(0.0F, 0.0F, 0.0F, 1.0F);
+            }
+            float invLength = (float) (1.0 / Math.sqrt(length));
+            return new SmoothQuaternion(nx * invLength, ny * invLength, nz * invLength, nw * invLength);
+        }
     }
 }
