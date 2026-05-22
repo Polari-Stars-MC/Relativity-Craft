@@ -254,6 +254,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     protected AABB makeBoundingBox(Vec3 position) {
+        PhysicalizedVolumeSnapshot snapshot = currentSnapshot();
         double selectionHalfX = this.sizeX() * 0.5;
         double selectionHalfY = this.sizeY() * 0.5;
         double selectionHalfZ = this.sizeZ() * 0.5;
@@ -261,9 +262,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         double halfY = this.contentSizeY() * 0.5;
         double halfZ = this.contentSizeZ() * 0.5;
         Vec3 localOffset = new Vec3(
-                this.snapshot.occupiedCenterX() - selectionHalfX,
-                this.snapshot.occupiedCenterY() - selectionHalfY,
-                this.snapshot.occupiedCenterZ() - selectionHalfZ
+                snapshot.occupiedCenterX() - selectionHalfX,
+                snapshot.occupiedCenterY() - selectionHalfY,
+                snapshot.occupiedCenterZ() - selectionHalfZ
         );
         double selectionCenterX = position.x;
         double selectionCenterY = position.y + selectionHalfY;
@@ -503,15 +504,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private int contentSizeX() {
-        return Math.max(1, this.snapshot.occupiedSizeX());
+        return Math.max(1, currentSnapshot().occupiedSizeX());
     }
 
     private int contentSizeY() {
-        return Math.max(1, this.snapshot.occupiedSizeY());
+        return Math.max(1, currentSnapshot().occupiedSizeY());
     }
 
     private int contentSizeZ() {
-        return Math.max(1, this.snapshot.occupiedSizeZ());
+        return Math.max(1, currentSnapshot().occupiedSizeZ());
+    }
+
+    private PhysicalizedVolumeSnapshot currentSnapshot() {
+        return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

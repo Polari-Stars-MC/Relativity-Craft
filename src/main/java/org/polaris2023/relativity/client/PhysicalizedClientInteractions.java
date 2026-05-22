@@ -78,7 +78,6 @@ public final class PhysicalizedClientInteractions {
     public static void onAttackEntity(AttackEntityEvent event) {
         if (event.getTarget() instanceof PhysicalizedVolumeEntity target) {
             event.setCanceled(true);
-            beginOrContinueBreaking(Minecraft.getInstance(), target, true);
         }
     }
 
@@ -94,12 +93,15 @@ public final class PhysicalizedClientInteractions {
             return;
         }
 
-        PhysicalizedVolumeEntity target = physicalizedTarget(minecraft);
-        if (target == null || target.getId() != breakingEntityId) {
+        Entity entity = minecraft.level.getEntity(breakingEntityId);
+        if (!(entity instanceof PhysicalizedVolumeEntity target) || target.isRemoved()) {
             stopBreaking(minecraft);
             return;
         }
 
+        if (minecraft.player.swingingArm != InteractionHand.MAIN_HAND || !minecraft.player.swinging) {
+            minecraft.player.swing(InteractionHand.MAIN_HAND);
+        }
         beginOrContinueBreaking(minecraft, target, false);
     }
 
