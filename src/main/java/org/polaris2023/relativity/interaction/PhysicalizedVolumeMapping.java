@@ -38,6 +38,15 @@ public final class PhysicalizedVolumeMapping {
     }
 
     public static PhysicalizedVolumeMapping interpolated(PhysicalizedVolumeEntity entity, float partialTicks) {
+        if (entity.level().isClientSide()) {
+            PhysicalizedVolumeEntity.RenderPose renderPose = entity.renderPose(partialTicks);
+            return new PhysicalizedVolumeMapping(
+                    entity,
+                    new Vec3(renderPose.position().x, renderPose.position().y + entity.sizeY() * 0.5, renderPose.position().z),
+                    Quaternion.normalized(renderPose.qx(), renderPose.qy(), renderPose.qz(), renderPose.qw())
+            );
+        }
+
         Vec3 position = entity.getPosition(partialTicks);
         Quaternion previous = Quaternion.normalized(
                 entity.previousRotationQx(),

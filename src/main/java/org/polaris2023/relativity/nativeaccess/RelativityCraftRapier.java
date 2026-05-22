@@ -8,9 +8,11 @@ import java.lang.foreign.GroupLayout;
 import java.lang.foreign.Linker;
 import java.lang.foreign.MemoryLayout;
 import java.lang.foreign.MemorySegment;
+import java.lang.foreign.SegmentAllocator;
 import java.lang.foreign.SymbolLookup;
 import java.lang.foreign.ValueLayout;
 import java.lang.invoke.MethodHandle;
+import java.lang.invoke.WrongMethodTypeException;
 
 public final class RelativityCraftRapier {
     private static final String MODULE = "relativity_craft_rapier";
@@ -35,6 +37,10 @@ public final class RelativityCraftRapier {
         RC_VEC3.withName("mins"),
         RC_VEC3.withName("maxs")
     ).withName("RcAabb");
+    static final GroupLayout RC_INTERACTION_GROUPS = MemoryLayout.structLayout(
+        ValueLayout.JAVA_INT.withName("memberships"),
+        ValueLayout.JAVA_INT.withName("filter")
+    ).withName("RcInteractionGroups");
     private static final SymbolLookup SYMBOL_LOOKUP = RuntimeHelper.load(MODULE, BASENAME, VERSION);
     private static final Linker LINKER = Linker.nativeLinker();
 
@@ -130,6 +136,14 @@ public final class RelativityCraftRapier {
         "rc_rigid_body_add_force_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
+    private static final MethodHandle RC_RIGID_BODY_APPLY_IMPULSE = downcall(
+        "rc_rigid_body_apply_impulse",
+        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
+    );
+    private static final MethodHandle RC_RIGID_BODY_ENABLE_CCD = downcall(
+        "rc_rigid_body_enable_ccd",
+        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
+    );
     private static final MethodHandle RC_RIGID_BODY_SLEEP = downcall(
         "rc_rigid_body_sleep_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
@@ -165,6 +179,14 @@ public final class RelativityCraftRapier {
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_DENSITY = downcall(
         "rc_collider_builder_set_density",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+    );
+    private static final MethodHandle RC_COLLIDER_BUILDER_SET_COLLISION_GROUPS = downcall(
+        "rc_collider_builder_set_collision_groups",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_INTERACTION_GROUPS)
+    );
+    private static final MethodHandle RC_COLLIDER_BUILDER_SET_SOLVER_GROUPS = downcall(
+        "rc_collider_builder_set_solver_groups",
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_INTERACTION_GROUPS)
     );
     private static final MethodHandle RC_WORLD_INSERT_COLLIDER = downcall(
         "rc_world_insert_collider",
@@ -439,6 +461,57 @@ public final class RelativityCraftRapier {
         }
     }
 
+    static RcBool rigidBodyApplyImpulse(MemorySegment world, long handle, RcVec3 impulse, RcBool wakeUp) {
+        try (Arena arena = Arena.ofConfined()) {
+            Object result;
+            try {
+                result = RC_RIGID_BODY_APPLY_IMPULSE.invoke(
+                    (SegmentAllocator) arena,
+                    world,
+                    handle,
+                    encodeVec3(arena, impulse),
+                    encodeBool(arena, wakeUp)
+                );
+            } catch (WrongMethodTypeException ignored) {
+                result = RC_RIGID_BODY_APPLY_IMPULSE.invoke(
+                    world,
+                    handle,
+                    encodeVec3(arena, impulse),
+                    encodeBool(arena, wakeUp)
+                );
+            }
+            if (result instanceof MemorySegment segment) {
+                return decodeBool(segment);
+            }
+            if (result instanceof Byte value) {
+                return RcBool.of(value != 0);
+            }
+            throw new IllegalStateException("Unexpected rc_rigid_body_apply_impulse return type: " + result);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_rigid_body_apply_impulse", t);
+        }
+    }
+
+    static RcBool rigidBodyEnableCcd(MemorySegment world, long handle, RcBool enabled) {
+        try (Arena arena = Arena.ofConfined()) {
+            Object result;
+            try {
+                result = RC_RIGID_BODY_ENABLE_CCD.invoke((SegmentAllocator) arena, world, handle, encodeBool(arena, enabled));
+            } catch (WrongMethodTypeException ignored) {
+                result = RC_RIGID_BODY_ENABLE_CCD.invoke(world, handle, encodeBool(arena, enabled));
+            }
+            if (result instanceof MemorySegment segment) {
+                return decodeBool(segment);
+            }
+            if (result instanceof Byte value) {
+                return RcBool.of(value != 0);
+            }
+            throw new IllegalStateException("Unexpected rc_rigid_body_enable_ccd return type: " + result);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_rigid_body_enable_ccd", t);
+        }
+    }
+
     static RcBool rigidBodySleep(MemorySegment world, long handle) {
         try {
             return RcBool.of((byte) RC_RIGID_BODY_SLEEP.invokeExact(world, handle) != 0);
@@ -504,6 +577,22 @@ public final class RelativityCraftRapier {
             RC_COLLIDER_BUILDER_SET_DENSITY.invokeExact(builder, density);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_collider_builder_set_density", t);
+        }
+    }
+
+    static void colliderBuilderSetCollisionGroups(MemorySegment builder, RcInteractionGroups groups) {
+        try {
+            RC_COLLIDER_BUILDER_SET_COLLISION_GROUPS.invokeExact(builder, encodeInteractionGroups(Arena.ofAuto(), groups));
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_collider_builder_set_collision_groups", t);
+        }
+    }
+
+    static void colliderBuilderSetSolverGroups(MemorySegment builder, RcInteractionGroups groups) {
+        try {
+            RC_COLLIDER_BUILDER_SET_SOLVER_GROUPS.invokeExact(builder, encodeInteractionGroups(Arena.ofAuto(), groups));
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_collider_builder_set_solver_groups", t);
         }
     }
 
@@ -600,6 +689,13 @@ public final class RelativityCraftRapier {
         MemorySegment segment = arena.allocate(RC_AABB);
         encodeVec3(aabb.mins(), segment.asSlice(0, RC_VEC3.byteSize()));
         encodeVec3(aabb.maxs(), segment.asSlice(RC_VEC3.byteSize(), RC_VEC3.byteSize()));
+        return segment;
+    }
+
+    static MemorySegment encodeInteractionGroups(Arena arena, RcInteractionGroups groups) {
+        MemorySegment segment = arena.allocate(RC_INTERACTION_GROUPS);
+        segment.set(ValueLayout.JAVA_INT, 0, groups.memberships());
+        segment.set(ValueLayout.JAVA_INT, 4, groups.filter());
         return segment;
     }
 

@@ -89,7 +89,7 @@ public final class RelativityCommands {
         entity.setPos(selection.centerX(), selection.minY(), selection.centerZ());
         level.addFreshEntity(entity);
         PhysicsWorldManager.global().register(entity);
-        BlockRemovalQueue.global().enqueue(dimensionId, selection);
+        BlockRemovalQueue.global().enqueue(dimensionId, selection, handle.id());
 
         return 1;
     }

@@ -1,8 +1,10 @@
 package org.polaris2023.relativity.entity;
 
 import org.polaris2023.relativity.physicalization.BlockBox;
+import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
+import org.polaris2023.relativity.interaction.PhysicalizedVolumeLookup;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -10,6 +12,7 @@ import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.util.Mth;
 import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
@@ -28,9 +31,16 @@ import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.entity.IEntityWithComplexSpawn;
 
 import java.util.List;
+import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
 
 public final class PhysicalizedVolumeEntity extends Entity implements IEntityWithComplexSpawn {
+    private static final long CLIENT_RENDER_POSE_INTERPOLATION_NANOS = 50_000_000L;
+    private static final double CLIENT_RENDER_POSITION_EPSILON_SQR = 1.0E-8;
+    private static final double CLIENT_RENDER_ROTATION_EPSILON = 1.0E-6;
+    private static final double CLIENT_RENDER_SNAP_DISTANCE_SQR = 64.0;
+
     private static final EntityDataAccessor<String> DATA_VOLUME_ID = SynchedEntityData.defineId(
             PhysicalizedVolumeEntity.class,
             EntityDataSerializers.STRING
@@ -86,6 +96,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private float qyOld = 0.0F;
     private float qzOld = 0.0F;
     private float qwOld = 1.0F;
+    private boolean clientRenderPoseInitialized;
+    private Vec3 clientRenderStartPosition = Vec3.ZERO;
+    private Vec3 clientRenderTargetPosition = Vec3.ZERO;
+    private float clientRenderStartQx = 0.0F;
+    private float clientRenderStartQy = 0.0F;
+    private float clientRenderStartQz = 0.0F;
+    private float clientRenderStartQw = 1.0F;
+    private float clientRenderTargetQx = 0.0F;
+    private float clientRenderTargetQy = 0.0F;
+    private float clientRenderTargetQz = 0.0F;
+    private float clientRenderTargetQw = 1.0F;
+    private long clientRenderPoseStartNanos;
+    private final Map<Long, Integer> virtualContainerOpenCounts = new HashMap<>();
     private int breakLocalX = -1;
     private int breakLocalY = -1;
     private int breakLocalZ = -1;
@@ -93,7 +116,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
-        this.blocksBuilding = true;
+        this.blocksBuilding = false;
     }
 
     public void configure(UUID volumeId, BlockBox sourceBox, int blockCount) {
@@ -102,6 +125,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
         this.entityData.set(DATA_BLOCK_COUNT, blockCount);
         this.refreshDimensions();
+        PhysicalizedVolumeLookup.track(this);
     }
 
     public void configure(UUID volumeId, BlockBox sourceBox, PhysicalizedVolumeSnapshot snapshot) {
@@ -110,6 +134,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setSizes(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
         this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
         this.refreshDimensions();
+        PhysicalizedVolumeLookup.track(this);
     }
 
     public String volumeIdString() {
@@ -194,6 +219,13 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     public float previousRotationQw() {
         return qwOld;
+    }
+
+    public RenderPose renderPose(float partialTicks) {
+        if (!this.level().isClientSide()) {
+            return tickInterpolatedPose(partialTicks);
+        }
+        return updateClientRenderPose(System.nanoTime());
     }
 
     public long nativeBodyHandle() {
@@ -407,6 +439,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         }
     }
 
+    public void setVirtualContainerOpenCount(int localX, int localY, int localZ, int openCount) {
+        long key = packLocal(localX, localY, localZ);
+        if (openCount <= 0) {
+            this.virtualContainerOpenCounts.remove(key);
+        } else {
+            this.virtualContainerOpenCounts.put(key, openCount);
+        }
+    }
+
+    public boolean isVirtualContainerOpen(PhysicalizedBlockSnapshot cell) {
+        return this.virtualContainerOpenCounts.getOrDefault(packLocal(cell.localX(), cell.localY(), cell.localZ()), 0) > 0;
+    }
+
     private record LocalBounds(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
     }
 
@@ -417,12 +462,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public boolean isPushable() {
-        return !this.isRemoved();
+        return false;
     }
 
     @Override
     public boolean canBeCollidedWith(Entity other) {
-        return !this.isRemoved();
+        return false;
     }
 
     @Override
@@ -466,6 +511,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public void tick() {
         this.updatePreviousPhysicsRotation();
         super.tick();
+        PhysicalizedVolumeLookup.track(this);
         if (this.level().isClientSide()) {
             return;
         }
@@ -492,6 +538,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     @Override
     public void onRemoval(RemovalReason reason) {
         super.onRemoval(reason);
+        PhysicalizedVolumeLookup.untrack(this);
         if (!this.level().isClientSide()) {
             PhysicsWorldManager.global().unregister(this);
         }
@@ -601,6 +648,161 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.qwOld = this.rotationQw();
     }
 
+    private RenderPose tickInterpolatedPose(float partialTicks) {
+        float progress = Mth.clamp(partialTicks, 0.0F, 1.0F);
+        Rotation rotation = slerpRotation(
+                this.previousRotationQx(),
+                this.previousRotationQy(),
+                this.previousRotationQz(),
+                this.previousRotationQw(),
+                this.rotationQx(),
+                this.rotationQy(),
+                this.rotationQz(),
+                this.rotationQw(),
+                progress
+        );
+        return new RenderPose(this.getPosition(progress), rotation.qx(), rotation.qy(), rotation.qz(), rotation.qw());
+    }
+
+    private RenderPose updateClientRenderPose(long nowNanos) {
+        Rotation targetRotation = normalizedRotation(this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw());
+        Vec3 targetPosition = this.position();
+
+        if (!this.clientRenderPoseInitialized) {
+            snapClientRenderPose(targetPosition, targetRotation, nowNanos);
+            return new RenderPose(targetPosition, targetRotation.qx(), targetRotation.qy(), targetRotation.qz(), targetRotation.qw());
+        }
+
+        RenderPose currentPose = currentClientRenderPose(nowNanos);
+        if (clientRenderTargetChanged(targetPosition, targetRotation)) {
+            if (currentPose.position().distanceToSqr(targetPosition) > CLIENT_RENDER_SNAP_DISTANCE_SQR) {
+                snapClientRenderPose(targetPosition, targetRotation, nowNanos);
+                return new RenderPose(targetPosition, targetRotation.qx(), targetRotation.qy(), targetRotation.qz(), targetRotation.qw());
+            }
+
+            this.clientRenderStartPosition = currentPose.position();
+            this.clientRenderStartQx = currentPose.qx();
+            this.clientRenderStartQy = currentPose.qy();
+            this.clientRenderStartQz = currentPose.qz();
+            this.clientRenderStartQw = currentPose.qw();
+            this.clientRenderTargetPosition = targetPosition;
+            this.clientRenderTargetQx = targetRotation.qx();
+            this.clientRenderTargetQy = targetRotation.qy();
+            this.clientRenderTargetQz = targetRotation.qz();
+            this.clientRenderTargetQw = targetRotation.qw();
+            this.clientRenderPoseStartNanos = nowNanos;
+            return currentPose;
+        }
+
+        return currentPose;
+    }
+
+    private RenderPose currentClientRenderPose(long nowNanos) {
+        float progress = Mth.clamp(
+                (float) (nowNanos - this.clientRenderPoseStartNanos) / (float) CLIENT_RENDER_POSE_INTERPOLATION_NANOS,
+                0.0F,
+                1.0F
+        );
+        Vec3 position = new Vec3(
+                Mth.lerp(progress, this.clientRenderStartPosition.x, this.clientRenderTargetPosition.x),
+                Mth.lerp(progress, this.clientRenderStartPosition.y, this.clientRenderTargetPosition.y),
+                Mth.lerp(progress, this.clientRenderStartPosition.z, this.clientRenderTargetPosition.z)
+        );
+        Rotation rotation = slerpRotation(
+                this.clientRenderStartQx,
+                this.clientRenderStartQy,
+                this.clientRenderStartQz,
+                this.clientRenderStartQw,
+                this.clientRenderTargetQx,
+                this.clientRenderTargetQy,
+                this.clientRenderTargetQz,
+                this.clientRenderTargetQw,
+                progress
+        );
+        return new RenderPose(position, rotation.qx(), rotation.qy(), rotation.qz(), rotation.qw());
+    }
+
+    private boolean clientRenderTargetChanged(Vec3 targetPosition, Rotation targetRotation) {
+        if (this.clientRenderTargetPosition.distanceToSqr(targetPosition) > CLIENT_RENDER_POSITION_EPSILON_SQR) {
+            return true;
+        }
+
+        double dot = Math.abs(this.clientRenderTargetQx * targetRotation.qx()
+                + this.clientRenderTargetQy * targetRotation.qy()
+                + this.clientRenderTargetQz * targetRotation.qz()
+                + this.clientRenderTargetQw * targetRotation.qw());
+        return 1.0 - dot > CLIENT_RENDER_ROTATION_EPSILON;
+    }
+
+    private void snapClientRenderPose(Vec3 targetPosition, Rotation targetRotation, long nowNanos) {
+        this.clientRenderPoseInitialized = true;
+        this.clientRenderStartPosition = targetPosition;
+        this.clientRenderTargetPosition = targetPosition;
+        this.clientRenderStartQx = targetRotation.qx();
+        this.clientRenderStartQy = targetRotation.qy();
+        this.clientRenderStartQz = targetRotation.qz();
+        this.clientRenderStartQw = targetRotation.qw();
+        this.clientRenderTargetQx = targetRotation.qx();
+        this.clientRenderTargetQy = targetRotation.qy();
+        this.clientRenderTargetQz = targetRotation.qz();
+        this.clientRenderTargetQw = targetRotation.qw();
+        this.clientRenderPoseStartNanos = nowNanos;
+    }
+
+    private static Rotation normalizedRotation(float qx, float qy, float qz, float qw) {
+        double length = Math.sqrt(qx * qx + qy * qy + qz * qz + qw * qw);
+        if (length <= 1.0E-6) {
+            return new Rotation(0.0F, 0.0F, 0.0F, 1.0F);
+        }
+        return new Rotation((float) (qx / length), (float) (qy / length), (float) (qz / length), (float) (qw / length));
+    }
+
+    private static Rotation slerpRotation(
+            float fromQx,
+            float fromQy,
+            float fromQz,
+            float fromQw,
+            float toQx,
+            float toQy,
+            float toQz,
+            float toQw,
+            float progress
+    ) {
+        Rotation from = normalizedRotation(fromQx, fromQy, fromQz, fromQw);
+        Rotation to = normalizedRotation(toQx, toQy, toQz, toQw);
+        double targetX = to.qx();
+        double targetY = to.qy();
+        double targetZ = to.qz();
+        double targetW = to.qw();
+        double dot = from.qx() * targetX + from.qy() * targetY + from.qz() * targetZ + from.qw() * targetW;
+        if (dot < 0.0) {
+            dot = -dot;
+            targetX = -targetX;
+            targetY = -targetY;
+            targetZ = -targetZ;
+            targetW = -targetW;
+        }
+
+        double fromScale;
+        double toScale;
+        if (dot > 0.9995) {
+            fromScale = 1.0 - progress;
+            toScale = progress;
+        } else {
+            double theta = Math.acos(Mth.clamp(dot, -1.0, 1.0));
+            double sinTheta = Math.sin(theta);
+            fromScale = Math.sin((1.0 - progress) * theta) / sinTheta;
+            toScale = Math.sin(progress * theta) / sinTheta;
+        }
+
+        return normalizedRotation(
+                (float) (from.qx() * fromScale + targetX * toScale),
+                (float) (from.qy() * fromScale + targetY * toScale),
+                (float) (from.qz() * fromScale + targetZ * toScale),
+                (float) (from.qw() * fromScale + targetW * toScale)
+        );
+    }
+
     private void setSnapshot(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients, Vec3 localOrigin) {
         this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
         this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
@@ -637,6 +839,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return current.sizeZ() * 0.5;
     }
 
+    private static long packLocal(int x, int y, int z) {
+        return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
     private int contentSizeX() {
         return Math.max(1, currentSnapshot().occupiedSizeX());
     }
@@ -661,5 +867,11 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return InteractionResult.SUCCESS;
         }
         return InteractionResult.PASS;
+    }
+
+    public record RenderPose(Vec3 position, float qx, float qy, float qz, float qw) {
+    }
+
+    private record Rotation(float qx, float qy, float qz, float qw) {
     }
 }

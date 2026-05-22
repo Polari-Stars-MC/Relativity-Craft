@@ -58,7 +58,7 @@ public final class PhysicalizedRaycaster {
         }
         Vec3 end = origin.add(normalizedDirection.scale(maxDistance));
         AABB swept = new AABB(origin, end).inflate(QUERY_EPSILON);
-        List<PhysicalizedVolumeEntity> candidates = candidates(level, swept, maxDistance);
+        List<PhysicalizedVolumeEntity> candidates = candidates(level, swept, useInterpolatedPose, partialTicks);
 
         PhysicalizedHit best = null;
         for (PhysicalizedVolumeEntity entity : candidates) {
@@ -122,55 +122,64 @@ public final class PhysicalizedRaycaster {
         }
         Vec3 localTo = localFrom.add(localDirection.scale(maxDistance));
         AABB localRayBounds = new AABB(localFrom, localTo).inflate(1.0 + QUERY_EPSILON);
+        int minX = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.minX), 0, entity.snapshot().sizeX() - 1);
+        int minY = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.minY), 0, entity.snapshot().sizeY() - 1);
+        int minZ = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.minZ), 0, entity.snapshot().sizeZ() - 1);
+        int maxX = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.maxX), 0, entity.snapshot().sizeX() - 1);
+        int maxY = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.maxY), 0, entity.snapshot().sizeY() - 1);
+        int maxZ = net.minecraft.util.Mth.clamp(net.minecraft.util.Mth.floor(localRayBounds.maxZ), 0, entity.snapshot().sizeZ() - 1);
 
         PhysicalizedHit best = null;
         PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(entity.snapshot());
-        for (PhysicalizedBlockSnapshot cell : entity.snapshot().cells()) {
-            if (cell.localX() + 1.0 < localRayBounds.minX || cell.localX() > localRayBounds.maxX
-                    || cell.localY() + 1.0 < localRayBounds.minY || cell.localY() > localRayBounds.maxY
-                    || cell.localZ() + 1.0 < localRayBounds.minZ || cell.localZ() > localRayBounds.maxZ) {
-                continue;
-            }
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    PhysicalizedBlockSnapshot cell = entity.snapshot().cellAt(x, y, z).orElse(null);
+                    if (cell == null) {
+                        continue;
+                    }
 
-            BlockPos localBlockPos = mapping.localBlockPos(cell);
-            VoxelShape shape = cell.state().getShape(localLevel, localBlockPos, CollisionContext.empty());
-            BlockHitResult blockHit = null;
-            if (shape.isEmpty()) {
-                shape = cell.state().getCollisionShape(localLevel, localBlockPos, CollisionContext.empty());
-                blockHit = shape.clip(localFrom, localTo, localBlockPos);
-            } else {
-                blockHit = localLevel.clipWithInteractionOverride(localFrom, localTo, localBlockPos, shape, cell.state());
-            }
-            if (shape.isEmpty()) {
-                continue;
-            }
+                    BlockPos localBlockPos = mapping.localBlockPos(cell);
+                    VoxelShape shape = cell.state().getShape(localLevel, localBlockPos, CollisionContext.empty());
+                    BlockHitResult blockHit;
+                    if (shape.isEmpty()) {
+                        shape = cell.state().getCollisionShape(localLevel, localBlockPos, CollisionContext.empty());
+                        blockHit = shape.clip(localFrom, localTo, localBlockPos);
+                    } else {
+                        blockHit = localLevel.clipWithInteractionOverride(localFrom, localTo, localBlockPos, shape, cell.state());
+                    }
+                    if (shape.isEmpty()) {
+                        continue;
+                    }
 
-            if (blockHit == null || blockHit.getType() == HitResult.Type.MISS) {
-                continue;
-            }
+                    if (blockHit == null || blockHit.getType() == HitResult.Type.MISS) {
+                        continue;
+                    }
 
-            Vec3 localLocation = blockHit.getLocation();
-            double localDistance = localFrom.distanceTo(localLocation);
-            if (localDistance > maxDistance + QUERY_EPSILON) {
-                continue;
-            }
+                    Vec3 localLocation = blockHit.getLocation();
+                    double localDistance = localFrom.distanceTo(localLocation);
+                    if (localDistance > maxDistance + QUERY_EPSILON) {
+                        continue;
+                    }
 
-            Vec3 worldLocation = mapping.localToWorld(localLocation);
-            double worldDistance = origin.distanceTo(worldLocation);
-            Direction localFace = resolveLocalFace(blockHit.getDirection(), cell, localLocation, localDirection);
-            Direction worldFace = mapping.localFaceToWorld(localFace);
-            PhysicalizedHit hit = new PhysicalizedHit(
-                    entity,
-                    cell,
-                    worldLocation,
-                    mapping.localToCentered(localLocation),
-                    worldFace,
-                    localFace,
-                    mapping.visualBlockPos(cell),
-                    worldDistance
-            );
-            if (best == null || hit.distance() < best.distance()) {
-                best = hit;
+                    Vec3 worldLocation = mapping.localToWorld(localLocation);
+                    double worldDistance = origin.distanceTo(worldLocation);
+                    Direction localFace = resolveLocalFace(blockHit.getDirection(), cell, localLocation, localDirection);
+                    Direction worldFace = mapping.localFaceToWorld(localFace);
+                    PhysicalizedHit hit = new PhysicalizedHit(
+                            entity,
+                            cell,
+                            worldLocation,
+                            mapping.localToCentered(localLocation),
+                            worldFace,
+                            localFace,
+                            mapping.visualBlockPos(cell),
+                            worldDistance
+                    );
+                    if (best == null || hit.distance() < best.distance()) {
+                        best = hit;
+                    }
+                }
             }
         }
         return Optional.ofNullable(best);
@@ -217,11 +226,13 @@ public final class PhysicalizedRaycaster {
                 + localDirection.z * face.getStepZ());
     }
 
-    private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, double maxDistance) {
+    private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, boolean useInterpolatedPose, float partialTicks) {
         List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
         AABB broadPhase = swept.inflate(QUERY_EPSILON);
         for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level)) {
-            PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
+            PhysicalizedVolumeMapping mapping = useInterpolatedPose
+                    ? PhysicalizedVolumeMapping.interpolated(entity, partialTicks)
+                    : PhysicalizedVolumeMapping.current(entity);
             if (PhysicalizedVolumeLookup.localVolumeIntersects(entity, mapping, broadPhase, 1.0 + QUERY_EPSILON)) {
                 candidates.add(entity);
             }
