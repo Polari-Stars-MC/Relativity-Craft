@@ -10,6 +10,9 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public float sizeX = 1.0F;
     public float sizeY = 1.0F;
     public float sizeZ = 1.0F;
+    public float localOriginX = 0.5F;
+    public float localOriginY = 0.5F;
+    public float localOriginZ = 0.5F;
     public float qx = 0.0F;
     public float qy = 0.0F;
     public float qz = 0.0F;

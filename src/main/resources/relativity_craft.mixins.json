@@ -2,7 +2,16 @@
   "required": true,
   "package": "org.polaris2023.relativity.mixin",
   "compatibilityLevel": "JAVA_25",
-  "mixins": [],
+  "mixins": [
+    "BlockGetterMixin",
+    "CollisionGetterMixin",
+    "EntityGetterMixin",
+    "LevelEntityGetterAccessor"
+  ],
+  "client": [
+    "LevelRendererMixin",
+    "MinecraftPickMixin"
+  ],
   "injectors": {
     "defaultRequire": 1
   },
