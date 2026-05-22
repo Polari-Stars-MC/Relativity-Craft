@@ -34,6 +34,7 @@ public final class PhysicalizedInteractionHandler {
     private static final double PLACEMENT_EPSILON = 1.0E-4;
     private static final Map<BreakKey, Float> BREAK_PROGRESS = new ConcurrentHashMap<>();
     private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new ConcurrentHashMap<>();
+    private static final Map<UUID, BreakAttempt> LAST_BREAK_ATTEMPT = new ConcurrentHashMap<>();
 
     private PhysicalizedInteractionHandler() {
     }
@@ -90,6 +91,13 @@ public final class PhysicalizedInteractionHandler {
         }
 
         BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ());
+        long gameTime = level.getGameTime();
+        BreakAttempt lastAttempt = LAST_BREAK_ATTEMPT.get(player.getUUID());
+        if (lastAttempt != null && lastAttempt.gameTime() == gameTime && lastAttempt.key().equals(key)) {
+            return true;
+        }
+        LAST_BREAK_ATTEMPT.put(player.getUUID(), new BreakAttempt(key, gameTime));
+
         BreakKey previous = ACTIVE_BREAKS.put(player.getUUID(), key);
         if (previous != null && !previous.equals(key)) {
             clearBreak(level, previous);
@@ -123,6 +131,7 @@ public final class PhysicalizedInteractionHandler {
             return;
         }
         BREAK_PROGRESS.remove(key);
+        LAST_BREAK_ATTEMPT.remove(player.getUUID());
         if (player.level() instanceof ServerLevel level) {
             clearBreak(level, key);
         }
@@ -298,5 +307,8 @@ public final class PhysicalizedInteractionHandler {
     }
 
     private record BreakKey(UUID playerId, int entityId, int localX, int localY, int localZ) {
+    }
+
+    private record BreakAttempt(BreakKey key, long gameTime) {
     }
 }
