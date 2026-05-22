@@ -4,6 +4,7 @@ import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.interaction.PhysicalizedHit;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
+import org.polaris2023.relativity.interaction.PhysicalizedRaycaster;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeMapping;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
@@ -11,11 +12,18 @@ import net.minecraft.core.Direction;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
+import net.minecraft.network.protocol.game.ClientboundSetHeldSlotPacket;
 import net.minecraft.resources.Identifier;
 import net.minecraft.server.level.ServerPlayer;
+import net.minecraft.util.ProblemReporter;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.player.Inventory;
+import net.minecraft.world.item.BlockItem;
+import net.minecraft.world.item.ItemStack;
+import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.level.storage.TagValueOutput;
 import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
@@ -31,11 +39,21 @@ public final class PhysicalizedInteractionNetwork {
                 .playToClient(SnapshotPayload.TYPE, SnapshotPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleSnapshot)
                 .playToClient(BreakOverlayPayload.TYPE, BreakOverlayPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakOverlay)
                 .playToServer(UseCommandPayload.TYPE, UseCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleUseCommand)
-                .playToServer(BreakCommandPayload.TYPE, BreakCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakCommand);
+                .playToServer(BreakCommandPayload.TYPE, BreakCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakCommand)
+                .playToServer(PickCommandPayload.TYPE, PickCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handlePickCommand);
     }
 
     public static void sendSnapshot(PhysicalizedVolumeEntity entity) {
-        PacketDistributor.sendToPlayersTrackingEntityAndSelf(entity, new SnapshotPayload(entity.getId(), entity.snapshot()));
+        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                entity,
+                new SnapshotPayload(
+                        entity.getId(),
+                        entity.snapshot(),
+                        entity.localOriginX(),
+                        entity.localOriginY(),
+                        entity.localOriginZ()
+                )
+        );
     }
 
     public static void sendBreakOverlay(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, int progress) {
@@ -48,7 +66,7 @@ public final class PhysicalizedInteractionNetwork {
     private static void handleSnapshot(SnapshotPayload payload, IPayloadContext context) {
         Entity entity = context.player().level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
-            volume.receiveSnapshot(payload.snapshot());
+            volume.receiveSnapshot(payload.snapshot(), new Vec3(payload.localOriginX(), payload.localOriginY(), payload.localOriginZ()));
         }
     }
 
@@ -71,11 +89,20 @@ public final class PhysicalizedInteractionNetwork {
         if (action == BreakAction.STOP) {
             PhysicalizedInteractionHandler.stopBreaking(player, volume);
         } else {
-            hitFromPayload(player, volume, payload.localX(), payload.localY(), payload.localZ(), payload.localHitX(), payload.localHitY(), payload.localHitZ(), payload.localFace())
-                    .ifPresentOrElse(
-                            hit -> PhysicalizedInteractionHandler.continueBreakingHit(player, hit),
-                            () -> PhysicalizedInteractionHandler.continueBreaking(player, volume)
-                    );
+            Optional<PhysicalizedHit> hit = hitFromPayload(
+                    player,
+                    volume,
+                    payload.localX(),
+                    payload.localY(),
+                    payload.localZ(),
+                    payload.localHitX(),
+                    payload.localHitY(),
+                    payload.localHitZ(),
+                    payload.localFace()
+            ).or(() -> fallbackHit(player, volume));
+            if (hit.isPresent()) {
+                PhysicalizedInteractionHandler.continueBreakingHit(player, hit.get());
+            }
         }
     }
 
@@ -85,12 +112,105 @@ public final class PhysicalizedInteractionNetwork {
         }
         Entity entity = player.level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
-            hitFromPayload(player, volume, payload.localX(), payload.localY(), payload.localZ(), payload.localHitX(), payload.localHitY(), payload.localHitZ(), payload.localFace())
-                    .ifPresentOrElse(
-                            hit -> PhysicalizedInteractionHandler.useHit(player, handById(payload.hand()), hit),
-                            () -> PhysicalizedInteractionHandler.use(player, handById(payload.hand()), volume)
-                    );
+            Optional<PhysicalizedHit> hit = hitFromPayload(
+                    player,
+                    volume,
+                    payload.localX(),
+                    payload.localY(),
+                    payload.localZ(),
+                    payload.localHitX(),
+                    payload.localHitY(),
+                    payload.localHitZ(),
+                    payload.localFace()
+            ).or(() -> fallbackHit(player, volume));
+            if (hit.isPresent()) {
+                if (!PhysicalizedInteractionHandler.useHit(player, handById(payload.hand()), hit.get()).consumesAction()) {
+                    sendSnapshot(volume);
+                }
+            } else {
+                sendSnapshot(volume);
+            }
         }
+    }
+
+    private static void handlePickCommand(PickCommandPayload payload, IPayloadContext context) {
+        if (!(context.player() instanceof ServerPlayer player)) {
+            return;
+        }
+        Entity entity = player.level().getEntity(payload.entityId());
+        if (!(entity instanceof PhysicalizedVolumeEntity volume)) {
+            return;
+        }
+        Optional<PhysicalizedHit> hit = hitFromPayload(
+                player,
+                volume,
+                payload.localX(),
+                payload.localY(),
+                payload.localZ(),
+                payload.localHitX(),
+                payload.localHitY(),
+                payload.localHitZ(),
+                payload.localFace()
+        ).or(() -> fallbackHit(player, volume));
+        if (hit.isEmpty()) {
+            return;
+        }
+
+        ItemStack stack = pickStack(player, hit.get(), payload.includeData());
+        tryPickItem(player, stack);
+    }
+
+    private static ItemStack pickStack(ServerPlayer player, PhysicalizedHit hit, boolean includeData) {
+        boolean includeBlockEntityData = includeData && player.hasInfiniteMaterials();
+        ItemStack stack = hit.cell().state().getCloneItemStack(player.level(), hit.visualBlockPos(), includeBlockEntityData);
+        if (stack.isEmpty() || !includeBlockEntityData || !hit.cell().hasBlockEntityNbt()) {
+            return stack;
+        }
+
+        BlockEntity blockEntity = BlockEntity.loadStatic(
+                hit.visualBlockPos(),
+                hit.cell().state(),
+                hit.cell().blockEntityNbt(),
+                player.level().registryAccess()
+        );
+        if (blockEntity == null || !(stack.getItem() instanceof BlockItem)) {
+            return stack;
+        }
+
+        TagValueOutput output = TagValueOutput.createWithContext(ProblemReporter.DISCARDING, player.level().registryAccess());
+        blockEntity.saveCustomOnly(output);
+        BlockItem.setBlockEntityData(stack, blockEntity.getType(), output);
+        return stack;
+    }
+
+    private static void tryPickItem(ServerPlayer player, ItemStack stack) {
+        if (stack.isEmpty() || !stack.isItemEnabled(player.level().enabledFeatures())) {
+            return;
+        }
+
+        Inventory inventory = player.getInventory();
+        int slot = inventory.findSlotMatchingItem(stack);
+        if (slot != -1) {
+            if (Inventory.isHotbarSlot(slot)) {
+                inventory.setSelectedSlot(slot);
+            } else {
+                inventory.pickSlot(slot);
+            }
+        } else if (player.hasInfiniteMaterials()) {
+            inventory.addAndPickItem(stack);
+        }
+
+        player.connection.send(new ClientboundSetHeldSlotPacket(inventory.getSelectedSlot()));
+        player.inventoryMenu.broadcastChanges();
+    }
+
+    private static Optional<PhysicalizedHit> fallbackHit(ServerPlayer player, PhysicalizedVolumeEntity volume) {
+        return PhysicalizedRaycaster.raycastEntity(
+                volume,
+                player.getEyePosition(),
+                player.getLookAngle().normalize(),
+                Math.max(4.5, player.blockInteractionRange())
+        );
     }
 
     private static Optional<PhysicalizedHit> hitFromPayload(
@@ -147,7 +267,13 @@ public final class PhysicalizedInteractionNetwork {
         }
     }
 
-    public record SnapshotPayload(int entityId, PhysicalizedVolumeSnapshot snapshot) implements CustomPacketPayload {
+    public record SnapshotPayload(
+            int entityId,
+            PhysicalizedVolumeSnapshot snapshot,
+            double localOriginX,
+            double localOriginY,
+            double localOriginZ
+    ) implements CustomPacketPayload {
         public static final CustomPacketPayload.Type<SnapshotPayload> TYPE = new CustomPacketPayload.Type<>(
                 Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_snapshot")
         );
@@ -157,12 +283,21 @@ public final class PhysicalizedInteractionNetwork {
         );
 
         private static SnapshotPayload read(RegistryFriendlyByteBuf buffer) {
-            return new SnapshotPayload(buffer.readVarInt(), PhysicalizedVolumeSnapshot.read(buffer));
+            return new SnapshotPayload(
+                    buffer.readVarInt(),
+                    PhysicalizedVolumeSnapshot.read(buffer),
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readDouble()
+            );
         }
 
         private void write(RegistryFriendlyByteBuf buffer) {
             buffer.writeVarInt(entityId);
             snapshot.write(buffer);
+            buffer.writeDouble(localOriginX);
+            buffer.writeDouble(localOriginY);
+            buffer.writeDouble(localOriginZ);
         }
 
         @Override
@@ -292,6 +427,57 @@ public final class PhysicalizedInteractionNetwork {
             buffer.writeDouble(localHitY);
             buffer.writeDouble(localHitZ);
             buffer.writeVarInt(localFace);
+        }
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    public record PickCommandPayload(
+            int entityId,
+            int localX,
+            int localY,
+            int localZ,
+            double localHitX,
+            double localHitY,
+            double localHitZ,
+            int localFace,
+            boolean includeData
+    ) implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<PickCommandPayload> TYPE = new CustomPacketPayload.Type<>(
+                Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_pick_command")
+        );
+        public static final StreamCodec<RegistryFriendlyByteBuf, PickCommandPayload> STREAM_CODEC = StreamCodec.of(
+                (buffer, payload) -> payload.write(buffer),
+                PickCommandPayload::read
+        );
+
+        private static PickCommandPayload read(RegistryFriendlyByteBuf buffer) {
+            return new PickCommandPayload(
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readVarInt(),
+                    buffer.readBoolean()
+            );
+        }
+
+        private void write(RegistryFriendlyByteBuf buffer) {
+            buffer.writeVarInt(entityId);
+            buffer.writeVarInt(localX);
+            buffer.writeVarInt(localY);
+            buffer.writeVarInt(localZ);
+            buffer.writeDouble(localHitX);
+            buffer.writeDouble(localHitY);
+            buffer.writeDouble(localHitZ);
+            buffer.writeVarInt(localFace);
+            buffer.writeBoolean(includeData);
         }
 
         @Override

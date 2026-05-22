@@ -16,17 +16,17 @@ public final class PhysicalizedVolumeMapping {
     private final PhysicalizedVolumeEntity entity;
     private final Quaternion rotation;
     private final Vec3 center;
-    private final double halfX;
-    private final double halfY;
-    private final double halfZ;
+    private final double originX;
+    private final double originY;
+    private final double originZ;
 
     private PhysicalizedVolumeMapping(PhysicalizedVolumeEntity entity, Vec3 center, Quaternion rotation) {
         this.entity = entity;
         this.center = center;
         this.rotation = rotation;
-        this.halfX = entity.sizeX() * 0.5;
-        this.halfY = entity.sizeY() * 0.5;
-        this.halfZ = entity.sizeZ() * 0.5;
+        this.originX = entity.localOriginX();
+        this.originY = entity.localOriginY();
+        this.originZ = entity.localOriginZ();
     }
 
     public static PhysicalizedVolumeMapping current(PhysicalizedVolumeEntity entity) {
@@ -60,11 +60,11 @@ public final class PhysicalizedVolumeMapping {
 
     public Vec3 worldToLocal(Vec3 world) {
         Vec3 centered = rotation.inverseRotate(world.subtract(center));
-        return new Vec3(centered.x + halfX, centered.y + halfY, centered.z + halfZ);
+        return new Vec3(centered.x + originX, centered.y + originY, centered.z + originZ);
     }
 
     public Vec3 localToWorld(Vec3 local) {
-        return center.add(rotation.rotate(new Vec3(local.x - halfX, local.y - halfY, local.z - halfZ)));
+        return center.add(rotation.rotate(new Vec3(local.x - originX, local.y - originY, local.z - originZ)));
     }
 
     public Vec3 worldToCenteredLocal(Vec3 world) {
@@ -72,7 +72,7 @@ public final class PhysicalizedVolumeMapping {
     }
 
     public Vec3 localToCentered(Vec3 local) {
-        return new Vec3(local.x - halfX, local.y - halfY, local.z - halfZ);
+        return new Vec3(local.x - originX, local.y - originY, local.z - originZ);
     }
 
     public Vec3 centeredLocalToWorld(Vec3 centeredLocal) {
