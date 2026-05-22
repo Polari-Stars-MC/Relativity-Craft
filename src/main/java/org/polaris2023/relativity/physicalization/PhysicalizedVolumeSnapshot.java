@@ -21,7 +21,9 @@ import net.minecraft.world.level.storage.ValueOutput;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public final class PhysicalizedVolumeSnapshot {
@@ -33,12 +35,18 @@ public final class PhysicalizedVolumeSnapshot {
     private final int sizeY;
     private final int sizeZ;
     private final List<PhysicalizedBlockSnapshot> cells;
+    private final Map<Long, PhysicalizedBlockSnapshot> cellsByKey;
 
     public PhysicalizedVolumeSnapshot(int sizeX, int sizeY, int sizeZ, List<PhysicalizedBlockSnapshot> cells) {
         this.sizeX = Math.max(1, sizeX);
         this.sizeY = Math.max(1, sizeY);
         this.sizeZ = Math.max(1, sizeZ);
         this.cells = List.copyOf(cells);
+        Map<Long, PhysicalizedBlockSnapshot> mapped = new HashMap<>(Math.max(16, this.cells.size() * 2));
+        for (PhysicalizedBlockSnapshot cell : this.cells) {
+            mapped.put(pack(cell.localX(), cell.localY(), cell.localZ()), cell);
+        }
+        this.cellsByKey = Map.copyOf(mapped);
     }
 
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
@@ -210,13 +218,11 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public Optional<PhysicalizedBlockSnapshot> cellAt(int localX, int localY, int localZ) {
-        long key = pack(localX, localY, localZ);
-        for (PhysicalizedBlockSnapshot cell : cells) {
-            if (pack(cell.localX(), cell.localY(), cell.localZ()) == key) {
-                return Optional.of(cell);
-            }
-        }
-        return Optional.empty();
+        return Optional.ofNullable(cellsByKey.get(pack(localX, localY, localZ)));
+    }
+
+    public Map<Long, PhysicalizedBlockSnapshot> cellsByKeyView() {
+        return cellsByKey;
     }
 
     public PhysicalizedVolumeSnapshot withoutCell(PhysicalizedBlockSnapshot removedCell) {

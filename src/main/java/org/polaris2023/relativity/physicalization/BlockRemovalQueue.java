@@ -6,6 +6,7 @@ import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 
 import java.util.Queue;
+import java.util.UUID;
 import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class BlockRemovalQueue {
@@ -24,7 +25,11 @@ public final class BlockRemovalQueue {
     }
 
     public void enqueue(String dimensionId, BlockBox box) {
-        jobs.add(new BlockRemovalJob(dimensionId, box));
+        jobs.add(new BlockRemovalJob(dimensionId, box, null));
+    }
+
+    public void enqueue(String dimensionId, BlockBox box, UUID virtualAirMaskId) {
+        jobs.add(new BlockRemovalJob(dimensionId, box, virtualAirMaskId));
     }
 
     public int drain(ServerLevel level, long budgetNanos) {
@@ -50,13 +55,15 @@ public final class BlockRemovalQueue {
     private static final class BlockRemovalJob {
         private final String dimensionId;
         private final BlockBox box;
+        private final UUID virtualAirMaskId;
         private final long sizeXZ;
         private final long volume;
         private long cursor;
 
-        BlockRemovalJob(String dimensionId, BlockBox box) {
+        BlockRemovalJob(String dimensionId, BlockBox box, UUID virtualAirMaskId) {
             this.dimensionId = dimensionId;
             this.box = box;
+            this.virtualAirMaskId = virtualAirMaskId;
             this.sizeXZ = (long) box.sizeX() * box.sizeZ();
             this.volume = box.volume();
         }
@@ -77,7 +84,13 @@ public final class BlockRemovalQueue {
                     level.setBlock(pos, Blocks.AIR.defaultBlockState(), REMOVE_FLAGS);
                 }
             }
-            return cursor >= volume;
+            if (cursor < volume) {
+                return false;
+            }
+            if (virtualAirMaskId != null) {
+                PhysicalizedVolumeManager.global().virtualAirMask().remove(virtualAirMaskId);
+            }
+            return true;
         }
     }
 }

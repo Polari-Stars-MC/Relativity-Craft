@@ -50,6 +50,14 @@ public final class RcWorld implements AutoCloseable {
         return RelativityCraftRapier.rigidBodyAddForce(handle, rigidBodyHandle, force, RcBool.of(wakeUp));
     }
 
+    public RcBool applyRigidBodyImpulse(long rigidBodyHandle, RcVec3 impulse, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodyApplyImpulse(handle, rigidBodyHandle, impulse, RcBool.of(wakeUp));
+    }
+
+    public RcBool enableRigidBodyCcd(long rigidBodyHandle, boolean enabled) {
+        return RelativityCraftRapier.rigidBodyEnableCcd(handle, rigidBodyHandle, RcBool.of(enabled));
+    }
+
     public long insertCollider(RcColliderBuilder builder) {
         return RelativityCraftRapier.worldInsertCollider(handle, builder.handle());
     }

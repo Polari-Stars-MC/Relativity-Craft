@@ -2,6 +2,7 @@ package org.polaris2023.relativity.world;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.FluidDomainManager;
 import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.nativeaccess.RcVec3;
@@ -70,7 +71,7 @@ public final class PhysicsWorldManager {
 
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null) {
-            state.unregister(entity);
+            state.unregister(level, entity);
         }
         entity.setNativeBodyHandle(0L);
     }
@@ -144,13 +145,17 @@ public final class PhysicsWorldManager {
     }
 
     public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance) {
+        pushBodies(level, sweptBox, direction, distance, null);
+    }
+
+    public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance, PhysicalizedVolumeEntity excluded) {
         if (!RelativityCraft.isRapierAvailable()) {
             warnNativeUnavailableOnce();
             return;
         }
 
         LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
-        state.pushBodies(level, sweptBox, direction, distance);
+        state.pushBodies(level, sweptBox, direction, distance, excluded == null ? -1 : excluded.getId());
     }
 
     private static String dimensionId(ServerLevel level) {
@@ -167,18 +172,28 @@ public final class PhysicsWorldManager {
     private static final class LevelPhysicsState {
         private final RapierNativeWorld world = new RapierNativeWorld(0.0, GRAVITY_Y, 0.0);
         private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world);
+        private final WaterSurfaceColliderManager waterSurfaces = new WaterSurfaceColliderManager(world);
         private final Map<Integer, Long> bodyByEntityId = new ConcurrentHashMap<>();
         private final Map<Long, Integer> entityIdByBody = new ConcurrentHashMap<>();
+        private final Map<String, Long> bodyByVolumeId = new ConcurrentHashMap<>();
+        private final Map<Long, String> volumeIdByBody = new ConcurrentHashMap<>();
+        private final Map<Long, RuntimeBodyMapping> mappingByBody = new ConcurrentHashMap<>();
+        private final Map<Long, TerrainFootprint> terrainFootprintsByBody = new ConcurrentHashMap<>();
         private final Set<ChunkSectionKey> requestedTerrainSections = ConcurrentHashMap.newKeySet();
         private final Set<ChunkSectionKey> backgroundQueuedSections = ConcurrentHashMap.newKeySet();
         private final Set<ChunkSectionKey> priorityQueuedSections = ConcurrentHashMap.newKeySet();
         private final ArrayDeque<TerrainBuildJob> backgroundTerrainJobs = new ArrayDeque<>();
         private final ArrayDeque<TerrainBuildJob> priorityTerrainJobs = new ArrayDeque<>();
 
+        private FluidDomainManager fluids(ServerLevel level) {
+            return FluidDomainManager.forLevel(level);
+        }
+
         boolean register(ServerLevel level, PhysicalizedVolumeEntity entity) {
             Long existingBody = bodyByEntityId.get(entity.getId());
             if (existingBody != null) {
                 entity.setNativeBodyHandle(existingBody);
+                trackBody(entity, existingBody);
                 return true;
             }
 
@@ -191,7 +206,7 @@ public final class PhysicsWorldManager {
             }
 
             trackBody(entity, body);
-            requestTerrainAround(level, terrainBounds, false, false);
+            requestTerrainAroundBody(level, body, terrainBounds, false, false);
             return true;
         }
 
@@ -199,44 +214,46 @@ public final class PhysicsWorldManager {
             long oldBody = entity.nativeBodyHandle();
             RcVec3 linearVelocity = oldBody == 0L ? RcVec3.ZERO : world.getBodyLinearVelocity(oldBody);
             if (oldBody != 0L) {
-                bodyByEntityId.remove(entity.getId());
-                entityIdByBody.remove(oldBody);
+                untrackBody(level, entity, oldBody);
                 world.removeBody(oldBody);
                 entity.setNativeBodyHandle(0L);
             } else {
                 Long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != null) {
-                    entityIdByBody.remove(removed);
+                    untrackBody(level, entity, removed);
                     world.removeBody(removed);
                 }
             }
 
             AABB terrainBounds = entity.getBoundingBox();
-            buildTerrainImmediately(level, terrainBounds);
+            if (oldBody == 0L) {
+                buildTerrainImmediately(level, terrainBounds);
+            } else {
+                requestTerrainAround(level, terrainBounds, false, true);
+            }
             long nextBody = insertBody(entity, linearVelocity);
             if (nextBody == 0L) {
                 return false;
             }
 
             trackBody(entity, nextBody);
-            requestTerrainAround(level, terrainBounds, false, false);
+            requestTerrainAroundBody(level, nextBody, terrainBounds, false, false);
             world.wakeUp(nextBody);
             return true;
         }
 
-        void unregister(PhysicalizedVolumeEntity entity) {
+        void unregister(ServerLevel level, PhysicalizedVolumeEntity entity) {
             long body = entity.nativeBodyHandle();
             if (body == 0L) {
                 Long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != null) {
-                    entityIdByBody.remove(removed);
+                    untrackBody(level, entity, removed);
                     world.removeBody(removed);
                 }
                 return;
             }
 
-            bodyByEntityId.remove(entity.getId());
-            entityIdByBody.remove(body);
+            untrackBody(level, entity, body);
             world.removeBody(body);
         }
 
@@ -262,12 +279,35 @@ public final class PhysicsWorldManager {
             entity.setNativeBodyHandle(body);
             bodyByEntityId.put(entity.getId(), body);
             entityIdByBody.put(body, entity.getId());
+            String volumeId = entity.volumeIdString();
+            if (!volumeId.isEmpty()) {
+                bodyByVolumeId.put(volumeId, body);
+                volumeIdByBody.put(body, volumeId);
+            }
+            mappingByBody.put(body, RuntimeBodyMapping.dynamic(entity.getId(), volumeId, body));
+        }
+
+        private void untrackBody(ServerLevel level, PhysicalizedVolumeEntity entity, long body) {
+            bodyByEntityId.remove(entity.getId());
+            entityIdByBody.remove(body);
+            fluids(level).forget(entity);
+            String volumeId = volumeIdByBody.remove(body);
+            if (volumeId == null || volumeId.isEmpty()) {
+                volumeId = entity.volumeIdString();
+            }
+            if (!volumeId.isEmpty()) {
+                bodyByVolumeId.remove(volumeId, body);
+            }
+            mappingByBody.remove(body);
+            terrainFootprintsByBody.remove(body);
         }
 
         void tick(ServerLevel level) {
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
             drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
+            updateWaterSurfaceColliders(level);
             for (int i = 0; i < SUBSTEPS_PER_SERVER_TICK; i++) {
+                applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS);
                 world.step(PHYSICS_SUBSTEP_SECONDS);
             }
 
@@ -281,8 +321,17 @@ public final class PhysicsWorldManager {
 
                 Entity entity = level.getEntity(entityId);
                 if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) {
+                    if (entity instanceof PhysicalizedVolumeEntity removedVolume) {
+                        fluids(level).forget(removedVolume);
+                    }
                     entityIdByBody.remove(body);
                     bodyByEntityId.values().remove(body);
+                    String volumeId = volumeIdByBody.remove(body);
+                    if (volumeId != null) {
+                        bodyByVolumeId.remove(volumeId, body);
+                    }
+                    mappingByBody.remove(body);
+                    terrainFootprintsByBody.remove(body);
                     world.removeBody(body);
                     continue;
                 }
@@ -296,7 +345,7 @@ public final class PhysicsWorldManager {
                         (float) snapshot[i + 6],
                         (float) snapshot[i + 7]
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false, false);
+                requestTerrainAroundBody(level, body, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -306,6 +355,26 @@ public final class PhysicsWorldManager {
             for (Direction direction : Direction.values()) {
                 markSectionDirty(level, pos.relative(direction));
             }
+        }
+
+        private void applyFluidForces(ServerLevel level, double deltaSeconds) {
+            for (Map.Entry<Long, Integer> entry : entityIdByBody.entrySet()) {
+                Entity entity = level.getEntity(entry.getValue());
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    fluids(level).applyFluidForces(level, world, volume, deltaSeconds);
+                }
+            }
+        }
+
+        private void updateWaterSurfaceColliders(ServerLevel level) {
+            long gameTime = level.getGameTime();
+            for (Map.Entry<Long, Integer> entry : entityIdByBody.entrySet()) {
+                Entity entity = level.getEntity(entry.getValue());
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    waterSurfaces.requestAround(level, volume.getBoundingBox(), gameTime);
+                }
+            }
+            waterSurfaces.drain(level, fluids(level), gameTime);
         }
 
         void markBlockNeighborhoodChanged(ServerLevel level, BlockPos pos) {
@@ -352,12 +421,14 @@ public final class PhysicsWorldManager {
             for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
                 ChunkSectionKey key = new ChunkSectionKey(dimensionId, chunkX, sectionY, chunkZ);
                 terrain.removeSection(key);
+                fluids(level).unload(key);
                 requestedTerrainSections.remove(key);
                 cancelQueuedBuild(key);
             }
+            waterSurfaces.removeChunk(dimensionId, chunkX, chunkZ);
         }
 
-        void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance) {
+        void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance, int excludedEntityId) {
             double dx = direction.getStepX() * distance;
             double dy = direction.getStepY() * distance;
             double dz = direction.getStepZ() * distance;
@@ -367,6 +438,9 @@ public final class PhysicsWorldManager {
             AABB queryBox = sweptBox.inflate(0.0625);
 
             for (PhysicalizedVolumeEntity volume : level.getEntitiesOfClass(PhysicalizedVolumeEntity.class, queryBox)) {
+                if (volume.getId() == excludedEntityId) {
+                    continue;
+                }
                 if (volume.isRemoved() || !volume.getBoundingBox().inflate(0.03125).intersects(queryBox)) {
                     continue;
                 }
@@ -392,7 +466,7 @@ public final class PhysicsWorldManager {
                         volume.rotationQz(),
                         volume.rotationQw()
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false, false);
+                requestTerrainAroundBody(level, body, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -410,6 +484,19 @@ public final class PhysicsWorldManager {
         }
 
         private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
+            requestTerrainAround(level, terrainFootprint(level, box), refreshExisting, prioritize);
+        }
+
+        private void requestTerrainAroundBody(ServerLevel level, long body, AABB box, boolean refreshExisting, boolean prioritize) {
+            TerrainFootprint footprint = terrainFootprint(level, box);
+            if (!refreshExisting && !prioritize && footprint.equals(terrainFootprintsByBody.get(body))) {
+                return;
+            }
+            terrainFootprintsByBody.put(body, footprint);
+            requestTerrainAround(level, footprint, refreshExisting, prioritize);
+        }
+
+        private TerrainFootprint terrainFootprint(ServerLevel level, AABB box) {
             String dimensionId = dimensionId(level);
             int minX = (int) Math.floor(box.minX) - TERRAIN_MARGIN_BLOCKS;
             int minY = Math.max(level.getMinY(), (int) Math.floor(box.minY) - TERRAIN_MARGIN_BLOCKS);
@@ -424,11 +511,14 @@ public final class PhysicsWorldManager {
             int maxSectionX = ChunkSectionKey.floorDiv16(maxX);
             int maxSectionY = ChunkSectionKey.floorDiv16(maxY);
             int maxSectionZ = ChunkSectionKey.floorDiv16(maxZ);
+            return new TerrainFootprint(dimensionId, minSectionX, minSectionY, minSectionZ, maxSectionX, maxSectionY, maxSectionZ);
+        }
 
-            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
-                for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
-                    for (int sx = minSectionX; sx <= maxSectionX; sx++) {
-                        ChunkSectionKey key = new ChunkSectionKey(dimensionId, sx, sy, sz);
+        private void requestTerrainAround(ServerLevel level, TerrainFootprint footprint, boolean refreshExisting, boolean prioritize) {
+            for (int sy = footprint.minSectionY(); sy <= footprint.maxSectionY(); sy++) {
+                for (int sz = footprint.minSectionZ(); sz <= footprint.maxSectionZ(); sz++) {
+                    for (int sx = footprint.minSectionX(); sx <= footprint.maxSectionX(); sx++) {
+                        ChunkSectionKey key = new ChunkSectionKey(footprint.dimensionId(), sx, sy, sz);
                         if (refreshExisting || requestedTerrainSections.add(key)) {
                             requestedTerrainSections.add(key);
                             if (refreshExisting) {
@@ -483,6 +573,23 @@ public final class PhysicsWorldManager {
                 jobs.remove();
                 queuedSections.remove(job.key());
                 terrain.replaceSectionMesh(job.key(), job.vertices(), job.indices());
+            }
+        }
+
+        private record TerrainFootprint(
+                String dimensionId,
+                int minSectionX,
+                int minSectionY,
+                int minSectionZ,
+                int maxSectionX,
+                int maxSectionY,
+                int maxSectionZ
+        ) {
+        }
+
+        private record RuntimeBodyMapping(int entityId, String volumeId, long bodyHandle, boolean dynamic, boolean inCollision) {
+            static RuntimeBodyMapping dynamic(int entityId, String volumeId, long bodyHandle) {
+                return new RuntimeBodyMapping(entityId, volumeId, bodyHandle, true, false);
             }
         }
     }

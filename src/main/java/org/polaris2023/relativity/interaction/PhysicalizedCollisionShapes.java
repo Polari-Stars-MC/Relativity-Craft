@@ -1,6 +1,7 @@
 package org.polaris2023.relativity.interaction;
 
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.SimulatedWaterEntityPhysics;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
@@ -30,19 +31,19 @@ public final class PhysicalizedCollisionShapes {
     }
 
     public static List<VoxelShape> blockCollisions(CollisionGetter getter, Entity source, AABB queryBox) {
-        if (!(getter instanceof Level level) || source instanceof PhysicalizedVolumeEntity || queryBox.getSize() < QUERY_EPSILON) {
-            return List.of();
-        }
-
-        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
-        if (volumes.isEmpty()) {
+        if (!(getter instanceof Level level)
+                || source instanceof PhysicalizedVolumeEntity
+                || !usesPhysicalizedCollision(source)
+                || queryBox.getSize() < QUERY_EPSILON) {
             return List.of();
         }
 
         List<VoxelShape> shapes = new ArrayList<>();
+        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
         for (PhysicalizedVolumeEntity volume : volumes) {
             collectVolumeShapes(volume, source, queryBox, shapes);
         }
+        shapes.addAll(SimulatedWaterEntityPhysics.waterSurfaceCollisions(getter, source, queryBox));
         return shapes;
     }
 
@@ -69,36 +70,39 @@ public final class PhysicalizedCollisionShapes {
         PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
         PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(volume.snapshot());
         AABB localQuery = mapping.localAabbOfWorld(queryBox.inflate(QUERY_EPSILON)).inflate(1.0);
-        int minX = Mth.floor(localQuery.minX) - 1;
-        int minY = Mth.floor(localQuery.minY) - 1;
-        int minZ = Mth.floor(localQuery.minZ) - 1;
-        int maxX = Mth.floor(localQuery.maxX) + 1;
-        int maxY = Mth.floor(localQuery.maxY) + 1;
-        int maxZ = Mth.floor(localQuery.maxZ) + 1;
+        int minX = Mth.clamp(Mth.floor(localQuery.minX) - 1, 0, volume.snapshot().sizeX() - 1);
+        int minY = Mth.clamp(Mth.floor(localQuery.minY) - 1, 0, volume.snapshot().sizeY() - 1);
+        int minZ = Mth.clamp(Mth.floor(localQuery.minZ) - 1, 0, volume.snapshot().sizeZ() - 1);
+        int maxX = Mth.clamp(Mth.floor(localQuery.maxX) + 1, 0, volume.snapshot().sizeX() - 1);
+        int maxY = Mth.clamp(Mth.floor(localQuery.maxY) + 1, 0, volume.snapshot().sizeY() - 1);
+        int maxZ = Mth.clamp(Mth.floor(localQuery.maxZ) + 1, 0, volume.snapshot().sizeZ() - 1);
         CollisionContext context = collisionContext(source, mapping);
 
-        for (PhysicalizedBlockSnapshot cell : volume.snapshot().cells()) {
-            if (cell.localX() < minX || cell.localX() > maxX
-                    || cell.localY() < minY || cell.localY() > maxY
-                    || cell.localZ() < minZ || cell.localZ() > maxZ) {
-                continue;
-            }
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    PhysicalizedBlockSnapshot cell = volume.snapshot().cellAt(x, y, z).orElse(null);
+                    if (cell == null) {
+                        continue;
+                    }
 
-            BlockState state = cell.state();
-            if (state.isAir()) {
-                continue;
-            }
+                    BlockState state = cell.state();
+                    if (state.isAir()) {
+                        continue;
+                    }
 
-            BlockPos localPos = mapping.localBlockPos(cell);
-            VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
-            if (localShape.isEmpty()) {
-                continue;
-            }
+                    BlockPos localPos = mapping.localBlockPos(cell);
+                    VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
+                    if (localShape.isEmpty()) {
+                        continue;
+                    }
 
-            for (AABB localPart : localShape.toAabbs()) {
-                AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
-                if (worldPart.intersects(queryBox)) {
-                    output.accept(worldPart);
+                    for (AABB localPart : localShape.toAabbs()) {
+                        AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
+                        if (worldPart.intersects(queryBox)) {
+                            output.accept(worldPart);
+                        }
+                    }
                 }
             }
         }
@@ -112,6 +116,13 @@ public final class PhysicalizedCollisionShapes {
                 && entity.isAlive()
                 && !entity.noPhysics
                 && EntitySelector.NO_SPECTATORS.test(entity);
+    }
+
+    private static boolean usesPhysicalizedCollision(Entity source) {
+        if (source instanceof Player player) {
+            return !player.isSpectator();
+        }
+        return true;
     }
 
     private static void pushOutOfVolume(PhysicalizedVolumeEntity volume, Entity entity) {

@@ -7,8 +7,10 @@ import org.polaris2023.relativity.interaction.PhysicalizedBlockPlaceContext;
 import org.polaris2023.relativity.interaction.PhysicalizedHit;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
 import org.polaris2023.relativity.interaction.PhysicalizedRaycaster;
+import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeMapping;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
+import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import com.mojang.blaze3d.platform.InputConstants;
 import net.minecraft.client.Minecraft;
@@ -25,6 +27,10 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.ButtonBlock;
+import net.minecraft.world.level.block.LeverBlock;
+import net.minecraft.world.level.block.RedStoneWireBlock;
+import net.minecraft.world.level.block.RepeaterBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
@@ -47,7 +53,9 @@ import java.util.Optional;
 public final class PhysicalizedClientInteractions {
     private static final int CREATIVE_DESTROY_DELAY_TICKS = 5;
     private static final int PLACEMENT_VISUAL_PREDICTION_TICKS = 10;
+    private static final double HIT_DISTANCE_TOLERANCE = 0.05;
     private static final Map<Integer, PredictedPlacement> PREDICTED_PLACEMENTS = new HashMap<>();
+    private static LastUseCommand lastUseCommand;
     private static int breakingEntityId = -1;
     private static int breakingLocalX = -1;
     private static int breakingLocalY = -1;
@@ -88,7 +96,7 @@ public final class PhysicalizedClientInteractions {
         if (event.isPickBlock()) {
             event.setCanceled(true);
             event.setSwingHand(false);
-            sendPickCommand(hit.get(), hasControlDown(minecraft));
+            pickPhysicalizedHit(minecraft, hasControlDown(minecraft));
             return;
         }
 
@@ -175,12 +183,76 @@ public final class PhysicalizedClientInteractions {
     }
 
     private static boolean usePhysicalizedHit(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand, boolean swingHand) {
+        if (isDuplicateUseCommand(minecraft, hit, hand)) {
+            return true;
+        }
+
+        boolean blockPlacementAttempt = minecraft.player != null && minecraft.player.getItemInHand(hand).getItem() instanceof BlockItem;
+        PlacementPredictionResult placementPrediction = predictCreativePlacement(minecraft, hit, hand);
+        if (placementPrediction == PlacementPredictionResult.DUPLICATE || placementPrediction == PlacementPredictionResult.FAILED) {
+            return true;
+        }
+
+        rememberUseCommand(minecraft, hit, hand);
         sendUseCommand(hit, hand);
-        boolean predictedPlacement = predictCreativePlacement(minecraft, hit, hand);
-        if (swingHand && minecraft.player != null
-                && (predictedPlacement || minecraft.player.getItemInHand(hand).getItem() instanceof BlockItem)) {
+        if (swingHand && minecraft.player != null && (!blockPlacementAttempt || placementPrediction == PlacementPredictionResult.PREDICTED)) {
             minecraft.player.swing(hand);
         }
+        return true;
+    }
+
+    public static boolean useTargetedPhysicalizedHit(Minecraft minecraft, InteractionHand hand, boolean swingHand) {
+        Optional<PhysicalizedHit> hit = physicalizedHit(minecraft);
+        if (hit.isEmpty()) {
+            return false;
+        }
+        return usePhysicalizedHit(minecraft, hit.get(), hand, swingHand);
+    }
+
+    public static boolean pickPhysicalizedHit(Minecraft minecraft, boolean includeData) {
+        Optional<PhysicalizedHit> hit = physicalizedHit(minecraft);
+        if (hit.isEmpty()) {
+            return false;
+        }
+        sendPickCommand(hit.get(), includeData);
+        return true;
+    }
+
+    public static boolean attackPhysicalizedHit(Minecraft minecraft, boolean swingHand) {
+        return attackPhysicalizedHit(minecraft, swingHand, true, false);
+    }
+
+    public static boolean attackPhysicalizedHit(Minecraft minecraft, boolean swingHand, boolean resetIfNewTarget) {
+        return attackPhysicalizedHit(minecraft, swingHand, resetIfNewTarget, false);
+    }
+
+    public static boolean attackCurrentPhysicalizedHit(Minecraft minecraft, boolean swingHand, boolean resetIfNewTarget) {
+        return attackPhysicalizedHit(minecraft, swingHand, resetIfNewTarget, true);
+    }
+
+    private static boolean attackPhysicalizedHit(Minecraft minecraft, boolean swingHand, boolean resetIfNewTarget, boolean requireCurrentHit) {
+        Optional<PhysicalizedHit> hit = requireCurrentHit ? currentPhysicalizedHit(minecraft) : physicalizedHit(minecraft);
+        if (hit.isEmpty()) {
+            return false;
+        }
+
+        PhysicalizedHit physicalizedHit = hit.get();
+        if (minecraft.player != null && minecraft.player.getAbilities().instabuild) {
+            creativeBreak(minecraft, physicalizedHit, swingHand);
+        } else {
+            beginOrContinueBreaking(minecraft, physicalizedHit.entity(), resetIfNewTarget);
+            if (swingHand && minecraft.player != null) {
+                minecraft.player.swing(InteractionHand.MAIN_HAND);
+            }
+        }
+        return true;
+    }
+
+    public static boolean stopPhysicalizedBreaking(Minecraft minecraft) {
+        if (breakingEntityId < 0) {
+            return false;
+        }
+        stopBreaking(minecraft);
         return true;
     }
 
@@ -214,14 +286,17 @@ public final class PhysicalizedClientInteractions {
         clearLocalBreakingState();
     }
 
-    private static boolean predictCreativePlacement(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
+    private static PlacementPredictionResult predictCreativePlacement(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
         if (minecraft.player == null || !minecraft.player.getAbilities().instabuild || hit.entity().isRemoved()) {
-            return false;
+            return PlacementPredictionResult.NOT_ATTEMPTED;
         }
 
         ItemStack stack = minecraft.player.getItemInHand(hand);
         if (!(stack.getItem() instanceof BlockItem blockItem)) {
-            return false;
+            return PlacementPredictionResult.NOT_ATTEMPTED;
+        }
+        if (!minecraft.player.isSecondaryUseActive() && shouldPreferPhysicalizedBlockUse(hit)) {
+            return PlacementPredictionResult.NOT_ATTEMPTED;
         }
 
         PhysicalizedVolumeEntity entity = hit.entity();
@@ -231,7 +306,7 @@ public final class PhysicalizedClientInteractions {
         if (localX >= 0 && localY >= 0 && localZ >= 0
                 && localX < entity.snapshot().sizeX() && localY < entity.snapshot().sizeY() && localZ < entity.snapshot().sizeZ()
                 && entity.snapshot().cellAt(localX, localY, localZ).isPresent()) {
-            return false;
+            return PlacementPredictionResult.FAILED;
         }
 
         BlockPos targetPos = PhysicalizedInteractionHandler.placementTarget(hit);
@@ -245,10 +320,18 @@ public final class PhysicalizedClientInteractions {
         );
         BlockState placementState = blockItem.getBlock().getStateForPlacement(context);
         if (placementState == null || placementState.isAir()) {
-            return false;
+            return PlacementPredictionResult.FAILED;
         }
-        if (!context.canPlace()) {
-            return false;
+        if (!PhysicalizedInteractionHandler.canPlacePhysicalizedState(
+                context,
+                placementState,
+                entity,
+                localX,
+                localY,
+                localZ,
+                minecraft.player.getAbilities().instabuild
+        )) {
+            return PlacementPredictionResult.FAILED;
         }
 
         PhysicalizedVolumeMapping oldMapping = PhysicalizedVolumeMapping.current(entity);
@@ -257,12 +340,67 @@ public final class PhysicalizedClientInteractions {
         int placedX = localX + placement.shiftX();
         int placedY = localY + placement.shiftY();
         int placedZ = localZ + placement.shiftZ();
+        PhysicalizedBlockSnapshot placedCell = placement.snapshot().cellAt(placedX, placedY, placedZ).orElse(null);
+        if (placedCell != null) {
+            BlockState refreshedState = PhysicalizedRedstoneMapping.refreshPlacedState(
+                    placement.snapshot(),
+                    placedX,
+                    placedY,
+                    placedZ,
+                    placementState
+            );
+            if (!refreshedState.equals(placementState)) {
+                placementState = refreshedState;
+                placement = new PhysicalizedVolumeSnapshot.ExpandedPlacement(
+                        placement.snapshot().withCellState(placedCell, refreshedState, placedCell.blockEntityNbt()),
+                        placement.shiftX(),
+                        placement.shiftY(),
+                        placement.shiftZ()
+                );
+            }
+        }
+        if (isPendingPredictedPlacement(entity, placedX, placedY, placedZ, placementState)) {
+            return PlacementPredictionResult.DUPLICATE;
+        }
+
         Vec3 nextCenter = futureCenter(entity, oldMapping, placement.snapshot());
         Vec3 nextOrigin = futureLocalOrigin(entity, oldMapping, placement);
         Vec3 placedCenter = futureCellCenter(oldMapping, nextCenter, nextOrigin, placedX, placedY, placedZ);
         rememberPredictedPlacement(entity, placement.snapshot(), nextOrigin, placedX, placedY, placedZ, placementState);
         playCreativePlaceEffects(minecraft, placedCenter, placementState);
-        return true;
+        return PlacementPredictionResult.PREDICTED;
+    }
+
+    private static boolean shouldPreferPhysicalizedBlockUse(PhysicalizedHit hit) {
+        BlockState state = hit.cell().state();
+        return hit.cell().hasBlockEntityNbt()
+                || state.getBlock() instanceof LeverBlock
+                || state.getBlock() instanceof ButtonBlock
+                || state.getBlock() instanceof RepeaterBlock
+                || state.getBlock() instanceof RedStoneWireBlock;
+    }
+
+    private static boolean isPendingPredictedPlacement(
+            PhysicalizedVolumeEntity entity,
+            int localX,
+            int localY,
+            int localZ,
+            BlockState state
+    ) {
+        PredictedPlacement prediction = PREDICTED_PLACEMENTS.get(entity.getId());
+        if (prediction == null) {
+            return false;
+        }
+        long gameTime = entity.level().getGameTime();
+        if (gameTime > prediction.expiresAtGameTime()
+                || entity.snapshot().blockCount() != prediction.baseBlockCount()) {
+            PREDICTED_PLACEMENTS.remove(entity.getId());
+            return false;
+        }
+        return prediction.localX() == localX
+                && prediction.localY() == localY
+                && prediction.localZ() == localZ
+                && prediction.stateId() == Block.getId(state);
     }
 
     private static void rememberPredictedPlacement(
@@ -289,6 +427,22 @@ public final class PhysicalizedClientInteractions {
     private static boolean hasControlDown(Minecraft minecraft) {
         return InputConstants.isKeyDown(minecraft.getWindow(), InputConstants.KEY_LCONTROL)
                 || InputConstants.isKeyDown(minecraft.getWindow(), InputConstants.KEY_RCONTROL);
+    }
+
+    private static boolean isDuplicateUseCommand(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
+        if (minecraft.level == null || minecraft.player == null || lastUseCommand == null) {
+            return false;
+        }
+        long gameTime = minecraft.level.getGameTime();
+        return gameTime - lastUseCommand.gameTime() <= 1L
+                && lastUseCommand.matches(hit, hand, System.identityHashCode(minecraft.player.getItemInHand(hand).getItem()));
+    }
+
+    private static void rememberUseCommand(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
+        if (minecraft.level == null || minecraft.player == null) {
+            return;
+        }
+        lastUseCommand = LastUseCommand.of(minecraft.level.getGameTime(), hit, hand, minecraft.player.getItemInHand(hand));
     }
 
     private static void clearLocalBreakingState() {
@@ -584,15 +738,40 @@ public final class PhysicalizedClientInteractions {
         if (minecraft.level == null || minecraft.player == null) {
             return Optional.empty();
         }
-        if (minecraft.hitResult instanceof PhysicalizedBlockHitResult physicalizedBlockHitResult) {
-            return Optional.of(physicalizedBlockHitResult.physicalizedHit());
+        Optional<PhysicalizedHit> current = currentPhysicalizedHit(minecraft);
+        if (current.isPresent()) {
+            return current;
         }
 
         float partialTick = clientPartialTick(minecraft);
         Vec3 origin = minecraft.player.getEyePosition(partialTick);
         Vec3 direction = minecraft.player.getViewVector(partialTick).normalize();
         double reach = Math.max(4.5, minecraft.player.blockInteractionRange());
-        return PhysicalizedRaycaster.raycast(minecraft.level, origin, direction, reach, partialTick);
+        Optional<PhysicalizedHit> hit = PhysicalizedRaycaster.raycast(minecraft.level, origin, direction, reach, partialTick);
+        if (hit.isEmpty() || !isCloserThanCurrentHit(minecraft, hit.get(), origin)) {
+            return Optional.empty();
+        }
+        return hit;
+    }
+
+    private static Optional<PhysicalizedHit> currentPhysicalizedHit(Minecraft minecraft) {
+        if (minecraft.hitResult instanceof PhysicalizedBlockHitResult physicalizedBlockHitResult) {
+            return Optional.of(physicalizedBlockHitResult.physicalizedHit());
+        }
+        return Optional.empty();
+    }
+
+    private static boolean isCloserThanCurrentHit(Minecraft minecraft, PhysicalizedHit hit, Vec3 origin) {
+        HitResult current = minecraft.hitResult;
+        if (current == null || current.getType() == HitResult.Type.MISS || current instanceof PhysicalizedBlockHitResult) {
+            return true;
+        }
+        if (current instanceof EntityHitResult entityHitResult
+                && entityHitResult.getEntity() instanceof PhysicalizedVolumeEntity volume
+                && volume == hit.entity()) {
+            return true;
+        }
+        return hit.distance() <= Math.sqrt(origin.distanceToSqr(current.getLocation())) + HIT_DISTANCE_TOLERANCE;
     }
 
     private static float clientPartialTick(Minecraft minecraft) {
@@ -658,6 +837,13 @@ public final class PhysicalizedClientInteractions {
     public record PlacementVisualPrediction(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin) {
     }
 
+    private enum PlacementPredictionResult {
+        NOT_ATTEMPTED,
+        PREDICTED,
+        DUPLICATE,
+        FAILED
+    }
+
     private record PredictedPlacement(
             PhysicalizedVolumeSnapshot snapshot,
             Vec3 localOrigin,
@@ -668,5 +854,39 @@ public final class PhysicalizedClientInteractions {
             int stateId,
             long expiresAtGameTime
     ) {
+    }
+
+    private record LastUseCommand(
+            long gameTime,
+            int entityId,
+            int localX,
+            int localY,
+            int localZ,
+            int localFace,
+            int hand,
+            int itemIdentity
+    ) {
+        static LastUseCommand of(long gameTime, PhysicalizedHit hit, InteractionHand hand, ItemStack stack) {
+            return new LastUseCommand(
+                    gameTime,
+                    hit.entity().getId(),
+                    hit.cell().localX(),
+                    hit.cell().localY(),
+                    hit.cell().localZ(),
+                    hit.localFace().get3DDataValue(),
+                    hand.ordinal(),
+                    System.identityHashCode(stack.getItem())
+            );
+        }
+
+        boolean matches(PhysicalizedHit hit, InteractionHand hand, int itemIdentity) {
+            return this.entityId == hit.entity().getId()
+                    && this.localX == hit.cell().localX()
+                    && this.localY == hit.cell().localY()
+                    && this.localZ == hit.cell().localZ()
+                    && this.localFace == hit.localFace().get3DDataValue()
+                    && this.hand == hand.ordinal()
+                    && this.itemIdentity == itemIdentity;
+        }
     }
 }

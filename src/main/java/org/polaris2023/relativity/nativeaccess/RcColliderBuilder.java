@@ -34,6 +34,16 @@ public final class RcColliderBuilder implements AutoCloseable {
         return this;
     }
 
+    public RcColliderBuilder collisionGroups(RcInteractionGroups groups) {
+        RelativityCraftRapier.colliderBuilderSetCollisionGroups(handle, groups);
+        return this;
+    }
+
+    public RcColliderBuilder solverGroups(RcInteractionGroups groups) {
+        RelativityCraftRapier.colliderBuilderSetSolverGroups(handle, groups);
+        return this;
+    }
+
     @Override
     public void close() {
         if (!closed) {
