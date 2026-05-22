@@ -119,7 +119,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public PhysicalizedVolumeSnapshot snapshot() {
-        return snapshotOrEmpty();
+        return snapshot;
     }
 
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot) {
@@ -254,7 +254,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     protected AABB makeBoundingBox(Vec3 position) {
-        PhysicalizedVolumeSnapshot currentSnapshot = snapshotOrEmpty();
+        PhysicalizedVolumeSnapshot snapshot = currentSnapshot();
         double selectionHalfX = this.sizeX() * 0.5;
         double selectionHalfY = this.sizeY() * 0.5;
         double selectionHalfZ = this.sizeZ() * 0.5;
@@ -262,9 +262,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         double halfY = this.contentSizeY() * 0.5;
         double halfZ = this.contentSizeZ() * 0.5;
         Vec3 localOffset = new Vec3(
-                currentSnapshot.occupiedCenterX() - selectionHalfX,
-                currentSnapshot.occupiedCenterY() - selectionHalfY,
-                currentSnapshot.occupiedCenterZ() - selectionHalfZ
+                snapshot.occupiedCenterX() - selectionHalfX,
+                snapshot.occupiedCenterY() - selectionHalfY,
+                snapshot.occupiedCenterZ() - selectionHalfZ
         );
         double selectionCenterX = position.x;
         double selectionCenterY = position.y + selectionHalfY;
@@ -443,12 +443,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         output.putFloat("Qy", this.rotationQy());
         output.putFloat("Qz", this.rotationQz());
         output.putFloat("Qw", this.rotationQw());
-        this.snapshotOrEmpty().write(output);
+        this.snapshot.write(output);
     }
 
     @Override
     public void writeSpawnData(RegistryFriendlyByteBuf buffer) {
-        this.snapshotOrEmpty().write(buffer);
+        this.snapshot.write(buffer);
     }
 
     @Override
@@ -503,20 +503,20 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return Math.max(1, value);
     }
 
-    private PhysicalizedVolumeSnapshot snapshotOrEmpty() {
-        return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
-    }
-
     private int contentSizeX() {
-        return Math.max(1, this.snapshotOrEmpty().occupiedSizeX());
+        return Math.max(1, currentSnapshot().occupiedSizeX());
     }
 
     private int contentSizeY() {
-        return Math.max(1, this.snapshotOrEmpty().occupiedSizeY());
+        return Math.max(1, currentSnapshot().occupiedSizeY());
     }
 
     private int contentSizeZ() {
-        return Math.max(1, this.snapshotOrEmpty().occupiedSizeZ());
+        return Math.max(1, currentSnapshot().occupiedSizeZ());
+    }
+
+    private PhysicalizedVolumeSnapshot currentSnapshot() {
+        return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

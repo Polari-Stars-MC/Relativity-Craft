@@ -163,6 +163,9 @@ public final class PhysicsWorldManager {
                 return true;
             }
 
+            AABB terrainBounds = entity.getBoundingBox();
+            buildTerrainImmediately(level, terrainBounds);
+
             double halfX = entity.sizeX() * 0.5;
             double halfY = entity.sizeY() * 0.5;
             double halfZ = entity.sizeZ() * 0.5;
@@ -184,7 +187,7 @@ public final class PhysicsWorldManager {
             entity.setNativeBodyHandle(body);
             bodyByEntityId.put(entity.getId(), body);
             entityIdByBody.put(body, entity.getId());
-            requestTerrainAround(level, entity.getBoundingBox(), true);
+            requestTerrainAround(level, terrainBounds, false, false);
             return true;
         }
 
@@ -236,7 +239,7 @@ public final class PhysicsWorldManager {
                         (float) snapshot[i + 6],
                         (float) snapshot[i + 7]
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false);
+                requestTerrainAround(level, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -331,7 +334,7 @@ public final class PhysicsWorldManager {
                         volume.rotationQz(),
                         volume.rotationQw()
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false);
+                requestTerrainAround(level, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -348,7 +351,7 @@ public final class PhysicsWorldManager {
             }
         }
 
-        private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting) {
+        private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
             String dimensionId = dimensionId(level);
             int minX = (int) Math.floor(box.minX) - TERRAIN_MARGIN_BLOCKS;
             int minY = Math.max(level.getMinY(), (int) Math.floor(box.minY) - TERRAIN_MARGIN_BLOCKS);
@@ -374,12 +377,25 @@ public final class PhysicsWorldManager {
                                 terrain.removeSection(key);
                                 cancelQueuedBuild(key);
                             }
-                            if (backgroundQueuedSections.add(key)) {
+                            if (prioritize) {
+                                if (priorityQueuedSections.add(key)) {
+                                    backgroundQueuedSections.remove(key);
+                                    backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
+                                    priorityTerrainJobs.add(new TerrainBuildJob(key));
+                                }
+                            } else if (backgroundQueuedSections.add(key)) {
                                 backgroundTerrainJobs.add(new TerrainBuildJob(key));
                             }
                         }
                     }
                 }
+            }
+        }
+
+        private void buildTerrainImmediately(ServerLevel level, AABB box) {
+            requestTerrainAround(level, box, true, true);
+            while (!priorityTerrainJobs.isEmpty()) {
+                drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, Long.MAX_VALUE);
             }
         }
 

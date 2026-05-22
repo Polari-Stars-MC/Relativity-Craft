@@ -6,11 +6,8 @@ import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.core.BlockPos;
-import net.minecraft.core.particles.BlockParticleOption;
-import net.minecraft.core.particles.ParticleTypes;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.Containers;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
@@ -22,7 +19,6 @@ import net.minecraft.world.level.block.ButtonBlock;
 import net.minecraft.world.level.block.LeverBlock;
 import net.minecraft.world.level.block.RedStoneWireBlock;
 import net.minecraft.world.level.block.RepeaterBlock;
-import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.BlockStateProperties;
@@ -38,7 +34,7 @@ public final class PhysicalizedInteractionHandler {
     private static final double PLACEMENT_EPSILON = 1.0E-4;
     private static final Map<BreakKey, Float> BREAK_PROGRESS = new ConcurrentHashMap<>();
     private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new ConcurrentHashMap<>();
-    private static final Map<UUID, CreativePlacementStamp> RECENT_CREATIVE_PLACEMENTS = new ConcurrentHashMap<>();
+    private static final Map<UUID, BreakAttempt> LAST_BREAK_ATTEMPT = new ConcurrentHashMap<>();
 
     private PhysicalizedInteractionHandler() {
     }
@@ -95,25 +91,22 @@ public final class PhysicalizedInteractionHandler {
         }
 
         BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ());
+        long gameTime = level.getGameTime();
+        BreakAttempt lastAttempt = LAST_BREAK_ATTEMPT.get(player.getUUID());
+        if (lastAttempt != null && lastAttempt.gameTime() == gameTime && lastAttempt.key().equals(key)) {
+            return true;
+        }
+        LAST_BREAK_ATTEMPT.put(player.getUUID(), new BreakAttempt(key, gameTime));
+
         BreakKey previous = ACTIVE_BREAKS.put(player.getUUID(), key);
         if (previous != null && !previous.equals(key)) {
             clearBreak(level, previous);
         }
-
-        if (player.gameMode.isCreative()) {
-            BREAK_PROGRESS.remove(key);
-            ACTIVE_BREAKS.remove(player.getUUID(), key);
-            level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), -1);
-            PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, -1);
-            destroyPhysicalizedCell(level, player, hit);
-            return true;
-        }
-
         if (!key.equals(previous)) {
             state.attack(level, hit.visualBlockPos(), player);
         }
 
-        float progress = BREAK_PROGRESS.getOrDefault(key, 0.0F)
+        float progress = player.gameMode.isCreative() ? 1.0F : BREAK_PROGRESS.getOrDefault(key, 0.0F)
                 + state.getDestroyProgress(player, level, hit.visualBlockPos());
 
         if (progress < 1.0F) {
@@ -138,6 +131,7 @@ public final class PhysicalizedInteractionHandler {
             return;
         }
         BREAK_PROGRESS.remove(key);
+        LAST_BREAK_ATTEMPT.remove(player.getUUID());
         if (player.level() instanceof ServerLevel level) {
             clearBreak(level, key);
         }
@@ -168,9 +162,6 @@ public final class PhysicalizedInteractionHandler {
         if (placementState == null || placementState.isAir()) {
             return InteractionResult.FAIL;
         }
-        if (player.gameMode.isCreative() && isDuplicateCreativePlacement(level, player, hit, placementState)) {
-            return InteractionResult.SUCCESS;
-        }
 
         PhysicalizedVolumeMapping oldMapping = PhysicalizedVolumeMapping.current(entity);
         Vec3 oldCenter = oldMapping.centeredLocalToWorld(Vec3.ZERO);
@@ -196,15 +187,9 @@ public final class PhysicalizedInteractionHandler {
         if (!player.hasInfiniteMaterials()) {
             stack.shrink(1);
         }
-        BlockPos placedPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(
+        placementState.getBlock().setPlacedBy(level, PhysicalizedVolumeMapping.current(entity).visualBlockPos(
                 new PhysicalizedBlockSnapshot(placedX, placedY, placedZ, Block.getId(placementState), null)
-        );
-        placementState.getBlock().setPlacedBy(level, placedPos, placementState, player, stack);
-        if (player.gameMode.isCreative()) {
-            rememberCreativePlacement(level, player, hit, placementState);
-            playCreativePlaceSound(level, player, placedPos, placementState);
-            sendCreativePlaceParticles(level, player, placedPos, placementState);
-        }
+        ), placementState, player, stack);
         PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, placedX, placedY, placedZ);
         return InteractionResult.SUCCESS;
@@ -278,7 +263,7 @@ public final class PhysicalizedInteractionHandler {
         );
     }
 
-    public static BlockPos placementTarget(PhysicalizedHit hit) {
+    private static BlockPos placementTarget(PhysicalizedHit hit) {
         Vec3 normal = new Vec3(hit.worldFace().getStepX(), hit.worldFace().getStepY(), hit.worldFace().getStepZ());
         BlockPos target = BlockPos.containing(hit.worldLocation().add(normal.scale(PLACEMENT_EPSILON)));
         if (target.equals(hit.visualBlockPos())) {
@@ -292,89 +277,25 @@ public final class PhysicalizedInteractionHandler {
         PhysicalizedBlockSnapshot cell = hit.cell();
         BlockState state = cell.state();
         BlockPos dropPos = hit.visualBlockPos();
-        boolean creative = player.gameMode.isCreative();
-        BlockEntity blockEntity = !creative && cell.hasBlockEntityNbt()
+        BlockEntity blockEntity = cell.hasBlockEntityNbt()
                 ? BlockEntity.loadStatic(dropPos, state, cell.blockEntityNbt(), level.registryAccess())
                 : null;
 
         level.levelEvent(player, 2001, dropPos, Block.getId(state));
-        if (!creative && !player.preventsBlockDrops()) {
+        if (!player.preventsBlockDrops()) {
             if (blockEntity instanceof net.minecraft.world.Container container) {
                 Containers.dropContents(level, dropPos, container);
             }
             state.getBlock().playerDestroy(level, player, dropPos, state, blockEntity, player.getMainHandItem());
         }
 
-        PhysicalizedVolumeSnapshot nextSnapshot = entity.snapshot().withoutCell(cell);
+        entity.updateSnapshot(entity.snapshot().withoutCell(cell));
         PhysicalizedRedstoneMapping.global().clearCell(entity, cell);
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, cell.localX(), cell.localY(), cell.localZ());
-        if (nextSnapshot.blockCount() <= 0) {
-            PhysicsWorldManager.global().unregister(entity);
+        if (entity.snapshot().blockCount() <= 0) {
             entity.discard();
         } else {
-            if (creative) {
-                double x = entity.getX();
-                double y = entity.getY();
-                double z = entity.getZ();
-                PhysicsWorldManager.global().unregister(entity);
-                entity.updateSnapshot(nextSnapshot);
-                entity.setPos(x, y, z);
-                PhysicsWorldManager.global().register(entity);
-            } else {
-                entity.updateSnapshot(nextSnapshot);
-            }
             PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
-        }
-    }
-
-    private static boolean isDuplicateCreativePlacement(
-            ServerLevel level,
-            ServerPlayer player,
-            PhysicalizedHit hit,
-            BlockState placementState
-    ) {
-        CreativePlacementKey key = CreativePlacementKey.of(hit, placementState);
-        CreativePlacementStamp previous = RECENT_CREATIVE_PLACEMENTS.get(player.getUUID());
-        return previous != null && previous.key().equals(key) && level.getGameTime() - previous.gameTime() <= 1L;
-    }
-
-    private static void rememberCreativePlacement(
-            ServerLevel level,
-            ServerPlayer player,
-            PhysicalizedHit hit,
-            BlockState placementState
-    ) {
-        RECENT_CREATIVE_PLACEMENTS.put(
-                player.getUUID(),
-                new CreativePlacementStamp(CreativePlacementKey.of(hit, placementState), level.getGameTime())
-        );
-    }
-
-    private static void playCreativePlaceSound(ServerLevel level, ServerPlayer player, BlockPos placedPos, BlockState placementState) {
-        SoundType soundType = placementState.getSoundType(level, placedPos, player);
-        level.playSound(
-                player,
-                placedPos,
-                soundType.getPlaceSound(),
-                SoundSource.BLOCKS,
-                (soundType.getVolume() + 1.0F) / 2.0F,
-                soundType.getPitch() * 0.8F
-        );
-    }
-
-    private static void sendCreativePlaceParticles(ServerLevel level, ServerPlayer source, BlockPos placedPos, BlockState placementState) {
-        if (!placementState.shouldSpawnTerrainParticles()) {
-            return;
-        }
-
-        BlockParticleOption particle = new BlockParticleOption(ParticleTypes.BLOCK, placementState, placedPos);
-        double x = placedPos.getX() + 0.5;
-        double y = placedPos.getY() + 0.5;
-        double z = placedPos.getZ() + 0.5;
-        for (ServerPlayer player : level.players()) {
-            if (player != source) {
-                level.sendParticles(player, particle, false, false, x, y, z, 8, 0.35, 0.35, 0.35, 0.02);
-            }
         }
     }
 
@@ -388,19 +309,6 @@ public final class PhysicalizedInteractionHandler {
     private record BreakKey(UUID playerId, int entityId, int localX, int localY, int localZ) {
     }
 
-    private record CreativePlacementKey(int entityId, int localX, int localY, int localZ, int localFace, int stateId) {
-        static CreativePlacementKey of(PhysicalizedHit hit, BlockState placementState) {
-            return new CreativePlacementKey(
-                    hit.entity().getId(),
-                    hit.cell().localX(),
-                    hit.cell().localY(),
-                    hit.cell().localZ(),
-                    hit.localFace().get3DDataValue(),
-                    Block.getId(placementState)
-            );
-        }
-    }
-
-    private record CreativePlacementStamp(CreativePlacementKey key, long gameTime) {
+    private record BreakAttempt(BreakKey key, long gameTime) {
     }
 }
