@@ -3,6 +3,7 @@ package org.polaris2023.relativity;
 import com.mojang.logging.LogUtils;
 import org.polaris2023.relativity.command.RelativityCommands;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.interaction.PhysicalizedCollisionShapes;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
@@ -82,6 +83,7 @@ public final class RelativityCraft {
             PhysicalizedVolumeManager.global().drainJobsFor(500_000L);
             BlockRemovalQueue.global().drain(level, 2_000_000L);
             PhysicsWorldManager.global().tick(level);
+            PhysicalizedCollisionShapes.pushIntersectingEntities(level);
             PhysicalizedRedstoneMapping.global().tick(level);
         }
     }

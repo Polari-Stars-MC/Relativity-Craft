@@ -219,10 +219,6 @@ public final class PhysicalizedVolumeSnapshot {
         return Optional.empty();
     }
 
-    public PhysicalizedBlockSnapshot cellAtOrNull(int localX, int localY, int localZ) {
-        return cellAt(localX, localY, localZ).orElse(null);
-    }
-
     public PhysicalizedVolumeSnapshot withoutCell(PhysicalizedBlockSnapshot removedCell) {
         long removedKey = pack(removedCell.localX(), removedCell.localY(), removedCell.localZ());
         List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size());
@@ -232,36 +228,6 @@ public final class PhysicalizedVolumeSnapshot {
             }
         }
         return new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next);
-    }
-
-    public CompactedSnapshot compacted() {
-        if (cells.isEmpty()) {
-            return new CompactedSnapshot(EMPTY, 0, 0, 0);
-        }
-
-        int offsetX = occupiedMinX();
-        int offsetY = occupiedMinY();
-        int offsetZ = occupiedMinZ();
-        int compactedSizeX = Math.max(1, occupiedMaxX() - offsetX + 1);
-        int compactedSizeY = Math.max(1, occupiedMaxY() - offsetY + 1);
-        int compactedSizeZ = Math.max(1, occupiedMaxZ() - offsetZ + 1);
-
-        List<PhysicalizedBlockSnapshot> compactedCells = new ArrayList<>(cells.size());
-        for (PhysicalizedBlockSnapshot cell : cells) {
-            compactedCells.add(new PhysicalizedBlockSnapshot(
-                    cell.localX() - offsetX,
-                    cell.localY() - offsetY,
-                    cell.localZ() - offsetZ,
-                    cell.stateId(),
-                    cell.blockEntityNbt()
-            ));
-        }
-        return new CompactedSnapshot(
-                new PhysicalizedVolumeSnapshot(compactedSizeX, compactedSizeY, compactedSizeZ, compactedCells),
-                offsetX,
-                offsetY,
-                offsetZ
-        );
     }
 
     public ExpandedPlacement withCellExpanded(int localX, int localY, int localZ, BlockState state, CompoundTag nbt) {
@@ -434,8 +400,5 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public record ExpandedPlacement(PhysicalizedVolumeSnapshot snapshot, int shiftX, int shiftY, int shiftZ) {
-    }
-
-    public record CompactedSnapshot(PhysicalizedVolumeSnapshot snapshot, int offsetX, int offsetY, int offsetZ) {
     }
 }

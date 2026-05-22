@@ -2,9 +2,13 @@ package org.polaris2023.relativity.world;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
+import org.polaris2023.relativity.nativeaccess.RcVec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
+import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
+import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -12,11 +16,13 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -117,6 +123,19 @@ public final class PhysicsWorldManager {
         }
     }
 
+    public boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (entity.isRemoved() || !(entity.level() instanceof ServerLevel entityLevel) || entityLevel != level) {
+            return false;
+        }
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return false;
+        }
+
+        LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
+        return state.rebuildBodyShape(level, entity);
+    }
+
     public void unloadChunk(ServerLevel level, int chunkX, int chunkZ) {
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null) {
@@ -163,28 +182,45 @@ public final class PhysicsWorldManager {
                 return true;
             }
 
-            double halfX = entity.sizeX() * 0.5;
-            double halfY = entity.sizeY() * 0.5;
-            double halfZ = entity.sizeZ() * 0.5;
-            long body = world.addDynamicBox(
-                    entity.getX(),
-                    entity.physicsCenterY(),
-                    entity.getZ(),
-                    halfX,
-                    halfY,
-                    halfZ,
-                    1.0,
-                    0.75,
-                    0.05
-            );
+            AABB terrainBounds = entity.getBoundingBox();
+            buildTerrainImmediately(level, terrainBounds);
+
+            long body = insertBody(entity, RcVec3.ZERO);
             if (body == 0L) {
                 return false;
             }
 
-            entity.setNativeBodyHandle(body);
-            bodyByEntityId.put(entity.getId(), body);
-            entityIdByBody.put(body, entity.getId());
-            requestTerrainAround(level, entity.getBoundingBox(), true);
+            trackBody(entity, body);
+            requestTerrainAround(level, terrainBounds, false, false);
+            return true;
+        }
+
+        boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+            long oldBody = entity.nativeBodyHandle();
+            RcVec3 linearVelocity = oldBody == 0L ? RcVec3.ZERO : world.getBodyLinearVelocity(oldBody);
+            if (oldBody != 0L) {
+                bodyByEntityId.remove(entity.getId());
+                entityIdByBody.remove(oldBody);
+                world.removeBody(oldBody);
+                entity.setNativeBodyHandle(0L);
+            } else {
+                Long removed = bodyByEntityId.remove(entity.getId());
+                if (removed != null) {
+                    entityIdByBody.remove(removed);
+                    world.removeBody(removed);
+                }
+            }
+
+            AABB terrainBounds = entity.getBoundingBox();
+            buildTerrainImmediately(level, terrainBounds);
+            long nextBody = insertBody(entity, linearVelocity);
+            if (nextBody == 0L) {
+                return false;
+            }
+
+            trackBody(entity, nextBody);
+            requestTerrainAround(level, terrainBounds, false, false);
+            world.wakeUp(nextBody);
             return true;
         }
 
@@ -202,6 +238,30 @@ public final class PhysicsWorldManager {
             bodyByEntityId.remove(entity.getId());
             entityIdByBody.remove(body);
             world.removeBody(body);
+        }
+
+        private long insertBody(PhysicalizedVolumeEntity entity, RcVec3 linearVelocity) {
+            List<RapierNativeWorld.BoxCollider> colliders = dynamicCollisionBoxes(entity);
+            return world.addDynamicBoxes(
+                    entity.getX(),
+                    entity.physicsCenterY(),
+                    entity.getZ(),
+                    entity.rotationQx(),
+                    entity.rotationQy(),
+                    entity.rotationQz(),
+                    entity.rotationQw(),
+                    linearVelocity,
+                    colliders,
+                    1.0,
+                    0.75,
+                    0.05
+            );
+        }
+
+        private void trackBody(PhysicalizedVolumeEntity entity, long body) {
+            entity.setNativeBodyHandle(body);
+            bodyByEntityId.put(entity.getId(), body);
+            entityIdByBody.put(body, entity.getId());
         }
 
         void tick(ServerLevel level) {
@@ -236,12 +296,13 @@ public final class PhysicsWorldManager {
                         (float) snapshot[i + 6],
                         (float) snapshot[i + 7]
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false);
+                requestTerrainAround(level, volume.getBoundingBox(), false, false);
             }
         }
 
         void markBlockChanged(ServerLevel level, BlockPos pos) {
             markSectionDirty(level, pos);
+            wakeBodiesInAabb(new AABB(pos).inflate(2.0));
             for (Direction direction : Direction.values()) {
                 markSectionDirty(level, pos.relative(direction));
             }
@@ -331,7 +392,7 @@ public final class PhysicsWorldManager {
                         volume.rotationQz(),
                         volume.rotationQw()
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false);
+                requestTerrainAround(level, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -348,7 +409,7 @@ public final class PhysicsWorldManager {
             }
         }
 
-        private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting) {
+        private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
             String dimensionId = dimensionId(level);
             int minX = (int) Math.floor(box.minX) - TERRAIN_MARGIN_BLOCKS;
             int minY = Math.max(level.getMinY(), (int) Math.floor(box.minY) - TERRAIN_MARGIN_BLOCKS);
@@ -374,12 +435,25 @@ public final class PhysicsWorldManager {
                                 terrain.removeSection(key);
                                 cancelQueuedBuild(key);
                             }
-                            if (backgroundQueuedSections.add(key)) {
+                            if (prioritize) {
+                                if (priorityQueuedSections.add(key)) {
+                                    backgroundQueuedSections.remove(key);
+                                    backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
+                                    priorityTerrainJobs.add(new TerrainBuildJob(key));
+                                }
+                            } else if (backgroundQueuedSections.add(key)) {
                                 backgroundTerrainJobs.add(new TerrainBuildJob(key));
                             }
                         }
                     }
                 }
+            }
+        }
+
+        private void buildTerrainImmediately(ServerLevel level, AABB box) {
+            requestTerrainAround(level, box, true, true);
+            while (!priorityTerrainJobs.isEmpty()) {
+                drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, Long.MAX_VALUE);
             }
         }
 
@@ -506,24 +580,150 @@ public final class PhysicsWorldManager {
             return shape.isEmpty() ? null : shape;
         }
 
-        private static boolean isFullBlockShape(VoxelShape shape) {
-            java.util.List<AABB> boxes = shape.toAabbs();
-            if (boxes.size() != 1) {
-                return false;
+    }
+
+    private static List<RapierNativeWorld.BoxCollider> dynamicCollisionBoxes(PhysicalizedVolumeEntity entity) {
+        PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
+        if (snapshot.blockCount() <= 0) {
+            return List.of();
+        }
+
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
+        Set<Long> fullBlocks = new HashSet<>();
+        List<AABB> parts = new ArrayList<>();
+        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
             }
 
-            AABB box = boxes.get(0);
-            return nearly(box.minX, 0.0)
-                    && nearly(box.minY, 0.0)
-                    && nearly(box.minZ, 0.0)
-                    && nearly(box.maxX, 1.0)
-                    && nearly(box.maxY, 1.0)
-                    && nearly(box.maxZ, 1.0);
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            if (isFullBlockShape(shape)) {
+                fullBlocks.add(packLocal(cell.localX(), cell.localY(), cell.localZ()));
+                continue;
+            }
+
+            for (AABB box : shape.toAabbs()) {
+                parts.add(box.move(localPos));
+            }
         }
 
-        private static boolean nearly(double first, double second) {
-            return Math.abs(first - second) < 1.0E-7;
+        mergeFullBlocks(fullBlocks, parts);
+        if (parts.isEmpty()) {
+            return List.of();
         }
+
+        double originX = entity.localOriginX();
+        double originY = entity.localOriginY();
+        double originZ = entity.localOriginZ();
+        List<RapierNativeWorld.BoxCollider> colliders = new ArrayList<>(parts.size());
+        for (AABB part : parts) {
+            double sizeX = part.maxX - part.minX;
+            double sizeY = part.maxY - part.minY;
+            double sizeZ = part.maxZ - part.minZ;
+            if (sizeX <= 1.0E-5 || sizeY <= 1.0E-5 || sizeZ <= 1.0E-5) {
+                continue;
+            }
+            colliders.add(new RapierNativeWorld.BoxCollider(
+                    (part.minX + part.maxX) * 0.5 - originX,
+                    (part.minY + part.maxY) * 0.5 - originY,
+                    (part.minZ + part.maxZ) * 0.5 - originZ,
+                    sizeX * 0.5,
+                    sizeY * 0.5,
+                    sizeZ * 0.5
+            ));
+        }
+        return colliders;
+    }
+
+    private static void mergeFullBlocks(Set<Long> remaining, List<AABB> output) {
+        while (!remaining.isEmpty()) {
+            long first = remaining.iterator().next();
+            int x0 = unpackX(first);
+            int y0 = unpackY(first);
+            int z0 = unpackZ(first);
+
+            int x1 = x0;
+            while (remaining.contains(packLocal(x1 + 1, y0, z0))) {
+                x1++;
+            }
+
+            int z1 = z0;
+            while (hasFullLayer(remaining, x0, x1, y0, z1 + 1)) {
+                z1++;
+            }
+
+            int y1 = y0;
+            while (hasFullVolumeLayer(remaining, x0, x1, y1 + 1, z0, z1)) {
+                y1++;
+            }
+
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    for (int x = x0; x <= x1; x++) {
+                        remaining.remove(packLocal(x, y, z));
+                    }
+                }
+            }
+            output.add(new AABB(x0, y0, z0, x1 + 1.0, y1 + 1.0, z1 + 1.0));
+        }
+    }
+
+    private static boolean hasFullLayer(Set<Long> remaining, int x0, int x1, int y, int z) {
+        for (int x = x0; x <= x1; x++) {
+            if (!remaining.contains(packLocal(x, y, z))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasFullVolumeLayer(Set<Long> remaining, int x0, int x1, int y, int z0, int z1) {
+        for (int z = z0; z <= z1; z++) {
+            if (!hasFullLayer(remaining, x0, x1, y, z)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isFullBlockShape(VoxelShape shape) {
+        java.util.List<AABB> boxes = shape.toAabbs();
+        if (boxes.size() != 1) {
+            return false;
+        }
+
+        AABB box = boxes.get(0);
+        return nearly(box.minX, 0.0)
+                && nearly(box.minY, 0.0)
+                && nearly(box.minZ, 0.0)
+                && nearly(box.maxX, 1.0)
+                && nearly(box.maxY, 1.0)
+                && nearly(box.maxZ, 1.0);
+    }
+
+    private static boolean nearly(double first, double second) {
+        return Math.abs(first - second) < 1.0E-7;
+    }
+
+    private static long packLocal(int x, int y, int z) {
+        return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
+    private static int unpackX(long packed) {
+        return (int) (packed & 0x1FFFFFL);
+    }
+
+    private static int unpackY(long packed) {
+        return (int) ((packed >>> 21) & 0x1FFFFFL);
+    }
+
+    private static int unpackZ(long packed) {
+        return (int) ((packed >>> 42) & 0x1FFFFFL);
     }
 
     private static final class MeshBuffer {

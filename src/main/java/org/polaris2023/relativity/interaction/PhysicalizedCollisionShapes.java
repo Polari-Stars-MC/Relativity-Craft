@@ -5,23 +5,26 @@ import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.EntitySelector;
+import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.CollisionGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.Shapes;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.ArrayList;
 import java.util.List;
-import java.util.function.Supplier;
+import java.util.function.Consumer;
 
 public final class PhysicalizedCollisionShapes {
-    private static final double QUERY_EPSILON = 1.0E-4;
-    private static final double QUERY_MARGIN = 1.0;
-    private static final double COLLISION_SKIN = 1.0E-3;
-    private static final ThreadLocal<PhysicalizedVolumeEntity> IGNORED_VOLUME = new ThreadLocal<>();
+    private static final double QUERY_EPSILON = 1.0E-5;
+    private static final double PUSH_OUT_EPSILON = 1.0E-3;
+    private static final int MAX_PUSH_OUT_ITERATIONS = 6;
 
     private PhysicalizedCollisionShapes() {
     }
@@ -31,53 +34,41 @@ public final class PhysicalizedCollisionShapes {
             return List.of();
         }
 
-        PhysicalizedVolumeEntity ignoredVolume = IGNORED_VOLUME.get();
-        List<PhysicalizedVolumeEntity> volumes = PhysicalizedVolumeQueries.candidates(level, queryBox, QUERY_MARGIN);
+        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
         if (volumes.isEmpty()) {
             return List.of();
         }
 
         List<VoxelShape> shapes = new ArrayList<>();
         for (PhysicalizedVolumeEntity volume : volumes) {
-            if (!PhysicalizedVolumeQueries.shouldQueryVolume(volume, ignoredVolume, queryBox, QUERY_MARGIN)) {
-                continue;
-            }
             collectVolumeShapes(volume, source, queryBox, shapes);
         }
         return shapes;
     }
 
-    public static boolean noCollisionExceptVolume(Level level, PhysicalizedVolumeEntity ignoredVolume, AABB queryBox) {
-        return noCollisionExceptVolume(level, ignoredVolume, PhysicalizedOrientedBox.fromWorldAabb(queryBox));
-    }
-
-    public static boolean noCollisionExceptVolume(Level level, PhysicalizedVolumeEntity ignoredVolume, PhysicalizedOrientedBox queryBox) {
-        return withIgnoredVolume(ignoredVolume, () -> {
-            if (!level.noBorderCollision(ignoredVolume, queryBox.worldAabb())) {
-                return false;
-            }
-            return hasNoBlockingBlocks(level, queryBox) && hasNoBlockingEntities(level, ignoredVolume, queryBox);
-        });
-    }
-
-    public static <T> T withIgnoredVolume(PhysicalizedVolumeEntity ignoredVolume, Supplier<T> action) {
-        PhysicalizedVolumeEntity previous = IGNORED_VOLUME.get();
-        IGNORED_VOLUME.set(ignoredVolume);
-        try {
-            return action.get();
-        } finally {
-            if (previous == null) {
-                IGNORED_VOLUME.remove();
-            } else {
-                IGNORED_VOLUME.set(previous);
+    public static void pushIntersectingEntities(ServerLevel level) {
+        for (PhysicalizedVolumeEntity volume : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+            AABB searchBox = volume.getBoundingBox().inflate(0.25);
+            for (Entity entity : level.getEntities(volume, searchBox, candidate -> shouldPushOut(candidate, volume))) {
+                pushOutOfVolume(volume, entity);
             }
         }
     }
 
     private static void collectVolumeShapes(PhysicalizedVolumeEntity volume, Entity source, AABB queryBox, List<VoxelShape> shapes) {
+        collectVolumeBoxes(volume, source, queryBox, QUERY_EPSILON, box -> shapes.add(Shapes.create(box)));
+    }
+
+    private static void collectVolumeBoxes(
+            PhysicalizedVolumeEntity volume,
+            Entity source,
+            AABB queryBox,
+            double inflate,
+            Consumer<AABB> output
+    ) {
         PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
         PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(volume.snapshot());
-        AABB localQuery = mapping.localAabbOfWorld(queryBox.inflate(COLLISION_SKIN)).inflate(0.25);
+        AABB localQuery = mapping.localAabbOfWorld(queryBox.inflate(QUERY_EPSILON)).inflate(1.0);
         int minX = Mth.floor(localQuery.minX) - 1;
         int minY = Mth.floor(localQuery.minY) - 1;
         int minZ = Mth.floor(localQuery.minZ) - 1;
@@ -85,48 +76,112 @@ public final class PhysicalizedCollisionShapes {
         int maxY = Mth.floor(localQuery.maxY) + 1;
         int maxZ = Mth.floor(localQuery.maxZ) + 1;
         CollisionContext context = collisionContext(source, mapping);
-        if (maxX < 0 || maxY < 0 || maxZ < 0
-                || minX >= volume.snapshot().sizeX()
-                || minY >= volume.snapshot().sizeY()
-                || minZ >= volume.snapshot().sizeZ()) {
-            return;
-        }
 
-        int clampedMinX = Mth.clamp(minX, 0, volume.snapshot().sizeX() - 1);
-        int clampedMinY = Mth.clamp(minY, 0, volume.snapshot().sizeY() - 1);
-        int clampedMinZ = Mth.clamp(minZ, 0, volume.snapshot().sizeZ() - 1);
-        int clampedMaxX = Mth.clamp(maxX, 0, volume.snapshot().sizeX() - 1);
-        int clampedMaxY = Mth.clamp(maxY, 0, volume.snapshot().sizeY() - 1);
-        int clampedMaxZ = Mth.clamp(maxZ, 0, volume.snapshot().sizeZ() - 1);
+        for (PhysicalizedBlockSnapshot cell : volume.snapshot().cells()) {
+            if (cell.localX() < minX || cell.localX() > maxX
+                    || cell.localY() < minY || cell.localY() > maxY
+                    || cell.localZ() < minZ || cell.localZ() > maxZ) {
+                continue;
+            }
 
-        for (int localY = clampedMinY; localY <= clampedMaxY; localY++) {
-            for (int localZ = clampedMinZ; localZ <= clampedMaxZ; localZ++) {
-                for (int localX = clampedMinX; localX <= clampedMaxX; localX++) {
-                    PhysicalizedBlockSnapshot cell = volume.snapshot().cellAtOrNull(localX, localY, localZ);
-                    if (cell == null) {
-                        continue;
-                    }
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
 
-                    BlockState state = cell.state();
-                    if (state.isAir()) {
-                        continue;
-                    }
+            BlockPos localPos = mapping.localBlockPos(cell);
+            VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
+            if (localShape.isEmpty()) {
+                continue;
+            }
 
-                    BlockPos localPos = mapping.localBlockPos(cell);
-                    VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
-                    if (localShape.isEmpty()) {
-                        continue;
-                    }
-
-                    for (AABB localPart : localShape.toAabbs()) {
-                        PhysicalizedOrientedBox orientedPart = PhysicalizedOrientedBox.fromLocalBox(mapping, localPart.move(localPos)).inflated(COLLISION_SKIN);
-                        if (orientedPart.intersectsAabb(queryBox)) {
-                            shapes.add(Shapes.create(orientedPart.worldAabb()));
-                        }
-                    }
+            for (AABB localPart : localShape.toAabbs()) {
+                AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
+                if (worldPart.intersects(queryBox)) {
+                    output.accept(worldPart);
                 }
             }
         }
+    }
+
+    private static boolean shouldPushOut(Entity entity, PhysicalizedVolumeEntity volume) {
+        return entity != volume
+                && !(entity instanceof PhysicalizedVolumeEntity)
+                && !(entity instanceof Player)
+                && !entity.isRemoved()
+                && entity.isAlive()
+                && !entity.noPhysics
+                && EntitySelector.NO_SPECTATORS.test(entity);
+    }
+
+    private static void pushOutOfVolume(PhysicalizedVolumeEntity volume, Entity entity) {
+        for (int i = 0; i < MAX_PUSH_OUT_ITERATIONS; i++) {
+            Vec3 correction = penetrationCorrection(volume, entity, entity.getBoundingBox());
+            if (correction == null || correction.lengthSqr() <= 1.0E-12) {
+                return;
+            }
+
+            entity.setPos(entity.getX() + correction.x, entity.getY() + correction.y, entity.getZ() + correction.z);
+            entity.setDeltaMovement(dampenVelocity(entity.getDeltaMovement(), correction));
+            if (correction.y > 0.0 && Math.abs(correction.y) >= Math.abs(correction.x) && Math.abs(correction.y) >= Math.abs(correction.z)) {
+                entity.setOnGround(true);
+            }
+            entity.hurtMarked = true;
+        }
+    }
+
+    private static Vec3 penetrationCorrection(PhysicalizedVolumeEntity volume, Entity entity, AABB entityBox) {
+        List<AABB> boxes = new ArrayList<>();
+        collectVolumeBoxes(volume, entity, entityBox.inflate(PUSH_OUT_EPSILON), 0.0, boxes::add);
+        Vec3 best = null;
+        double bestDistance = Double.POSITIVE_INFINITY;
+        for (AABB obstacle : boxes) {
+            if (!obstacle.intersects(entityBox)) {
+                continue;
+            }
+
+            Vec3 correction = correctionFor(entityBox, obstacle);
+            double distance = Math.abs(correction.x) + Math.abs(correction.y) + Math.abs(correction.z);
+            if (distance < bestDistance) {
+                best = correction;
+                bestDistance = distance;
+            }
+        }
+        return best;
+    }
+
+    private static Vec3 correctionFor(AABB entityBox, AABB obstacle) {
+        double pushWest = obstacle.minX - entityBox.maxX - PUSH_OUT_EPSILON;
+        double pushEast = obstacle.maxX - entityBox.minX + PUSH_OUT_EPSILON;
+        double pushDown = obstacle.minY - entityBox.maxY - PUSH_OUT_EPSILON;
+        double pushUp = obstacle.maxY - entityBox.minY + PUSH_OUT_EPSILON;
+        double pushNorth = obstacle.minZ - entityBox.maxZ - PUSH_OUT_EPSILON;
+        double pushSouth = obstacle.maxZ - entityBox.minZ + PUSH_OUT_EPSILON;
+
+        double pushX = Math.abs(pushWest) < Math.abs(pushEast) ? pushWest : pushEast;
+        double pushY = Math.abs(pushDown) < Math.abs(pushUp) ? pushDown : pushUp;
+        double pushZ = Math.abs(pushNorth) < Math.abs(pushSouth) ? pushNorth : pushSouth;
+        double absX = Math.abs(pushX);
+        double absY = Math.abs(pushY);
+        double absZ = Math.abs(pushZ);
+
+        if (pushUp > 0.0 && entityBox.minY >= obstacle.minY - 0.125 && Math.abs(pushUp) <= Math.min(absX, absZ) + 0.25) {
+            return new Vec3(0.0, pushUp, 0.0);
+        }
+        if (absX <= absY && absX <= absZ) {
+            return new Vec3(pushX, 0.0, 0.0);
+        }
+        if (absY <= absZ) {
+            return new Vec3(0.0, pushY, 0.0);
+        }
+        return new Vec3(0.0, 0.0, pushZ);
+    }
+
+    private static Vec3 dampenVelocity(Vec3 velocity, Vec3 correction) {
+        double x = Math.abs(correction.x) > 0.0 && velocity.x * correction.x < 0.0 ? 0.0 : velocity.x;
+        double y = Math.abs(correction.y) > 0.0 && velocity.y * correction.y < 0.0 ? 0.0 : velocity.y;
+        double z = Math.abs(correction.z) > 0.0 && velocity.z * correction.z < 0.0 ? 0.0 : velocity.z;
+        return new Vec3(x, y, z);
     }
 
     private static CollisionContext collisionContext(Entity source, PhysicalizedVolumeMapping mapping) {
@@ -136,121 +191,13 @@ public final class PhysicalizedCollisionShapes {
         return CollisionContext.withPosition(source, mapping.worldToLocal(source.position()).y);
     }
 
-    private static boolean hasNoBlockingBlocks(Level level, PhysicalizedOrientedBox queryBox) {
-        AABB bounds = queryBox.worldAabb().inflate(COLLISION_SKIN);
-        if (bounds.getSize() < QUERY_EPSILON) {
-            return true;
-        }
-
-        int minX = Mth.floor(bounds.minX) - 1;
-        int minY = Math.max(level.getMinY(), Mth.floor(bounds.minY) - 1);
-        int minZ = Mth.floor(bounds.minZ) - 1;
-        int maxX = Mth.floor(bounds.maxX) + 1;
-        int maxY = Math.min(level.getMaxY() - 1, Mth.floor(bounds.maxY) + 1);
-        int maxZ = Mth.floor(bounds.maxZ) + 1;
-        if (maxY < minY) {
-            return true;
-        }
-
-        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        CollisionContext context = CollisionContext.empty();
-        for (int y = minY; y <= maxY; y++) {
-            for (int z = minZ; z <= maxZ; z++) {
-                for (int x = minX; x <= maxX; x++) {
-                    pos.set(x, y, z);
-                    BlockState state = level.getBlockState(pos);
-                    if (state.isAir()) {
-                        continue;
-                    }
-
-                    VoxelShape shape = state.getCollisionShape(level, pos, context);
-                    if (shape.isEmpty()) {
-                        continue;
-                    }
-
-                    for (AABB blockPart : shape.toAabbs()) {
-                        if (queryBox.intersectsAabb(blockPart.move(pos))) {
-                            return false;
-                        }
-                    }
-                }
+    private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB queryBox) {
+        List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
+        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+            if (entity.getBoundingBox().inflate(QUERY_EPSILON).intersects(queryBox)) {
+                candidates.add(entity);
             }
         }
-        return true;
-    }
-
-    private static boolean hasNoBlockingEntities(Level level, PhysicalizedVolumeEntity ignoredVolume, PhysicalizedOrientedBox queryBox) {
-        AABB bounds = queryBox.worldAabb().inflate(1.0E-7);
-        for (Entity entity : level.getEntities(ignoredVolume, bounds, entity -> entity != ignoredVolume
-                && !entity.isRemoved()
-                && !entity.isSpectator()
-                && entity.blocksBuilding
-                && entity.getBoundingBox().intersects(bounds))) {
-            if (entity instanceof PhysicalizedVolumeEntity volume) {
-                if (volumeIntersectsBox(volume, queryBox)) {
-                    return false;
-                }
-                continue;
-            }
-            if (queryBox.intersectsAabb(entity.getBoundingBox())) {
-                return false;
-            }
-        }
-        return true;
-    }
-
-    private static boolean volumeIntersectsBox(PhysicalizedVolumeEntity volume, PhysicalizedOrientedBox queryBox) {
-        if (volume.snapshot().blockCount() <= 0) {
-            return false;
-        }
-
-        PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
-        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(volume.snapshot());
-        AABB localQuery = mapping.localAabbOfWorld(queryBox.worldAabb().inflate(COLLISION_SKIN)).inflate(0.25);
-        int minX = Mth.floor(localQuery.minX) - 1;
-        int minY = Mth.floor(localQuery.minY) - 1;
-        int minZ = Mth.floor(localQuery.minZ) - 1;
-        int maxX = Mth.floor(localQuery.maxX) + 1;
-        int maxY = Mth.floor(localQuery.maxY) + 1;
-        int maxZ = Mth.floor(localQuery.maxZ) + 1;
-        if (maxX < 0 || maxY < 0 || maxZ < 0
-                || minX >= volume.snapshot().sizeX()
-                || minY >= volume.snapshot().sizeY()
-                || minZ >= volume.snapshot().sizeZ()) {
-            return false;
-        }
-
-        int clampedMinX = Mth.clamp(minX, 0, volume.snapshot().sizeX() - 1);
-        int clampedMinY = Mth.clamp(minY, 0, volume.snapshot().sizeY() - 1);
-        int clampedMinZ = Mth.clamp(minZ, 0, volume.snapshot().sizeZ() - 1);
-        int clampedMaxX = Mth.clamp(maxX, 0, volume.snapshot().sizeX() - 1);
-        int clampedMaxY = Mth.clamp(maxY, 0, volume.snapshot().sizeY() - 1);
-        int clampedMaxZ = Mth.clamp(maxZ, 0, volume.snapshot().sizeZ() - 1);
-
-        CollisionContext context = CollisionContext.empty();
-        for (int localY = clampedMinY; localY <= clampedMaxY; localY++) {
-            for (int localZ = clampedMinZ; localZ <= clampedMaxZ; localZ++) {
-                for (int localX = clampedMinX; localX <= clampedMaxX; localX++) {
-                    PhysicalizedBlockSnapshot cell = volume.snapshot().cellAtOrNull(localX, localY, localZ);
-                    if (cell == null || cell.state().isAir()) {
-                        continue;
-                    }
-
-                    BlockPos localPos = new BlockPos(localX, localY, localZ);
-                    VoxelShape shape = cell.state().getCollisionShape(localLevel, localPos, context);
-                    if (shape.isEmpty()) {
-                        continue;
-                    }
-
-                    for (AABB localPart : shape.toAabbs()) {
-                        PhysicalizedOrientedBox cellBox = PhysicalizedOrientedBox.fromLocalBox(mapping, localPart.move(localPos)).inflated(COLLISION_SKIN);
-                        if (queryBox.intersectsBox(cellBox)) {
-                            return true;
-                        }
-                    }
-                }
-            }
-        }
-        return false;
+        return candidates;
     }
 }

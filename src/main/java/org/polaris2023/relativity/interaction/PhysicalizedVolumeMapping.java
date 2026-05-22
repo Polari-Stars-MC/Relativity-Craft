@@ -8,8 +8,6 @@ import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
-import java.util.Arrays;
-import java.util.Comparator;
 import java.util.Optional;
 
 public final class PhysicalizedVolumeMapping {
@@ -18,21 +16,17 @@ public final class PhysicalizedVolumeMapping {
     private final PhysicalizedVolumeEntity entity;
     private final Quaternion rotation;
     private final Vec3 center;
-    private final double halfX;
-    private final double halfY;
-    private final double halfZ;
+    private final double originX;
+    private final double originY;
+    private final double originZ;
 
     private PhysicalizedVolumeMapping(PhysicalizedVolumeEntity entity, Vec3 center, Quaternion rotation) {
-        this(entity, center, rotation, entity.sizeX(), entity.sizeY(), entity.sizeZ());
-    }
-
-    private PhysicalizedVolumeMapping(PhysicalizedVolumeEntity entity, Vec3 center, Quaternion rotation, int sizeX, int sizeY, int sizeZ) {
         this.entity = entity;
         this.center = center;
         this.rotation = rotation;
-        this.halfX = Math.max(1, sizeX) * 0.5;
-        this.halfY = Math.max(1, sizeY) * 0.5;
-        this.halfZ = Math.max(1, sizeZ) * 0.5;
+        this.originX = entity.localOriginX();
+        this.originY = entity.localOriginY();
+        this.originZ = entity.localOriginZ();
     }
 
     public static PhysicalizedVolumeMapping current(PhysicalizedVolumeEntity entity) {
@@ -44,18 +38,18 @@ public final class PhysicalizedVolumeMapping {
     }
 
     public static PhysicalizedVolumeMapping interpolated(PhysicalizedVolumeEntity entity, float partialTicks) {
-        Vec3 position = entity.renderPosition(partialTicks);
+        Vec3 position = entity.getPosition(partialTicks);
         Quaternion previous = Quaternion.normalized(
-                entity.renderPreviousRotationQx(),
-                entity.renderPreviousRotationQy(),
-                entity.renderPreviousRotationQz(),
-                entity.renderPreviousRotationQw()
+                entity.previousRotationQx(),
+                entity.previousRotationQy(),
+                entity.previousRotationQz(),
+                entity.previousRotationQw()
         );
         Quaternion current = Quaternion.normalized(
-                entity.renderRotationQx(),
-                entity.renderRotationQy(),
-                entity.renderRotationQz(),
-                entity.renderRotationQw()
+                entity.rotationQx(),
+                entity.rotationQy(),
+                entity.rotationQz(),
+                entity.rotationQw()
         );
         return new PhysicalizedVolumeMapping(
                 entity,
@@ -64,24 +58,13 @@ public final class PhysicalizedVolumeMapping {
         );
     }
 
-    public static PhysicalizedVolumeMapping posed(PhysicalizedVolumeEntity entity, Vec3 center, int sizeX, int sizeY, int sizeZ) {
-        return new PhysicalizedVolumeMapping(
-                entity,
-                center,
-                Quaternion.normalized(entity.rotationQx(), entity.rotationQy(), entity.rotationQz(), entity.rotationQw()),
-                sizeX,
-                sizeY,
-                sizeZ
-        );
-    }
-
     public Vec3 worldToLocal(Vec3 world) {
         Vec3 centered = rotation.inverseRotate(world.subtract(center));
-        return new Vec3(centered.x + halfX, centered.y + halfY, centered.z + halfZ);
+        return new Vec3(centered.x + originX, centered.y + originY, centered.z + originZ);
     }
 
     public Vec3 localToWorld(Vec3 local) {
-        return center.add(rotation.rotate(new Vec3(local.x - halfX, local.y - halfY, local.z - halfZ)));
+        return center.add(rotation.rotate(new Vec3(local.x - originX, local.y - originY, local.z - originZ)));
     }
 
     public Vec3 worldToCenteredLocal(Vec3 world) {
@@ -89,7 +72,7 @@ public final class PhysicalizedVolumeMapping {
     }
 
     public Vec3 localToCentered(Vec3 local) {
-        return new Vec3(local.x - halfX, local.y - halfY, local.z - halfZ);
+        return new Vec3(local.x - originX, local.y - originY, local.z - originZ);
     }
 
     public Vec3 centeredLocalToWorld(Vec3 centeredLocal) {
@@ -112,48 +95,6 @@ public final class PhysicalizedVolumeMapping {
     public Direction localFaceToWorld(Direction face) {
         Vec3 world = localNormalToWorld(new Vec3(face.getStepX(), face.getStepY(), face.getStepZ()));
         return Direction.getApproximateNearest(world.x, world.y, world.z);
-    }
-
-    public Direction nearestLocalDirection(Vec3 worldDirection) {
-        Vec3 local = localDirection(worldDirection);
-        return Direction.getApproximateNearest(local.x, local.y, local.z);
-    }
-
-    public Direction nearestLocalVerticalDirection(Vec3 worldDirection) {
-        return localDirection(worldDirection).y >= 0.0 ? Direction.UP : Direction.DOWN;
-    }
-
-    public Direction nearestLocalHorizontalDirection(Vec3 worldDirection, Direction fallbackWorldDirection) {
-        Vec3 local = localDirection(worldDirection);
-        if (horizontalLengthSqr(local) <= EPSILON * EPSILON && fallbackWorldDirection != null) {
-            local = worldNormalToLocal(new Vec3(
-                    fallbackWorldDirection.getStepX(),
-                    fallbackWorldDirection.getStepY(),
-                    fallbackWorldDirection.getStepZ()
-            ));
-        }
-        if (horizontalLengthSqr(local) <= EPSILON * EPSILON) {
-            return Direction.SOUTH;
-        }
-        return Direction.getApproximateNearest(local.x, 0.0, local.z);
-    }
-
-    public float localYRot(Vec3 worldDirection, Direction fallbackWorldDirection) {
-        Vec3 local = localDirection(worldDirection);
-        if (horizontalLengthSqr(local) <= EPSILON * EPSILON) {
-            return Direction.getYRot(nearestLocalHorizontalDirection(worldDirection, fallbackWorldDirection));
-        }
-        return Mth.wrapDegrees((float) (Math.atan2(-local.x, local.z) * 180.0 / Math.PI));
-    }
-
-    public Direction[] orderedLocalDirections(Vec3 worldDirection, Direction clickedLocalFace, boolean replaceClicked) {
-        Vec3 local = localDirection(worldDirection);
-        Direction[] directions = Direction.values().clone();
-        Arrays.sort(directions, Comparator.comparingDouble(direction -> -dot(local, direction)));
-        if (!replaceClicked && clickedLocalFace != null) {
-            prioritize(directions, clickedLocalFace.getOpposite());
-        }
-        return directions;
     }
 
     public BlockPos localBlockPos(PhysicalizedBlockSnapshot cell) {
@@ -209,35 +150,6 @@ public final class PhysicalizedVolumeMapping {
 
     private interface CornerConsumer {
         void accept(Vec3 corner);
-    }
-
-    private Vec3 localDirection(Vec3 worldDirection) {
-        if (worldDirection == null || worldDirection.lengthSqr() <= EPSILON * EPSILON) {
-            return new Vec3(0.0, 0.0, 1.0);
-        }
-        Vec3 local = worldNormalToLocal(worldDirection);
-        return local.lengthSqr() <= EPSILON * EPSILON ? new Vec3(0.0, 0.0, 1.0) : local.normalize();
-    }
-
-    private static double horizontalLengthSqr(Vec3 direction) {
-        return direction.x * direction.x + direction.z * direction.z;
-    }
-
-    private static double dot(Vec3 localDirection, Direction direction) {
-        return localDirection.x * direction.getStepX()
-                + localDirection.y * direction.getStepY()
-                + localDirection.z * direction.getStepZ();
-    }
-
-    private static void prioritize(Direction[] directions, Direction preferred) {
-        int index = 0;
-        while (index < directions.length && directions[index] != preferred) {
-            index++;
-        }
-        if (index > 0 && index < directions.length) {
-            System.arraycopy(directions, 0, directions, 1, index);
-            directions[0] = preferred;
-        }
     }
 
     private static final class MutableBounds {

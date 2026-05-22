@@ -4,16 +4,13 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "BlockGetterMixin",
-    "BlockItemPlacementAccessor",
-    "BlockStateBaseMixin",
     "CollisionGetterMixin",
     "EntityGetterMixin",
-    "SignalGetterMixin"
+    "LevelEntityGetterAccessor"
   ],
   "client": [
-    "MinecraftPhysicalizedAttackMixin",
-    "MinecraftPickMixin",
-    "MultiPlayerGameModePhysicalizedContextMixin"
+    "LevelRendererMixin",
+    "MinecraftPickMixin"
   ],
   "injectors": {
     "defaultRequire": 1
