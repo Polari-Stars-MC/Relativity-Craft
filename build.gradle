@@ -292,7 +292,7 @@ if ((findProperty("includeNativeCurrent") ?: "false").toBoolean()) {
 dependencies {
     implementation(platform("io.github.over-run:overrungl-bom:$overrungl_version"))
     implementation("io.github.over-run:overrungl")
-    jarJar("io.github.over-run:overrungl:$overrungl_version")
+    implementation(files("libs/rn-1.0.0.jar"))
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.
