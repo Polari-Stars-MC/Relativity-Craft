@@ -2,7 +2,6 @@ package org.polaris2023.relativity.world;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
-import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
 import net.minecraft.core.BlockPos;
@@ -13,10 +12,21 @@ import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.VoxelShape;
+import org.polaris2023.rn.rapier.body.RcColliderBuilder;
+import org.polaris2023.rn.rapier.body.RcRigidBodyBuilder;
+import org.polaris2023.rn.rapier.config.RcBodyStatus;
+import org.polaris2023.rn.rapier.config.RcBool;
+import org.polaris2023.rn.rapier.math.RcQuat;
+import org.polaris2023.rn.rapier.math.RcVec3;
+import org.polaris2023.rn.rapier.nativebridge.RcNative;
+import org.polaris2023.rn.rapier.shape.RcAabb;
+import org.polaris2023.rn.rapier.shape.RcShapeType;
+import org.polaris2023.rn.rapier.world.RcWorld;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -146,8 +156,10 @@ public final class PhysicsWorldManager {
     }
 
     private static final class LevelPhysicsState {
-        private final RapierNativeWorld world = new RapierNativeWorld(0.0, GRAVITY_Y, 0.0);
-        private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world);
+        private final RcWorld world = RcWorld.create(new RcVec3(0.0F, (float) GRAVITY_Y, 0.0F));
+        private final Set<Long> dynamicBodies = new LinkedHashSet<>();
+        private final Set<Long> allBodies = new LinkedHashSet<>();
+        private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world, allBodies, dynamicBodies);
         private final Map<Integer, Long> bodyByEntityId = new ConcurrentHashMap<>();
         private final Map<Long, Integer> entityIdByBody = new ConcurrentHashMap<>();
         private final Set<ChunkSectionKey> requestedTerrainSections = ConcurrentHashMap.newKeySet();
@@ -169,7 +181,7 @@ public final class PhysicsWorldManager {
             double halfX = entity.sizeX() * 0.5;
             double halfY = entity.sizeY() * 0.5;
             double halfZ = entity.sizeZ() * 0.5;
-            long body = world.addDynamicBox(
+            long body = addDynamicBox(
                     entity.getX(),
                     entity.physicsCenterY(),
                     entity.getZ(),
@@ -191,20 +203,37 @@ public final class PhysicsWorldManager {
             return true;
         }
 
+        public long addDynamicBox(double x, double y, double z, double hx, double hy, double hz, double density, double friction, double restitution) {
+            try (RcRigidBodyBuilder body = world.createRigidBodyBuilder(RcBodyStatus.DYNAMIC);
+                 RcColliderBuilder collider = world.createColliderBuilder(RcShapeType.CUBOID, vec3(hx, hy, hz))) {
+                body.translation(vec3(x, y, z));
+                collider.density((float) density).friction((float) friction).restitution((float) restitution);
+                long handle = world.insertRigidBody(body);
+                world.insertColliderWithParent(collider, handle);
+                dynamicBodies.add(handle);
+                allBodies.add(handle);
+                return handle;
+            }
+        }
+
+        private RcVec3 vec3(double x, double y, double z) {
+            return new RcVec3((float) x, (float) y, (float) z);
+        }
+
         void unregister(PhysicalizedVolumeEntity entity) {
             long body = entity.nativeBodyHandle();
             if (body == 0L) {
                 Long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != null) {
                     entityIdByBody.remove(removed);
-                    world.removeBody(removed);
+                    removeBody(removed);
                 }
                 return;
             }
 
             bodyByEntityId.remove(entity.getId());
             entityIdByBody.remove(body);
-            world.removeBody(body);
+            removeBody(body);
         }
 
         void tick(ServerLevel level) {
@@ -214,7 +243,7 @@ public final class PhysicsWorldManager {
                 world.step(PHYSICS_SUBSTEP_SECONDS);
             }
 
-            double[] snapshot = world.snapshot();
+            double[] snapshot = snapshot();
             for (int i = 0; i + SNAPSHOT_STRIDE <= snapshot.length; i += SNAPSHOT_STRIDE) {
                 long body = (long) snapshot[i];
                 Integer entityId = entityIdByBody.get(body);
@@ -226,7 +255,7 @@ public final class PhysicsWorldManager {
                 if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) {
                     entityIdByBody.remove(body);
                     bodyByEntityId.values().remove(body);
-                    world.removeBody(body);
+                    removeBody(body);
                     continue;
                 }
 
@@ -258,7 +287,7 @@ public final class PhysicsWorldManager {
         }
 
         List<PhysicalizedVolumeEntity> queryVolumes(ServerLevel level, AABB box) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            long[] bodies = world.queryAabb(new RcAabb(vec3(box.minX, box.minY, box.minZ), vec3(box.maxX, box.maxY, box.maxZ)));
             if (bodies.length == 0) {
                 return Collections.emptyList();
             }
@@ -279,10 +308,10 @@ public final class PhysicsWorldManager {
         }
 
         void wakeBodiesInAabb(AABB box) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            long[] bodies = world.queryAabb(new RcAabb(vec3(box.minX, box.minY, box.minZ), vec3(box.maxX, box.maxY, box.maxZ)));
             for (long body : bodies) {
                 if (entityIdByBody.containsKey(body)) {
-                    world.wakeUp(body);
+                    RcNative.rc_rigid_body_wake_up(world.handle(), body, RcBool.TRUE);
                 }
             }
         }
@@ -320,11 +349,11 @@ public final class PhysicsWorldManager {
                 double centerX = volume.getX() + dx;
                 double centerY = volume.physicsCenterY() + dy;
                 double centerZ = volume.getZ() + dz;
-                if (!world.setBodyTranslation(body, centerX, centerY, centerZ)) {
+                if (!RcNative.rc_rigid_body_set_pose(world.handle(),body, vec3(centerX, centerY, centerZ), RcNative.rc_rigid_body_get_rotation(world.handle(), body), RcBool.TRUE).value()) {
                     continue;
                 }
 
-                world.setBodyLinearVelocity(body, vx, vy, vz);
+                world.setRigidBodyLinearVelocity(body, vec3(vx, vy, vz), true);
                 volume.applyNativeSnapshot(
                         centerX,
                         centerY,
@@ -426,6 +455,31 @@ public final class PhysicsWorldManager {
                 queuedSections.remove(job.key());
                 terrain.replaceSectionMesh(job.key(), job.vertices(), job.indices());
             }
+        }
+
+        public void removeBody(long bodyHandle) {
+            world.removeRigidBody(bodyHandle, true);
+            dynamicBodies.remove(bodyHandle);
+            allBodies.remove(bodyHandle);
+        }
+
+        public double[] snapshot() {
+            List<Long> liveBodies = new ArrayList<>(dynamicBodies);
+            double[] snapshot = new double[liveBodies.size() * SNAPSHOT_STRIDE];
+            int index = 0;
+            for (long bodyHandle : liveBodies) {
+                RcVec3 translation = world.getRigidBodyTranslation(bodyHandle);
+                RcQuat rotation = RcNative.rc_rigid_body_get_rotation(world.handle(), bodyHandle);
+                snapshot[index++] = bodyHandle;
+                snapshot[index++] = translation.x();
+                snapshot[index++] = translation.y();
+                snapshot[index++] = translation.z();
+                snapshot[index++] = rotation.i();
+                snapshot[index++] = rotation.j();
+                snapshot[index++] = rotation.k();
+                snapshot[index++] = rotation.w();
+            }
+            return snapshot;
         }
     }
 

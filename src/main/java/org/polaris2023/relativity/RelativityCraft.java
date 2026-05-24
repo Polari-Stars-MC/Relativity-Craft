@@ -4,7 +4,6 @@ import com.mojang.logging.LogUtils;
 import org.polaris2023.relativity.command.RelativityCommands;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
-import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.physicalization.BlockRemovalQueue;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
@@ -34,6 +33,7 @@ import net.neoforged.neoforge.event.level.ExplosionEvent;
 import net.neoforged.neoforge.event.level.PistonEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
+import org.polaris2023.rn.rapier.nativebridge.RcNative;
 import org.slf4j.Logger;
 
 @Mod(RelativityCraft.MOD_ID)
@@ -57,7 +57,7 @@ public final class RelativityCraft {
 
     private static boolean loadRapier() {
         try {
-            RelativityCraftRapier.ensureLoaded();
+            Class.forName(RcNative.class.getName());
             return true;
         } catch (Throwable t) {
             LOGGER.warn("Rapier native backend is unavailable; Java fallback systems remain active.", t);
