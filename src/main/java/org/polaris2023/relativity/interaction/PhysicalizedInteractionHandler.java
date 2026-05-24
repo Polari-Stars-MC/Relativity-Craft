@@ -202,7 +202,7 @@ public final class PhysicalizedInteractionHandler {
         }
 
         entity.updateSnapshot(placement.snapshot(), nextOrigin);
-        PhysicsWorldManager.global().rebuildBodyShape(level, entity);
+//        PhysicsWorldManager.global().rebuildBodyShape(level, entity);
 
         if (!player.hasInfiniteMaterials()) {
             stack.shrink(1);
@@ -272,7 +272,7 @@ public final class PhysicalizedInteractionHandler {
 
     private static void replacePhysicalizedCellState(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, BlockState state) {
         entity.updateSnapshot(entity.snapshot().withCellState(cell, state, cell.blockEntityNbt()));
-        PhysicsWorldManager.global().rebuildBodyShape(level, entity);
+//        PhysicsWorldManager.global().rebuildBodyShape(level, entity);
         PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, cell.localX(), cell.localY(), cell.localZ());
     }
 
@@ -322,7 +322,7 @@ public final class PhysicalizedInteractionHandler {
         if (entity.snapshot().blockCount() <= 0) {
             entity.discard();
         } else {
-            PhysicsWorldManager.global().rebuildBodyShape(level, entity);
+//            PhysicsWorldManager.global().rebuildBodyShape(level, entity);
         }
     }
 
