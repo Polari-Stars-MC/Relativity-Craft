@@ -556,9 +556,7 @@ public final class PhysicsWorldManager {
 
         private void buildTerrainImmediately(ServerLevel level, AABB box) {
             requestTerrainAround(level, box, true, true);
-            while (!priorityTerrainJobs.isEmpty()) {
-                drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, Long.MAX_VALUE);
-            }
+            drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
         }
 
         private void cancelQueuedBuild(ChunkSectionKey key) {

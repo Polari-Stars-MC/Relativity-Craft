@@ -61,7 +61,7 @@ public final class RelativityCraft {
             RelativityCraftRapier.ensureLoaded();
             return true;
         } catch (Throwable t) {
-            LOGGER.warn("Rapier native backend is unavailable; Java fallback systems remain active.", t);
+            LOGGER.warn("Rapier native backend is unavailable; Java fallback systems remain active. Cause: {}", t.toString());
             return false;
         }
     }

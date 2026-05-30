@@ -3,7 +3,10 @@ use rapier3d::prelude::{
     IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodySet, Vector,
 };
 
-use crate::ffi::{RcVec3, RcWorldHandle, vec3_to_rapier};
+use crate::ffi::{
+    RcRigidBodyHandle, RcVec3, RcWorldHandle, pack_rigid_body_handle, quat_from_rapier,
+    vec3_from_rapier, vec3_to_rapier,
+};
 
 pub(crate) struct PhysicsWorld {
     pub(crate) pipeline: PhysicsPipeline,
@@ -23,10 +26,15 @@ pub(crate) struct PhysicsWorld {
 
 impl PhysicsWorld {
     pub(crate) fn new(gravity: RcVec3) -> Self {
+        let mut integration_parameters = IntegrationParameters::default();
+        integration_parameters.dt = 1.0 / 60.0;
+        integration_parameters.num_solver_iterations = 4;
+        integration_parameters.max_ccd_substeps = 4;
+
         Self {
             pipeline: PhysicsPipeline::new(),
             gravity: vec3_to_rapier(gravity),
-            integration_parameters: IntegrationParameters::default(),
+            integration_parameters,
             islands: IslandManager::new(),
             broad_phase: BroadPhaseBvh::new(),
             narrow_phase: NarrowPhase::new(),
@@ -107,4 +115,62 @@ pub extern "C" fn rc_world_get_gravity_out(world: *const RcWorldHandle, out_grav
     };
 
     *out_gravity = rc_world_get_gravity(world);
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_dynamic_body_snapshot_count(world: *const RcWorldHandle) -> u32 {
+    let Some(world) = (unsafe { world.as_ref() }) else {
+        return 0;
+    };
+
+    world
+        .inner
+        .bodies
+        .iter()
+        .filter(|(_, body)| body.is_dynamic())
+        .count() as u32
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_dynamic_body_snapshot(
+    world: *const RcWorldHandle,
+    out_handles: *mut RcRigidBodyHandle,
+    out_values: *mut f32,
+    capacity: u32,
+) -> u32 {
+    let Some(world) = (unsafe { world.as_ref() }) else {
+        return 0;
+    };
+    if out_handles.is_null() || out_values.is_null() || capacity == 0 {
+        return 0;
+    }
+
+    let capacity = capacity as usize;
+    let handles = unsafe { std::slice::from_raw_parts_mut(out_handles, capacity) };
+    let values = unsafe { std::slice::from_raw_parts_mut(out_values, capacity * 7) };
+    let mut written = 0usize;
+
+    for (handle, body) in world.inner.bodies.iter() {
+        if !body.is_dynamic() {
+            continue;
+        }
+        if written >= capacity {
+            break;
+        }
+
+        let translation = vec3_from_rapier(body.translation());
+        let rotation = quat_from_rapier(*body.rotation());
+        handles[written] = pack_rigid_body_handle(handle);
+        let offset = written * 7;
+        values[offset] = translation.x;
+        values[offset + 1] = translation.y;
+        values[offset + 2] = translation.z;
+        values[offset + 3] = rotation.i;
+        values[offset + 4] = rotation.j;
+        values[offset + 5] = rotation.k;
+        values[offset + 6] = rotation.w;
+        written += 1;
+    }
+
+    written as u32
 }

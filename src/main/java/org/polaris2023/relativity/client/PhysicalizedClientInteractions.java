@@ -189,13 +189,13 @@ public final class PhysicalizedClientInteractions {
 
         boolean blockPlacementAttempt = minecraft.player != null && minecraft.player.getItemInHand(hand).getItem() instanceof BlockItem;
         PlacementPredictionResult placementPrediction = predictCreativePlacement(minecraft, hit, hand);
-        if (placementPrediction == PlacementPredictionResult.DUPLICATE || placementPrediction == PlacementPredictionResult.FAILED) {
+        if (placementPrediction == PlacementPredictionResult.DUPLICATE) {
             return true;
         }
 
         rememberUseCommand(minecraft, hit, hand);
         sendUseCommand(hit, hand);
-        if (swingHand && minecraft.player != null && (!blockPlacementAttempt || placementPrediction == PlacementPredictionResult.PREDICTED)) {
+        if (swingHand && minecraft.player != null && (!blockPlacementAttempt || placementPrediction != PlacementPredictionResult.FAILED)) {
             minecraft.player.swing(hand);
         }
         return true;
@@ -743,7 +743,7 @@ public final class PhysicalizedClientInteractions {
         return physicalizedHit(minecraft).map(PhysicalizedHit::entity).orElse(null);
     }
 
-    private static Optional<PhysicalizedHit> physicalizedHit(Minecraft minecraft) {
+    public static Optional<PhysicalizedHit> physicalizedHit(Minecraft minecraft) {
         if (minecraft.level == null || minecraft.player == null) {
             return Optional.empty();
         }
@@ -761,6 +761,26 @@ public final class PhysicalizedClientInteractions {
             return Optional.empty();
         }
         return hit;
+    }
+
+    public static Optional<PhysicalizedHit> physicalizedOutlineHit(Minecraft minecraft) {
+        if (minecraft.level == null || minecraft.player == null) {
+            return Optional.empty();
+        }
+        Optional<PhysicalizedHit> current = currentPhysicalizedHit(minecraft);
+        if (current.isPresent()) {
+            return current;
+        }
+
+        float partialTick = clientPartialTick(minecraft);
+        Vec3 origin = minecraft.player.getEyePosition(partialTick);
+        Vec3 direction = minecraft.player.getViewVector(partialTick).normalize();
+        double reach = Math.max(4.5, minecraft.player.blockInteractionRange());
+        Optional<PhysicalizedHit> hit = PhysicalizedRaycaster.raycast(minecraft.level, origin, direction, reach, partialTick);
+        if (hit.isEmpty()) {
+            return Optional.empty();
+        }
+        return isCloserThanCurrentHit(minecraft, hit.get(), origin) ? hit : Optional.empty();
     }
 
     private static Optional<PhysicalizedHit> currentPhysicalizedHit(Minecraft minecraft) {

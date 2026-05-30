@@ -204,6 +204,11 @@ public final class RapierNativeWorld implements AutoCloseable {
     }
 
     public double[] snapshot() {
+        double[] batchedSnapshot = RelativityCraftRapier.worldDynamicBodySnapshot(world.handle());
+        if (batchedSnapshot != null) {
+            return batchedSnapshot;
+        }
+
         List<Long> liveBodies = new ArrayList<>(dynamicBodies);
         double[] snapshot = new double[liveBodies.size() * SNAPSHOT_STRIDE];
         int index = 0;

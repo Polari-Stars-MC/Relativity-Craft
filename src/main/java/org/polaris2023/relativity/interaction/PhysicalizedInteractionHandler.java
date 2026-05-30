@@ -47,7 +47,6 @@ import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicalizedInteractionHandler {
-    private static final double PLACEMENT_EPSILON = 1.0E-4;
     private static final Map<BreakKey, Float> BREAK_PROGRESS = new ConcurrentHashMap<>();
     private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new ConcurrentHashMap<>();
     private static final Map<UUID, BreakAttempt> LAST_BREAK_ATTEMPT = new ConcurrentHashMap<>();
@@ -371,8 +370,13 @@ public final class PhysicalizedInteractionHandler {
     }
 
     public static BlockPos placementTarget(PhysicalizedHit hit) {
-        Vec3 normal = new Vec3(hit.worldFace().getStepX(), hit.worldFace().getStepY(), hit.worldFace().getStepZ());
-        BlockPos target = BlockPos.containing(hit.worldLocation().add(normal.scale(PLACEMENT_EPSILON)));
+        PhysicalizedBlockSnapshot cell = hit.cell();
+        Vec3 localTargetCenter = new Vec3(
+                cell.localX() + hit.localFace().getStepX() + 0.5,
+                cell.localY() + hit.localFace().getStepY() + 0.5,
+                cell.localZ() + hit.localFace().getStepZ() + 0.5
+        );
+        BlockPos target = BlockPos.containing(PhysicalizedVolumeMapping.current(hit.entity()).localToWorld(localTargetCenter));
         if (target.equals(hit.visualBlockPos())) {
             return hit.visualBlockPos().relative(hit.worldFace());
         }

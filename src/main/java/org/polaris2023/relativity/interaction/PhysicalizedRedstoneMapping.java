@@ -1122,40 +1122,47 @@ public final class PhysicalizedRedstoneMapping {
                 return new VirtualCell(entity, mappedCell, mapping);
             }
 
+            PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
             AABB localQuery = mapping.localAabbOfWorld(queryBox).inflate(1.0);
-            int minX = Mth.floor(localQuery.minX);
-            int minY = Mth.floor(localQuery.minY);
-            int minZ = Mth.floor(localQuery.minZ);
-            int maxX = Mth.floor(localQuery.maxX);
-            int maxY = Mth.floor(localQuery.maxY);
-            int maxZ = Mth.floor(localQuery.maxZ);
-            for (PhysicalizedBlockSnapshot cell : entity.snapshot().cells()) {
-                if (cell.state().isAir()
-                        || cell.localX() < minX || cell.localX() > maxX
-                        || cell.localY() < minY || cell.localY() > maxY
-                        || cell.localZ() < minZ || cell.localZ() > maxZ) {
-                    continue;
-                }
-                if (mapping.visualBlockPos(cell).equals(pos)) {
-                    return new VirtualCell(entity, cell, mapping);
-                }
+            int minX = Math.max(snapshot.occupiedMinX(), Mth.floor(localQuery.minX));
+            int minY = Math.max(snapshot.occupiedMinY(), Mth.floor(localQuery.minY));
+            int minZ = Math.max(snapshot.occupiedMinZ(), Mth.floor(localQuery.minZ));
+            int maxX = Math.min(snapshot.occupiedMaxX(), Mth.floor(localQuery.maxX));
+            int maxY = Math.min(snapshot.occupiedMaxY(), Mth.floor(localQuery.maxY));
+            int maxZ = Math.min(snapshot.occupiedMaxZ(), Mth.floor(localQuery.maxZ));
+            if (minX > maxX || minY > maxY || minZ > maxZ) {
+                continue;
+            }
 
-                AABB worldCellBox = mapping.worldAabbOfLocal(new AABB(
-                        cell.localX(),
-                        cell.localY(),
-                        cell.localZ(),
-                        cell.localX() + 1.0,
-                        cell.localY() + 1.0,
-                        cell.localZ() + 1.0
-                )).inflate(VIRTUAL_CELL_QUERY_EPSILON);
-                if (!worldCellBox.intersects(queryBox)) {
-                    continue;
-                }
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    for (int x = minX; x <= maxX; x++) {
+                        PhysicalizedBlockSnapshot cell = snapshot.cellAtOrNull(x, y, z);
+                        if (cell == null || cell.state().isAir()) {
+                            continue;
+                        }
+                        if (mapping.visualBlockPos(cell).equals(pos)) {
+                            return new VirtualCell(entity, cell, mapping);
+                        }
 
-                double distance = Vec3.atCenterOf(pos).distanceToSqr(mapping.cellWorldCenter(cell));
-                if (distance < bestDistance) {
-                    bestDistance = distance;
-                    best = new VirtualCell(entity, cell, mapping);
+                        AABB worldCellBox = mapping.worldAabbOfLocal(new AABB(
+                                cell.localX(),
+                                cell.localY(),
+                                cell.localZ(),
+                                cell.localX() + 1.0,
+                                cell.localY() + 1.0,
+                                cell.localZ() + 1.0
+                        )).inflate(VIRTUAL_CELL_QUERY_EPSILON);
+                        if (!worldCellBox.intersects(queryBox)) {
+                            continue;
+                        }
+
+                        double distance = Vec3.atCenterOf(pos).distanceToSqr(mapping.cellWorldCenter(cell));
+                        if (distance < bestDistance) {
+                            bestDistance = distance;
+                            best = new VirtualCell(entity, cell, mapping);
+                        }
+                    }
                 }
             }
         }

@@ -20,7 +20,7 @@ import java.util.Optional;
 
 @Mixin(Minecraft.class)
 public abstract class MinecraftPickMixin {
-    private static final double RELATIVITY_PICK_EPSILON = 1.0E-4;
+    private static final double RELATIVITY_PICK_TOLERANCE = 0.05;
 
     @Shadow
     public ClientLevel level;
@@ -65,6 +65,6 @@ public abstract class MinecraftPickMixin {
                 && volume == hit.entity()) {
             return true;
         }
-        return hit.distance() * hit.distance() < player.getEyePosition().distanceToSqr(hitResult.getLocation()) - RELATIVITY_PICK_EPSILON;
+        return hit.distance() <= Math.sqrt(player.getEyePosition().distanceToSqr(hitResult.getLocation())) + RELATIVITY_PICK_TOLERANCE;
     }
 }

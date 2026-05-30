@@ -17,7 +17,7 @@ import java.lang.invoke.WrongMethodTypeException;
 public final class RelativityCraftRapier {
     private static final String MODULE = "relativity_craft_rapier";
     private static final String BASENAME = "relativity_craft_rapier";
-    private static final String VERSION = "0.1.3";
+    private static final String VERSION = "0.1.4";
 
     static final GroupLayout RC_VEC3 = MemoryLayout.structLayout(
         ValueLayout.JAVA_FLOAT.withName("x"),
@@ -63,6 +63,20 @@ public final class RelativityCraftRapier {
     private static final MethodHandle RC_WORLD_GET_GRAVITY = downcall(
         "rc_world_get_gravity_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
+    private static final MethodHandle RC_WORLD_DYNAMIC_BODY_SNAPSHOT_COUNT = optionalDowncall(
+        "rc_world_dynamic_body_snapshot_count",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+    private static final MethodHandle RC_WORLD_DYNAMIC_BODY_SNAPSHOT = optionalDowncall(
+        "rc_world_dynamic_body_snapshot",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT
+        )
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_CREATE = downcall(
         "rc_rigid_body_builder_create",
@@ -296,6 +310,39 @@ public final class RelativityCraftRapier {
             return decodeVec3(out);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_get_gravity", t);
+        }
+    }
+
+    static double[] worldDynamicBodySnapshot(MemorySegment world) {
+        if (RC_WORLD_DYNAMIC_BODY_SNAPSHOT_COUNT == null || RC_WORLD_DYNAMIC_BODY_SNAPSHOT == null) {
+            return null;
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            int count = (int) RC_WORLD_DYNAMIC_BODY_SNAPSHOT_COUNT.invokeExact(world);
+            if (count <= 0) {
+                return new double[0];
+            }
+
+            MemorySegment handles = arena.allocate(ValueLayout.JAVA_LONG, count);
+            MemorySegment values = arena.allocate(ValueLayout.JAVA_FLOAT, count * 7L);
+            int written = (int) RC_WORLD_DYNAMIC_BODY_SNAPSHOT.invokeExact(world, handles, values, count);
+            double[] snapshot = new double[written * 8];
+            for (int i = 0; i < written; i++) {
+                int out = i * 8;
+                int value = i * 7;
+                snapshot[out] = handles.getAtIndex(ValueLayout.JAVA_LONG, i);
+                snapshot[out + 1] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value);
+                snapshot[out + 2] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 1);
+                snapshot[out + 3] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 2);
+                snapshot[out + 4] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 3);
+                snapshot[out + 5] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 4);
+                snapshot[out + 6] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 5);
+                snapshot[out + 7] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 6);
+            }
+            return snapshot;
+        } catch (Throwable ignored) {
+            return null;
         }
     }
 
@@ -742,6 +789,12 @@ public final class RelativityCraftRapier {
 
     private static MethodHandle downcall(String symbol, FunctionDescriptor descriptor) {
         return LINKER.downcallHandle(find(symbol), descriptor);
+    }
+
+    private static MethodHandle optionalDowncall(String symbol, FunctionDescriptor descriptor) {
+        return SYMBOL_LOOKUP.find(symbol)
+            .map(segment -> LINKER.downcallHandle(segment, descriptor))
+            .orElse(null);
     }
 
     private static MemorySegment find(String symbol) {
