@@ -1,8 +1,10 @@
 package org.polaris2023.relativity.entity;
 
 import org.polaris2023.relativity.physicalization.BlockBox;
+import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
+import org.polaris2023.relativity.interaction.PhysicalizedVolumeLookup;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.network.RegistryFriendlyByteBuf;
@@ -25,9 +27,12 @@ import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.neoforge.entity.IEntityWithComplexSpawn;
 
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 public final class PhysicalizedVolumeEntity extends Entity implements IEntityWithComplexSpawn {
@@ -90,6 +95,27 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private int breakLocalY = -1;
     private int breakLocalZ = -1;
     private int breakProgress = -1;
+    private final Map<Long, Integer> virtualContainerOpenCounts = new HashMap<>();
+    private static final long CLIENT_VISUAL_INTERPOLATION_NANOS = 50_000_000L;
+    private static final double CLIENT_VISUAL_POSITION_EPSILON = 1.0E-5;
+    private static final float CLIENT_VISUAL_ROTATION_EPSILON = 1.0E-5F;
+    private static final double WORLD_COLLISION_EPSILON = 1.0E-4;
+    private static final double WORLD_COLLISION_MAX_PUSH_UP = 16.0;
+    private long clientVisualStartNanos = Long.MIN_VALUE;
+    private double clientVisualStartX;
+    private double clientVisualStartY;
+    private double clientVisualStartZ;
+    private double clientVisualTargetX;
+    private double clientVisualTargetY;
+    private double clientVisualTargetZ;
+    private float clientVisualStartQx;
+    private float clientVisualStartQy;
+    private float clientVisualStartQz;
+    private float clientVisualStartQw = 1.0F;
+    private float clientVisualTargetQx;
+    private float clientVisualTargetQy;
+    private float clientVisualTargetQz;
+    private float clientVisualTargetQw = 1.0F;
 
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
@@ -196,6 +222,42 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return qwOld;
     }
 
+    public ClientVisualPose clientVisualPose(float partialTicks) {
+        Vec3 targetPosition = this.getPosition(partialTicks);
+        float targetQx = this.rotationQx();
+        float targetQy = this.rotationQy();
+        float targetQz = this.rotationQz();
+        float targetQw = this.rotationQw();
+        if (!this.level().isClientSide()) {
+            return new ClientVisualPose(targetPosition, targetQx, targetQy, targetQz, targetQw);
+        }
+
+        long now = System.nanoTime();
+        boolean firstSample = this.clientVisualStartNanos == Long.MIN_VALUE;
+        if (firstSample || this.clientVisualTargetChanged(targetPosition, targetQx, targetQy, targetQz, targetQw)) {
+            ClientVisualPose current = firstSample
+                    ? new ClientVisualPose(targetPosition, targetQx, targetQy, targetQz, targetQw)
+                    : this.clientCurrentVisualPose(now);
+            this.clientVisualStartNanos = now;
+            this.clientVisualStartX = current.position().x;
+            this.clientVisualStartY = current.position().y;
+            this.clientVisualStartZ = current.position().z;
+            this.clientVisualStartQx = current.qx();
+            this.clientVisualStartQy = current.qy();
+            this.clientVisualStartQz = current.qz();
+            this.clientVisualStartQw = current.qw();
+            this.clientVisualTargetX = targetPosition.x;
+            this.clientVisualTargetY = targetPosition.y;
+            this.clientVisualTargetZ = targetPosition.z;
+            this.clientVisualTargetQx = targetQx;
+            this.clientVisualTargetQy = targetQy;
+            this.clientVisualTargetQz = targetQz;
+            this.clientVisualTargetQw = targetQw;
+        }
+
+        return this.clientCurrentVisualPose(now);
+    }
+
     public long nativeBodyHandle() {
         return nativeBodyHandle;
     }
@@ -236,14 +298,55 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return nativeBodyHandle != 0L;
     }
 
+    public Vec3 physicsCenter() {
+        return this.entityCenter().add(this.physicsCenterOffset(this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw()));
+    }
+
     public double physicsCenterY() {
-        return this.getY() + this.sizeY() * 0.5;
+        return this.physicsCenter().y;
+    }
+
+    public double physicsHalfExtentX() {
+        return Math.max(0.5, this.currentSnapshot().occupiedSizeX() * 0.5);
+    }
+
+    public double physicsHalfExtentY() {
+        return Math.max(0.5, this.currentSnapshot().occupiedSizeY() * 0.5);
+    }
+
+    public double physicsHalfExtentZ() {
+        return Math.max(0.5, this.currentSnapshot().occupiedSizeZ() * 0.5);
+    }
+
+    public void setEntityCenter(Vec3 center) {
+        this.setPos(center.x, center.y - this.sizeY() * 0.5, center.z);
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+    }
+
+    public void resolveWorldCollisionAfterShapeChange() {
+        if (this.level().isClientSide() || this.isRemoved() || this.noPhysics) {
+            return;
+        }
+
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+        double pushUp = requiredUpwardPush(this.getBoundingBox());
+        if (pushUp <= 0.0) {
+            return;
+        }
+
+        this.setPos(this.getX(), this.getY() + Math.min(pushUp + WORLD_COLLISION_EPSILON, WORLD_COLLISION_MAX_PUSH_UP), this.getZ());
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+        Vec3 movement = this.getDeltaMovement();
+        if (movement.y < 0.0) {
+            this.setDeltaMovement(movement.x, 0.0, movement.z);
+        }
     }
 
     public void applyNativeSnapshot(double centerX, double centerY, double centerZ, float qx, float qy, float qz, float qw) {
         Vec3 previousPosition = this.position();
         this.setPhysicsRotation(qx, qy, qz, qw);
-        this.setPos(centerX, centerY - this.sizeY() * 0.5, centerZ);
+        Vec3 entityCenter = this.entityCenterForPhysicsCenter(new Vec3(centerX, centerY, centerZ));
+        this.setEntityCenter(entityCenter);
         this.setDeltaMovement(this.position().subtract(previousPosition));
     }
 
@@ -410,6 +513,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private record LocalBounds(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
     }
 
+    public void setVirtualContainerOpenCount(int localX, int localY, int localZ, int openCount) {
+        long key = packLocal(localX, localY, localZ);
+        if (openCount <= 0) {
+            this.virtualContainerOpenCounts.remove(key);
+        } else {
+            this.virtualContainerOpenCounts.put(key, openCount);
+        }
+    }
+
+    public boolean isVirtualContainerOpen(PhysicalizedBlockSnapshot cell) {
+        return this.virtualContainerOpenCounts.getOrDefault(packLocal(cell.localX(), cell.localY(), cell.localZ()), 0) > 0;
+    }
+
     @Override
     public boolean isPickable() {
         return !this.isRemoved();
@@ -464,6 +580,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public void tick() {
+        PhysicalizedVolumeLookup.track(this);
         this.updatePreviousPhysicsRotation();
         super.tick();
         if (this.level().isClientSide()) {
@@ -492,6 +609,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     @Override
     public void onRemoval(RemovalReason reason) {
         super.onRemoval(reason);
+        PhysicalizedVolumeLookup.untrack(this);
         if (!this.level().isClientSide()) {
             PhysicsWorldManager.global().unregister(this);
         }
@@ -594,6 +712,35 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.entityData.set(DATA_QW, qw);
     }
 
+    private Vec3 entityCenter() {
+        return new Vec3(this.getX(), this.getY() + this.sizeY() * 0.5, this.getZ());
+    }
+
+    private Vec3 entityCenterForPhysicsCenter(Vec3 physicsCenter) {
+        return physicsCenter.subtract(this.physicsCenterOffset(this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw()));
+    }
+
+    private Vec3 physicsCenterOffset(float qx, float qy, float qz, float qw) {
+        PhysicalizedVolumeSnapshot current = this.currentSnapshot();
+        Vec3 localOffset = new Vec3(
+                current.occupiedCenterX() - this.localOriginX(),
+                current.occupiedCenterY() - this.localOriginY(),
+                current.occupiedCenterZ() - this.localOriginZ()
+        );
+        return rotate(localOffset, qx, qy, qz, qw);
+    }
+
+    private static Vec3 rotate(Vec3 vector, float qx, float qy, float qz, float qw) {
+        double tx = 2.0 * (qy * vector.z - qz * vector.y);
+        double ty = 2.0 * (qz * vector.x - qx * vector.z);
+        double tz = 2.0 * (qx * vector.y - qy * vector.x);
+        return new Vec3(
+                vector.x + qw * tx + (qy * tz - qz * ty),
+                vector.y + qw * ty + (qz * tx - qx * tz),
+                vector.z + qw * tz + (qx * ty - qy * tx)
+        );
+    }
+
     private void updatePreviousPhysicsRotation() {
         this.qxOld = this.rotationQx();
         this.qyOld = this.rotationQy();
@@ -637,6 +784,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return current.sizeZ() * 0.5;
     }
 
+    private static long packLocal(int x, int y, int z) {
+        return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
     private int contentSizeX() {
         return Math.max(1, currentSnapshot().occupiedSizeX());
     }
@@ -651,6 +802,93 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     private PhysicalizedVolumeSnapshot currentSnapshot() {
         return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
+    }
+
+    private boolean clientVisualTargetChanged(Vec3 targetPosition, float qx, float qy, float qz, float qw) {
+        return Math.abs(targetPosition.x - this.clientVisualTargetX) > CLIENT_VISUAL_POSITION_EPSILON
+                || Math.abs(targetPosition.y - this.clientVisualTargetY) > CLIENT_VISUAL_POSITION_EPSILON
+                || Math.abs(targetPosition.z - this.clientVisualTargetZ) > CLIENT_VISUAL_POSITION_EPSILON
+                || Math.abs(qx - this.clientVisualTargetQx) > CLIENT_VISUAL_ROTATION_EPSILON
+                || Math.abs(qy - this.clientVisualTargetQy) > CLIENT_VISUAL_ROTATION_EPSILON
+                || Math.abs(qz - this.clientVisualTargetQz) > CLIENT_VISUAL_ROTATION_EPSILON
+                || Math.abs(qw - this.clientVisualTargetQw) > CLIENT_VISUAL_ROTATION_EPSILON;
+    }
+
+    private ClientVisualPose clientCurrentVisualPose(long now) {
+        float alpha = (float) Math.min(1.0, Math.max(0.0, (double) (now - this.clientVisualStartNanos) / CLIENT_VISUAL_INTERPOLATION_NANOS));
+        Vec3 position = new Vec3(
+                lerp(alpha, this.clientVisualStartX, this.clientVisualTargetX),
+                lerp(alpha, this.clientVisualStartY, this.clientVisualTargetY),
+                lerp(alpha, this.clientVisualStartZ, this.clientVisualTargetZ)
+        );
+        float[] rotation = slerp(
+                this.clientVisualStartQx,
+                this.clientVisualStartQy,
+                this.clientVisualStartQz,
+                this.clientVisualStartQw,
+                this.clientVisualTargetQx,
+                this.clientVisualTargetQy,
+                this.clientVisualTargetQz,
+                this.clientVisualTargetQw,
+                alpha
+        );
+        return new ClientVisualPose(position, rotation[0], rotation[1], rotation[2], rotation[3]);
+    }
+
+    private static double lerp(float alpha, double start, double end) {
+        return start + (end - start) * alpha;
+    }
+
+    private static float[] slerp(float fromX, float fromY, float fromZ, float fromW, float toX, float toY, float toZ, float toW, float alpha) {
+        float dot = fromX * toX + fromY * toY + fromZ * toZ + fromW * toW;
+        if (dot < 0.0F) {
+            dot = -dot;
+            toX = -toX;
+            toY = -toY;
+            toZ = -toZ;
+            toW = -toW;
+        }
+
+        float fromScale;
+        float toScale;
+        if (dot > 0.9995F) {
+            fromScale = 1.0F - alpha;
+            toScale = alpha;
+        } else {
+            double theta = Math.acos(Math.max(-1.0F, Math.min(1.0F, dot)));
+            double sinTheta = Math.sin(theta);
+            fromScale = (float) (Math.sin((1.0F - alpha) * theta) / sinTheta);
+            toScale = (float) (Math.sin(alpha * theta) / sinTheta);
+        }
+
+        float qx = fromX * fromScale + toX * toScale;
+        float qy = fromY * fromScale + toY * toScale;
+        float qz = fromZ * fromScale + toZ * toScale;
+        float qw = fromW * fromScale + toW * toScale;
+        float length = qx * qx + qy * qy + qz * qz + qw * qw;
+        if (length <= 1.0E-6F) {
+            return new float[] {0.0F, 0.0F, 0.0F, 1.0F};
+        }
+        float invLength = (float) (1.0 / Math.sqrt(length));
+        return new float[] {qx * invLength, qy * invLength, qz * invLength, qw * invLength};
+    }
+
+    public record ClientVisualPose(Vec3 position, float qx, float qy, float qz, float qw) {
+    }
+
+    private double requiredUpwardPush(AABB box) {
+        double pushUp = 0.0;
+        for (VoxelShape collision : this.level().getBlockCollisions(this, box.deflate(WORLD_COLLISION_EPSILON))) {
+            if (collision.isEmpty()) {
+                continue;
+            }
+            for (AABB obstacle : collision.toAabbs()) {
+                if (box.intersects(obstacle)) {
+                    pushUp = Math.max(pushUp, obstacle.maxY - box.minY);
+                }
+            }
+        }
+        return pushUp;
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

@@ -1,12 +1,12 @@
 package org.polaris2023.relativity.interaction;
 
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.SimulatedWaterEntityPhysics;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySelector;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.CollisionGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -34,16 +34,13 @@ public final class PhysicalizedCollisionShapes {
             return List.of();
         }
 
-        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
-        if (volumes.isEmpty()) {
-            return List.of();
-        }
-
         List<VoxelShape> shapes = new ArrayList<>();
+        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
         for (PhysicalizedVolumeEntity volume : volumes) {
             collectVolumeShapes(volume, source, queryBox, shapes);
         }
-        return shapes;
+        shapes.addAll(SimulatedWaterEntityPhysics.waterSurfaceCollisions(getter, source, queryBox));
+        return shapes.isEmpty() ? List.of() : shapes;
     }
 
     public static void pushIntersectingEntities(ServerLevel level) {
@@ -107,7 +104,6 @@ public final class PhysicalizedCollisionShapes {
     private static boolean shouldPushOut(Entity entity, PhysicalizedVolumeEntity volume) {
         return entity != volume
                 && !(entity instanceof PhysicalizedVolumeEntity)
-                && !(entity instanceof Player)
                 && !entity.isRemoved()
                 && entity.isAlive()
                 && !entity.noPhysics
@@ -193,7 +189,7 @@ public final class PhysicalizedCollisionShapes {
 
     private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB queryBox) {
         List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, queryBox, 2.0)) {
             if (entity.getBoundingBox().inflate(QUERY_EPSILON).intersects(queryBox)) {
                 candidates.add(entity);
             }

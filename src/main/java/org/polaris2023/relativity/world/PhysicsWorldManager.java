@@ -2,8 +2,14 @@ package org.polaris2023.relativity.world;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.FluidDomainManager;
+import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
+import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
+import org.polaris2023.relativity.nativeaccess.RcVec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
+import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
+import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
@@ -11,22 +17,14 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
-import org.polaris2023.rn.rapier.body.RcColliderBuilder;
-import org.polaris2023.rn.rapier.body.RcRigidBodyBuilder;
-import org.polaris2023.rn.rapier.config.RcBodyStatus;
-import org.polaris2023.rn.rapier.config.RcBool;
-import org.polaris2023.rn.rapier.math.RcQuat;
-import org.polaris2023.rn.rapier.math.RcVec3;
-import org.polaris2023.rn.rapier.nativebridge.RcNative;
-import org.polaris2023.rn.rapier.shape.RcAabb;
-import org.polaris2023.rn.rapier.shape.RcShapeType;
-import org.polaris2023.rn.rapier.world.RcWorld;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Collections;
-import java.util.LinkedHashSet;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -72,9 +70,11 @@ public final class PhysicsWorldManager {
             return;
         }
 
-        LevelPhysicsState state = levels.get(dimensionId(level));
+        String dimensionId = dimensionId(level);
+        LevelPhysicsState state = levels.get(dimensionId);
         if (state != null) {
-            state.unregister(entity);
+            state.unregister(level, entity);
+            closeIdleState(dimensionId, state);
         }
         entity.setNativeBodyHandle(0L);
     }
@@ -88,6 +88,7 @@ public final class PhysicsWorldManager {
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null) {
             state.tick(level);
+            closeIdleState(dimensionId(level), state);
         }
     }
 
@@ -127,6 +128,19 @@ public final class PhysicsWorldManager {
         }
     }
 
+    public boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (entity.isRemoved() || !(entity.level() instanceof ServerLevel entityLevel) || entityLevel != level) {
+            return false;
+        }
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return false;
+        }
+
+        LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
+        return state.rebuildBodyShape(level, entity);
+    }
+
     public void unloadChunk(ServerLevel level, int chunkX, int chunkZ) {
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null) {
@@ -135,17 +149,27 @@ public final class PhysicsWorldManager {
     }
 
     public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance) {
+        pushBodies(level, sweptBox, direction, distance, null);
+    }
+
+    public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance, PhysicalizedVolumeEntity excluded) {
         if (!RelativityCraft.isRapierAvailable()) {
             warnNativeUnavailableOnce();
             return;
         }
 
         LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
-        state.pushBodies(level, sweptBox, direction, distance);
+        state.pushBodies(level, sweptBox, direction, distance, excluded == null ? -1 : excluded.getId());
     }
 
     private static String dimensionId(ServerLevel level) {
         return level.dimension().identifier().toString();
+    }
+
+    private void closeIdleState(String dimensionId, LevelPhysicsState state) {
+        if (state.isIdle() && levels.remove(dimensionId, state)) {
+            state.close();
+        }
     }
 
     private void warnNativeUnavailableOnce() {
@@ -156,94 +180,151 @@ public final class PhysicsWorldManager {
     }
 
     private static final class LevelPhysicsState {
-        private final RcWorld world = RcWorld.create(new RcVec3(0.0F, (float) GRAVITY_Y, 0.0F));
-        private final Set<Long> dynamicBodies = new LinkedHashSet<>();
-        private final Set<Long> allBodies = new LinkedHashSet<>();
-        private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world, allBodies, dynamicBodies);
+        private final RapierNativeWorld world = new RapierNativeWorld(0.0, GRAVITY_Y, 0.0);
+        private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world);
+        private final WaterSurfaceColliderManager waterSurfaces = new WaterSurfaceColliderManager(world);
         private final Map<Integer, Long> bodyByEntityId = new ConcurrentHashMap<>();
         private final Map<Long, Integer> entityIdByBody = new ConcurrentHashMap<>();
+        private final Map<String, Long> bodyByVolumeId = new ConcurrentHashMap<>();
+        private final Map<Long, String> volumeIdByBody = new ConcurrentHashMap<>();
+        private final Map<Long, RuntimeBodyMapping> mappingByBody = new ConcurrentHashMap<>();
+        private final Map<Long, TerrainFootprint> terrainFootprintsByBody = new ConcurrentHashMap<>();
         private final Set<ChunkSectionKey> requestedTerrainSections = ConcurrentHashMap.newKeySet();
         private final Set<ChunkSectionKey> backgroundQueuedSections = ConcurrentHashMap.newKeySet();
         private final Set<ChunkSectionKey> priorityQueuedSections = ConcurrentHashMap.newKeySet();
         private final ArrayDeque<TerrainBuildJob> backgroundTerrainJobs = new ArrayDeque<>();
         private final ArrayDeque<TerrainBuildJob> priorityTerrainJobs = new ArrayDeque<>();
 
+        private FluidDomainManager fluids(ServerLevel level) {
+            return FluidDomainManager.forLevel(level);
+        }
+
         boolean register(ServerLevel level, PhysicalizedVolumeEntity entity) {
             Long existingBody = bodyByEntityId.get(entity.getId());
             if (existingBody != null) {
                 entity.setNativeBodyHandle(existingBody);
+                trackBody(entity, existingBody);
                 return true;
             }
 
             AABB terrainBounds = entity.getBoundingBox();
             buildTerrainImmediately(level, terrainBounds);
 
-            double halfX = entity.sizeX() * 0.5;
-            double halfY = entity.sizeY() * 0.5;
-            double halfZ = entity.sizeZ() * 0.5;
-            long body = addDynamicBox(
-                    entity.getX(),
-                    entity.physicsCenterY(),
-                    entity.getZ(),
-                    halfX,
-                    halfY,
-                    halfZ,
-                    1.0,
-                    0.75,
-                    0.05
-            );
+            long body = insertBody(entity, RcVec3.ZERO);
             if (body == 0L) {
                 return false;
             }
 
-            entity.setNativeBodyHandle(body);
-            bodyByEntityId.put(entity.getId(), body);
-            entityIdByBody.put(body, entity.getId());
-            requestTerrainAround(level, terrainBounds, false, false);
+            trackBody(entity, body);
+            requestTerrainAroundBody(level, body, terrainBounds, false, false);
             return true;
         }
 
-        public long addDynamicBox(double x, double y, double z, double hx, double hy, double hz, double density, double friction, double restitution) {
-            try (RcRigidBodyBuilder body = world.createRigidBodyBuilder(RcBodyStatus.DYNAMIC);
-                 RcColliderBuilder collider = world.createColliderBuilder(RcShapeType.CUBOID, vec3(hx, hy, hz))) {
-                body.translation(vec3(x, y, z));
-                collider.density((float) density).friction((float) friction).restitution((float) restitution);
-                long handle = world.insertRigidBody(body);
-                world.insertColliderWithParent(collider, handle);
-                dynamicBodies.add(handle);
-                allBodies.add(handle);
-                return handle;
+        boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+            long oldBody = entity.nativeBodyHandle();
+            RcVec3 linearVelocity = oldBody == 0L ? RcVec3.ZERO : world.getBodyLinearVelocity(oldBody);
+            if (oldBody != 0L) {
+                untrackBody(level, entity, oldBody);
+                world.removeBody(oldBody);
+                entity.setNativeBodyHandle(0L);
+            } else {
+                Long removed = bodyByEntityId.remove(entity.getId());
+                if (removed != null) {
+                    untrackBody(level, entity, removed);
+                    world.removeBody(removed);
+                }
             }
+
+            AABB terrainBounds = entity.getBoundingBox();
+            if (oldBody == 0L) {
+                buildTerrainImmediately(level, terrainBounds);
+            } else {
+                requestTerrainAround(level, terrainBounds, false, true);
+            }
+            long nextBody = insertBody(entity, linearVelocity);
+            if (nextBody == 0L) {
+                return false;
+            }
+
+            trackBody(entity, nextBody);
+            requestTerrainAroundBody(level, nextBody, terrainBounds, false, false);
+            world.wakeUp(nextBody);
+            return true;
         }
 
-        private RcVec3 vec3(double x, double y, double z) {
-            return new RcVec3((float) x, (float) y, (float) z);
-        }
-
-        void unregister(PhysicalizedVolumeEntity entity) {
+        void unregister(ServerLevel level, PhysicalizedVolumeEntity entity) {
             long body = entity.nativeBodyHandle();
             if (body == 0L) {
                 Long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != null) {
-                    entityIdByBody.remove(removed);
-                    removeBody(removed);
+                    untrackBody(level, entity, removed);
+                    world.removeBody(removed);
                 }
                 return;
             }
 
+            untrackBody(level, entity, body);
+            world.removeBody(body);
+        }
+
+        private long insertBody(PhysicalizedVolumeEntity entity, RcVec3 linearVelocity) {
+            List<RapierNativeWorld.BoxCollider> colliders = dynamicCollisionBoxes(entity);
+            Vec3 physicsCenter = entity.physicsCenter();
+            return world.addDynamicBoxes(
+                    physicsCenter.x,
+                    physicsCenter.y,
+                    physicsCenter.z,
+                    entity.rotationQx(),
+                    entity.rotationQy(),
+                    entity.rotationQz(),
+                    entity.rotationQw(),
+                    linearVelocity,
+                    colliders,
+                    1.0,
+                    0.75,
+                    0.05
+            );
+        }
+
+        private void trackBody(PhysicalizedVolumeEntity entity, long body) {
+            entity.setNativeBodyHandle(body);
+            bodyByEntityId.put(entity.getId(), body);
+            entityIdByBody.put(body, entity.getId());
+            String volumeId = entity.volumeIdString();
+            if (!volumeId.isEmpty()) {
+                bodyByVolumeId.put(volumeId, body);
+                volumeIdByBody.put(body, volumeId);
+            }
+            mappingByBody.put(body, RuntimeBodyMapping.dynamic(entity.getId(), volumeId, body));
+        }
+
+        private void untrackBody(ServerLevel level, PhysicalizedVolumeEntity entity, long body) {
             bodyByEntityId.remove(entity.getId());
             entityIdByBody.remove(body);
-            removeBody(body);
+            fluids(level).forget(entity);
+            String volumeId = volumeIdByBody.remove(body);
+            if (volumeId == null || volumeId.isEmpty()) {
+                volumeId = entity.volumeIdString();
+            }
+            if (!volumeId.isEmpty()) {
+                bodyByVolumeId.remove(volumeId, body);
+            }
+            mappingByBody.remove(body);
+            terrainFootprintsByBody.remove(body);
         }
 
         void tick(ServerLevel level) {
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
             drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
+            if ((level.getGameTime() & 1L) == 0L) {
+                updateWaterSurfaceColliders(level);
+            }
+            applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK);
             for (int i = 0; i < SUBSTEPS_PER_SERVER_TICK; i++) {
                 world.step(PHYSICS_SUBSTEP_SECONDS);
             }
 
-            double[] snapshot = snapshot();
+            double[] snapshot = world.snapshot();
             for (int i = 0; i + SNAPSHOT_STRIDE <= snapshot.length; i += SNAPSHOT_STRIDE) {
                 long body = (long) snapshot[i];
                 Integer entityId = entityIdByBody.get(body);
@@ -253,9 +334,18 @@ public final class PhysicsWorldManager {
 
                 Entity entity = level.getEntity(entityId);
                 if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) {
+                    if (entity instanceof PhysicalizedVolumeEntity removedVolume) {
+                        fluids(level).forget(removedVolume);
+                    }
                     entityIdByBody.remove(body);
                     bodyByEntityId.values().remove(body);
-                    removeBody(body);
+                    String volumeId = volumeIdByBody.remove(body);
+                    if (volumeId != null) {
+                        bodyByVolumeId.remove(volumeId, body);
+                    }
+                    mappingByBody.remove(body);
+                    terrainFootprintsByBody.remove(body);
+                    world.removeBody(body);
                     continue;
                 }
 
@@ -268,15 +358,36 @@ public final class PhysicsWorldManager {
                         (float) snapshot[i + 6],
                         (float) snapshot[i + 7]
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false, false);
+                requestTerrainAroundBody(level, body, volume.getBoundingBox(), false, false);
             }
         }
 
         void markBlockChanged(ServerLevel level, BlockPos pos) {
             markSectionDirty(level, pos);
+            wakeBodiesInAabb(new AABB(pos).inflate(2.0));
             for (Direction direction : Direction.values()) {
                 markSectionDirty(level, pos.relative(direction));
             }
+        }
+
+        private void applyFluidForces(ServerLevel level, double deltaSeconds) {
+            for (Map.Entry<Long, Integer> entry : entityIdByBody.entrySet()) {
+                Entity entity = level.getEntity(entry.getValue());
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    fluids(level).applyFluidForces(level, world, volume, deltaSeconds);
+                }
+            }
+        }
+
+        private void updateWaterSurfaceColliders(ServerLevel level) {
+            long gameTime = level.getGameTime();
+            for (Map.Entry<Long, Integer> entry : entityIdByBody.entrySet()) {
+                Entity entity = level.getEntity(entry.getValue());
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    waterSurfaces.requestAround(level, volume.getBoundingBox(), gameTime);
+                }
+            }
+            waterSurfaces.drain(level, fluids(level), gameTime);
         }
 
         void markBlockNeighborhoodChanged(ServerLevel level, BlockPos pos) {
@@ -287,7 +398,7 @@ public final class PhysicsWorldManager {
         }
 
         List<PhysicalizedVolumeEntity> queryVolumes(ServerLevel level, AABB box) {
-            long[] bodies = world.queryAabb(new RcAabb(vec3(box.minX, box.minY, box.minZ), vec3(box.maxX, box.maxY, box.maxZ)));
+            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
             if (bodies.length == 0) {
                 return Collections.emptyList();
             }
@@ -308,10 +419,10 @@ public final class PhysicsWorldManager {
         }
 
         void wakeBodiesInAabb(AABB box) {
-            long[] bodies = world.queryAabb(new RcAabb(vec3(box.minX, box.minY, box.minZ), vec3(box.maxX, box.maxY, box.maxZ)));
+            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
             for (long body : bodies) {
                 if (entityIdByBody.containsKey(body)) {
-                    RcNative.rc_rigid_body_wake_up(world.handle(), body, RcBool.TRUE);
+                    world.wakeUp(body);
                 }
             }
         }
@@ -323,12 +434,14 @@ public final class PhysicsWorldManager {
             for (int sectionY = minSectionY; sectionY <= maxSectionY; sectionY++) {
                 ChunkSectionKey key = new ChunkSectionKey(dimensionId, chunkX, sectionY, chunkZ);
                 terrain.removeSection(key);
+                fluids(level).unload(key);
                 requestedTerrainSections.remove(key);
                 cancelQueuedBuild(key);
             }
+            waterSurfaces.removeChunk(dimensionId, chunkX, chunkZ);
         }
 
-        void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance) {
+        void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance, int excludedEntityId) {
             double dx = direction.getStepX() * distance;
             double dy = direction.getStepY() * distance;
             double dz = direction.getStepZ() * distance;
@@ -338,6 +451,9 @@ public final class PhysicsWorldManager {
             AABB queryBox = sweptBox.inflate(0.0625);
 
             for (PhysicalizedVolumeEntity volume : level.getEntitiesOfClass(PhysicalizedVolumeEntity.class, queryBox)) {
+                if (volume.getId() == excludedEntityId) {
+                    continue;
+                }
                 if (volume.isRemoved() || !volume.getBoundingBox().inflate(0.03125).intersects(queryBox)) {
                     continue;
                 }
@@ -346,14 +462,15 @@ public final class PhysicsWorldManager {
                 }
 
                 long body = volume.nativeBodyHandle();
-                double centerX = volume.getX() + dx;
-                double centerY = volume.physicsCenterY() + dy;
-                double centerZ = volume.getZ() + dz;
-                if (!RcNative.rc_rigid_body_set_pose(world.handle(),body, vec3(centerX, centerY, centerZ), RcNative.rc_rigid_body_get_rotation(world.handle(), body), RcBool.TRUE).value()) {
+                Vec3 physicsCenter = volume.physicsCenter();
+                double centerX = physicsCenter.x + dx;
+                double centerY = physicsCenter.y + dy;
+                double centerZ = physicsCenter.z + dz;
+                if (!world.setBodyTranslation(body, centerX, centerY, centerZ)) {
                     continue;
                 }
 
-                world.setRigidBodyLinearVelocity(body, vec3(vx, vy, vz), true);
+                world.setBodyLinearVelocity(body, vx, vy, vz);
                 volume.applyNativeSnapshot(
                         centerX,
                         centerY,
@@ -363,7 +480,7 @@ public final class PhysicsWorldManager {
                         volume.rotationQz(),
                         volume.rotationQw()
                 );
-                requestTerrainAround(level, volume.getBoundingBox(), false, false);
+                requestTerrainAroundBody(level, body, volume.getBoundingBox(), false, false);
             }
         }
 
@@ -381,6 +498,19 @@ public final class PhysicsWorldManager {
         }
 
         private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
+            requestTerrainAround(level, terrainFootprint(level, box), refreshExisting, prioritize);
+        }
+
+        private void requestTerrainAroundBody(ServerLevel level, long body, AABB box, boolean refreshExisting, boolean prioritize) {
+            TerrainFootprint footprint = terrainFootprint(level, box);
+            if (!refreshExisting && !prioritize && footprint.equals(terrainFootprintsByBody.get(body))) {
+                return;
+            }
+            terrainFootprintsByBody.put(body, footprint);
+            requestTerrainAround(level, footprint, refreshExisting, prioritize);
+        }
+
+        private TerrainFootprint terrainFootprint(ServerLevel level, AABB box) {
             String dimensionId = dimensionId(level);
             int minX = (int) Math.floor(box.minX) - TERRAIN_MARGIN_BLOCKS;
             int minY = Math.max(level.getMinY(), (int) Math.floor(box.minY) - TERRAIN_MARGIN_BLOCKS);
@@ -395,11 +525,14 @@ public final class PhysicsWorldManager {
             int maxSectionX = ChunkSectionKey.floorDiv16(maxX);
             int maxSectionY = ChunkSectionKey.floorDiv16(maxY);
             int maxSectionZ = ChunkSectionKey.floorDiv16(maxZ);
+            return new TerrainFootprint(dimensionId, minSectionX, minSectionY, minSectionZ, maxSectionX, maxSectionY, maxSectionZ);
+        }
 
-            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
-                for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
-                    for (int sx = minSectionX; sx <= maxSectionX; sx++) {
-                        ChunkSectionKey key = new ChunkSectionKey(dimensionId, sx, sy, sz);
+        private void requestTerrainAround(ServerLevel level, TerrainFootprint footprint, boolean refreshExisting, boolean prioritize) {
+            for (int sy = footprint.minSectionY(); sy <= footprint.maxSectionY(); sy++) {
+                for (int sz = footprint.minSectionZ(); sz <= footprint.maxSectionZ(); sz++) {
+                    for (int sx = footprint.minSectionX(); sx <= footprint.maxSectionX(); sx++) {
+                        ChunkSectionKey key = new ChunkSectionKey(footprint.dimensionId(), sx, sy, sz);
                         if (refreshExisting || requestedTerrainSections.add(key)) {
                             requestedTerrainSections.add(key);
                             if (refreshExisting) {
@@ -457,29 +590,29 @@ public final class PhysicsWorldManager {
             }
         }
 
-        public void removeBody(long bodyHandle) {
-            world.removeRigidBody(bodyHandle, true);
-            dynamicBodies.remove(bodyHandle);
-            allBodies.remove(bodyHandle);
+        private record TerrainFootprint(
+                String dimensionId,
+                int minSectionX,
+                int minSectionY,
+                int minSectionZ,
+                int maxSectionX,
+                int maxSectionY,
+                int maxSectionZ
+        ) {
         }
 
-        public double[] snapshot() {
-            List<Long> liveBodies = new ArrayList<>(dynamicBodies);
-            double[] snapshot = new double[liveBodies.size() * SNAPSHOT_STRIDE];
-            int index = 0;
-            for (long bodyHandle : liveBodies) {
-                RcVec3 translation = world.getRigidBodyTranslation(bodyHandle);
-                RcQuat rotation = RcNative.rc_rigid_body_get_rotation(world.handle(), bodyHandle);
-                snapshot[index++] = bodyHandle;
-                snapshot[index++] = translation.x();
-                snapshot[index++] = translation.y();
-                snapshot[index++] = translation.z();
-                snapshot[index++] = rotation.i();
-                snapshot[index++] = rotation.j();
-                snapshot[index++] = rotation.k();
-                snapshot[index++] = rotation.w();
+        private record RuntimeBodyMapping(int entityId, String volumeId, long bodyHandle, boolean dynamic, boolean inCollision) {
+            static RuntimeBodyMapping dynamic(int entityId, String volumeId, long bodyHandle) {
+                return new RuntimeBodyMapping(entityId, volumeId, bodyHandle, true, false);
             }
-            return snapshot;
+        }
+
+        boolean isIdle() {
+            return bodyByEntityId.isEmpty();
+        }
+
+        void close() {
+            world.close();
         }
     }
 
@@ -576,24 +709,150 @@ public final class PhysicsWorldManager {
             return shape.isEmpty() ? null : shape;
         }
 
-        private static boolean isFullBlockShape(VoxelShape shape) {
-            java.util.List<AABB> boxes = shape.toAabbs();
-            if (boxes.size() != 1) {
-                return false;
+    }
+
+    private static List<RapierNativeWorld.BoxCollider> dynamicCollisionBoxes(PhysicalizedVolumeEntity entity) {
+        PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
+        if (snapshot.blockCount() <= 0) {
+            return List.of();
+        }
+
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
+        Set<Long> fullBlocks = new HashSet<>();
+        List<AABB> parts = new ArrayList<>();
+        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
             }
 
-            AABB box = boxes.get(0);
-            return nearly(box.minX, 0.0)
-                    && nearly(box.minY, 0.0)
-                    && nearly(box.minZ, 0.0)
-                    && nearly(box.maxX, 1.0)
-                    && nearly(box.maxY, 1.0)
-                    && nearly(box.maxZ, 1.0);
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            if (isFullBlockShape(shape)) {
+                fullBlocks.add(packLocal(cell.localX(), cell.localY(), cell.localZ()));
+                continue;
+            }
+
+            for (AABB box : shape.toAabbs()) {
+                parts.add(box.move(localPos));
+            }
         }
 
-        private static boolean nearly(double first, double second) {
-            return Math.abs(first - second) < 1.0E-7;
+        mergeFullBlocks(fullBlocks, parts);
+        if (parts.isEmpty()) {
+            return List.of();
         }
+
+        double originX = entity.localOriginX();
+        double originY = entity.localOriginY();
+        double originZ = entity.localOriginZ();
+        List<RapierNativeWorld.BoxCollider> colliders = new ArrayList<>(parts.size());
+        for (AABB part : parts) {
+            double sizeX = part.maxX - part.minX;
+            double sizeY = part.maxY - part.minY;
+            double sizeZ = part.maxZ - part.minZ;
+            if (sizeX <= 1.0E-5 || sizeY <= 1.0E-5 || sizeZ <= 1.0E-5) {
+                continue;
+            }
+            colliders.add(new RapierNativeWorld.BoxCollider(
+                    (part.minX + part.maxX) * 0.5 - originX,
+                    (part.minY + part.maxY) * 0.5 - originY,
+                    (part.minZ + part.maxZ) * 0.5 - originZ,
+                    sizeX * 0.5,
+                    sizeY * 0.5,
+                    sizeZ * 0.5
+            ));
+        }
+        return colliders;
+    }
+
+    private static void mergeFullBlocks(Set<Long> remaining, List<AABB> output) {
+        while (!remaining.isEmpty()) {
+            long first = remaining.iterator().next();
+            int x0 = unpackX(first);
+            int y0 = unpackY(first);
+            int z0 = unpackZ(first);
+
+            int x1 = x0;
+            while (remaining.contains(packLocal(x1 + 1, y0, z0))) {
+                x1++;
+            }
+
+            int z1 = z0;
+            while (hasFullLayer(remaining, x0, x1, y0, z1 + 1)) {
+                z1++;
+            }
+
+            int y1 = y0;
+            while (hasFullVolumeLayer(remaining, x0, x1, y1 + 1, z0, z1)) {
+                y1++;
+            }
+
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    for (int x = x0; x <= x1; x++) {
+                        remaining.remove(packLocal(x, y, z));
+                    }
+                }
+            }
+            output.add(new AABB(x0, y0, z0, x1 + 1.0, y1 + 1.0, z1 + 1.0));
+        }
+    }
+
+    private static boolean hasFullLayer(Set<Long> remaining, int x0, int x1, int y, int z) {
+        for (int x = x0; x <= x1; x++) {
+            if (!remaining.contains(packLocal(x, y, z))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasFullVolumeLayer(Set<Long> remaining, int x0, int x1, int y, int z0, int z1) {
+        for (int z = z0; z <= z1; z++) {
+            if (!hasFullLayer(remaining, x0, x1, y, z)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isFullBlockShape(VoxelShape shape) {
+        java.util.List<AABB> boxes = shape.toAabbs();
+        if (boxes.size() != 1) {
+            return false;
+        }
+
+        AABB box = boxes.get(0);
+        return nearly(box.minX, 0.0)
+                && nearly(box.minY, 0.0)
+                && nearly(box.minZ, 0.0)
+                && nearly(box.maxX, 1.0)
+                && nearly(box.maxY, 1.0)
+                && nearly(box.maxZ, 1.0);
+    }
+
+    private static boolean nearly(double first, double second) {
+        return Math.abs(first - second) < 1.0E-7;
+    }
+
+    private static long packLocal(int x, int y, int z) {
+        return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
+    private static int unpackX(long packed) {
+        return (int) (packed & 0x1FFFFFL);
+    }
+
+    private static int unpackY(long packed) {
+        return (int) ((packed >>> 21) & 0x1FFFFFL);
+    }
+
+    private static int unpackZ(long packed) {
+        return (int) ((packed >>> 42) & 0x1FFFFFL);
     }
 
     private static final class MeshBuffer {

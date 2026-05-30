@@ -220,7 +220,7 @@ public final class PhysicalizedRaycaster {
     private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, double maxDistance) {
         List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
         AABB broadPhase = swept.inflate(QUERY_EPSILON);
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, broadPhase, maxDistance + 1.0)) {
             PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
             if (PhysicalizedVolumeLookup.localVolumeIntersects(entity, mapping, broadPhase, 1.0 + QUERY_EPSILON)) {
                 candidates.add(entity);

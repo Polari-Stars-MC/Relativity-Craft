@@ -30,7 +30,8 @@ public interface EntityGetterMixin {
         List<Entity> collidingEntities = self.getEntities(
                 source,
                 testArea.inflate(1.0E-7),
-                entity -> !(entity instanceof PhysicalizedVolumeEntity) && canCollide.test(entity)
+                entity -> canCollide.test(entity)
+                        && (!(source instanceof PhysicalizedVolumeEntity) || !(entity instanceof PhysicalizedVolumeEntity))
         );
         if (collidingEntities.isEmpty()) {
             cir.setReturnValue(List.of());
