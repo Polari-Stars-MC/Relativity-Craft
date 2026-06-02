@@ -1,11 +1,11 @@
 package org.polaris2023.relativity.fluid;
 
 public final class SimulatedWaterSolver {
-    private static final double[] WAVE_DIR_X = {0.91, 0.63, -0.18, 0.31, -0.74, 0.08, 0.52};
-    private static final double[] WAVE_DIR_Z = {0.41, 0.78, 0.98, -0.95, 0.67, -1.00, -0.85};
-    private static final double[] WAVE_LENGTH = {31.0, 18.0, 44.0, 11.0, 67.0, 7.5, 23.0};
-    private static final double[] WAVE_SPEED = {0.82, 1.18, 0.55, 1.72, 0.42, 2.25, 1.05};
-    private static final double[] WAVE_WEIGHT = {0.42, 0.25, 0.36, 0.10, 0.30, 0.045, 0.14};
+    private static final double[] WAVE_DIR_X = {0.91, 0.63, -0.18, 0.31, -0.74, 0.08, 0.52, -0.46, 0.78};
+    private static final double[] WAVE_DIR_Z = {0.41, 0.78, 0.98, -0.95, 0.67, -1.00, -0.85, -0.89, 0.62};
+    private static final double[] WAVE_LENGTH = {52.0, 31.0, 86.0, 19.0, 128.0, 11.5, 42.0, 7.5, 15.0};
+    private static final double[] WAVE_SPEED = {0.62, 0.92, 0.38, 1.24, 0.25, 1.92, 0.76, 2.45, 1.55};
+    private static final double[] WAVE_WEIGHT = {0.46, 0.30, 0.36, 0.13, 0.28, 0.055, 0.18, 0.035, 0.08};
 
     private SimulatedWaterSolver() {
     }
@@ -31,17 +31,21 @@ public final class SimulatedWaterSolver {
         double foam = localFoam;
         double chopX = 0.0;
         double chopZ = 0.0;
-        double swell = 0.16 + oceanWeight * 0.92;
+        double swell = 0.12 + oceanWeight * 1.05;
         for (int i = 0; i < WAVE_LENGTH.length; i++) {
             double waveNumber = Math.PI * 2.0 / WAVE_LENGTH[i];
             double phase = (x * WAVE_DIR_X[i] + z * WAVE_DIR_Z[i]) * waveNumber + time * WAVE_SPEED[i];
             double amplitude = swell * WAVE_WEIGHT[i];
             double sin = Math.sin(phase);
             double cos = Math.cos(phase);
-            height += sin * amplitude;
-            slopeX += cos * amplitude * waveNumber * WAVE_DIR_X[i];
-            slopeZ += cos * amplitude * waveNumber * WAVE_DIR_Z[i];
-            double chop = -cos * amplitude * 0.42;
+            double crest = Math.max(0.0, sin);
+            double fine = Math.sin(phase * 2.17 + i * 1.9) * amplitude * 0.075;
+            double shapedHeight = sin * amplitude + crest * crest * amplitude * 0.16 + fine;
+            double shapedSlope = (cos + crest * cos * 0.32 + Math.cos(phase * 2.17 + i * 1.9) * 0.16275) * amplitude * waveNumber;
+            height += shapedHeight;
+            slopeX += shapedSlope * WAVE_DIR_X[i];
+            slopeZ += shapedSlope * WAVE_DIR_Z[i];
+            double chop = -cos * amplitude * (0.48 + crest * 0.18);
             chopX += WAVE_DIR_X[i] * chop;
             chopZ += WAVE_DIR_Z[i] * chop;
         }
@@ -60,13 +64,13 @@ public final class SimulatedWaterSolver {
         }
 
         double slope = Math.sqrt(slopeX * slopeX + slopeZ * slopeZ);
-        foam = Math.max(foam, clamp((slope - 0.34) / 0.58, 0.0, 1.0) * oceanWeight);
+        foam = Math.max(foam, clamp((slope - 0.28) / 0.56, 0.0, 1.0) * oceanWeight);
         return new OceanSurfaceSample(
-                baseSurfaceY + clamp(height, -1.35, 1.35),
+                baseSurfaceY + clamp(height, -1.65, 1.65),
                 slopeX,
                 slopeZ,
-                clamp(chopX, -0.42, 0.42),
-                clamp(chopZ, -0.42, 0.42),
+                clamp(chopX, -0.62, 0.62),
+                clamp(chopZ, -0.62, 0.62),
                 clamp(foam, 0.0, 1.0)
         );
     }

@@ -3,6 +3,7 @@ package org.polaris2023.relativity.fluid;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeMapping;
+import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.nativeaccess.RcVec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
@@ -34,10 +35,12 @@ public final class FluidDomainManager {
     private static final double DRY_WATER_RECHECK_DISTANCE_SQR = 1.0;
     private static final double GRAVITY = 9.81;
     private static final double BODY_DENSITY_SCALE = 1.0;
-    private static final double WATER_DENSITY_SCALE = 0.74;
-    private static final double MAX_BUOYANCY_TO_BODY_WEIGHT = 1.04;
-    private static final double WATER_DRAG = 1.8;
-    private static final double WATER_VERTICAL_DRAG = 4.2;
+    private static final double WATER_DENSITY_SCALE = 1.0;
+    private static final double MAX_BUOYANCY_TO_BODY_WEIGHT = 1.65;
+    private static final double WATER_LINEAR_DRAG = 0.85;
+    private static final double WATER_QUADRATIC_DRAG = 0.72;
+    private static final double WATER_VERTICAL_LINEAR_DRAG = 2.6;
+    private static final double WATER_VERTICAL_QUADRATIC_DRAG = 1.05;
     private static final double MAX_DRAG_TO_BODY_WEIGHT = 1.8;
     private static final double MAX_UPWARD_WATER_SPEED = 0.75;
     private static final double HARD_MAX_UPWARD_WATER_SPEED = 1.35;
@@ -59,6 +62,19 @@ public final class FluidDomainManager {
 
     public void unload(ChunkSectionKey key) {
         domains.remove(key);
+    }
+
+    public void markDirty(ServerLevel level, BlockPos pos) {
+        if (pos.getY() < level.getMinY() || pos.getY() >= level.getMaxY()) {
+            return;
+        }
+
+        ChunkSectionKey key = ChunkSectionKey.containing(level.dimension().identifier().toString(), pos.getX(), pos.getY(), pos.getZ());
+        FluidDomain domain = domains.get(key);
+        if (domain != null) {
+            domain.markDirty();
+        }
+        waterEnvelopeCaches.clear();
     }
 
     public void forget(PhysicalizedVolumeEntity entity) {
@@ -120,7 +136,7 @@ public final class FluidDomainManager {
             velocity = new RcVec3(velocity.x(), (float) HARD_MAX_UPWARD_WATER_SPEED, velocity.z());
         }
 
-        double bodyMassEstimate = Math.max(1.0, profile.solidCells() * BODY_DENSITY_SCALE);
+        double bodyMassEstimate = Math.max(0.05, profile.solidMass() * BODY_DENSITY_SCALE);
         double bodyWeight = bodyMassEstimate * GRAVITY;
         double maxBuoyancy = bodyWeight * MAX_BUOYANCY_TO_BODY_WEIGHT;
         double maxDrag = bodyWeight * MAX_DRAG_TO_BODY_WEIGHT;
@@ -142,13 +158,28 @@ public final class FluidDomainManager {
             double displacedVolume = sample.volume() * water.submergedFraction();
             buoyancyY += GRAVITY * WATER_DENSITY_SCALE * displacedVolume;
             if (!sample.sealedAir()) {
-                disturbWaterAt(level, worldCenter, gameTime, velocity, displacedVolume);
+                Vec3 relativeVelocity = new Vec3(
+                        velocity.x() - water.flow().x,
+                        velocity.y() - water.flow().y,
+                        velocity.z() - water.flow().z
+                );
+                disturbWaterAt(
+                        level,
+                        worldCenter,
+                        gameTime,
+                        new RcVec3((float) relativeVelocity.x, (float) relativeVelocity.y, (float) relativeVelocity.z),
+                        displacedVolume
+                );
             }
 
             Vec3 relativeFlow = water.flow().subtract(velocity.x(), velocity.y(), velocity.z());
-            forceX += relativeFlow.x * WATER_DRAG * displacedVolume;
-            forceY += relativeFlow.y * WATER_VERTICAL_DRAG * displacedVolume;
-            forceZ += relativeFlow.z * WATER_DRAG * displacedVolume;
+            double referenceArea = Math.pow(Math.max(1.0E-4, displacedVolume), 2.0 / 3.0);
+            double horizontalSpeed = Math.sqrt(relativeFlow.x * relativeFlow.x + relativeFlow.z * relativeFlow.z);
+            double horizontalDrag = WATER_LINEAR_DRAG * displacedVolume + WATER_QUADRATIC_DRAG * referenceArea * horizontalSpeed;
+            double verticalDrag = WATER_VERTICAL_LINEAR_DRAG * displacedVolume + WATER_VERTICAL_QUADRATIC_DRAG * referenceArea * Math.abs(relativeFlow.y);
+            forceX += relativeFlow.x * horizontalDrag;
+            forceY += relativeFlow.y * verticalDrag;
+            forceZ += relativeFlow.z * horizontalDrag;
 
             double penetration = water.surfaceY() - worldCenter.y;
             if (penetration > 0.0) {
@@ -193,6 +224,7 @@ public final class FluidDomainManager {
         BitSet solid = new BitSet(cellCount > Integer.MAX_VALUE ? 0 : (int) cellCount);
         List<LocalCell> rawSamples = new ArrayList<>();
         int solidCells = 0;
+        double solidMass = 0.0;
 
         for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
             BlockState state = cell.state();
@@ -205,8 +237,13 @@ public final class FluidDomainManager {
             if (shape.isEmpty()) {
                 continue;
             }
+            double shapeVolume = shapeVolume(shape);
+            if (shapeVolume <= 0.0) {
+                continue;
+            }
             rawSamples.add(new LocalCell(cell.localX(), cell.localY(), cell.localZ(), false));
             solidCells++;
+            solidMass += PhysicsMaterialRegistry.INSTANCE.materialFor(state).density() * shapeVolume;
             if (cellCount <= MAX_PROFILE_CELLS) {
                 solid.set(index(cell.localX(), cell.localY(), cell.localZ(), sizeX, sizeZ));
             }
@@ -230,7 +267,17 @@ public final class FluidDomainManager {
             }
         }
 
-        return new HullProfile(snapshot, downsample(rawSamples), rawSamples.size(), solidCells, sealedAirCells);
+        return new HullProfile(snapshot, downsample(rawSamples), rawSamples.size(), solidCells, sealedAirCells, solidMass);
+    }
+
+    private static double shapeVolume(VoxelShape shape) {
+        double volume = 0.0;
+        for (AABB box : shape.toAabbs()) {
+            volume += Math.max(0.0, box.maxX - box.minX)
+                    * Math.max(0.0, box.maxY - box.minY)
+                    * Math.max(0.0, box.maxZ - box.minZ);
+        }
+        return volume;
     }
 
     private static BitSet exteriorAirCells(BitSet solid, int sizeX, int sizeY, int sizeZ) {
@@ -462,7 +509,8 @@ public final class FluidDomainManager {
             List<BuoyancySample> samples,
             int displacedCells,
             int solidCells,
-            int sealedAirCells
+            int sealedAirCells,
+            double solidMass
     ) {
     }
 

@@ -4,6 +4,7 @@ import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.fluid.FluidDomainManager;
 import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
+import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.nativeaccess.RcVec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
@@ -270,6 +271,7 @@ public final class PhysicsWorldManager {
         private long insertBody(PhysicalizedVolumeEntity entity, RcVec3 linearVelocity) {
             List<RapierNativeWorld.BoxCollider> colliders = dynamicCollisionBoxes(entity);
             Vec3 physicsCenter = entity.physicsCenter();
+            double density = averageBodyDensity(entity.snapshot());
             return world.addDynamicBoxes(
                     physicsCenter.x,
                     physicsCenter.y,
@@ -280,7 +282,7 @@ public final class PhysicsWorldManager {
                     entity.rotationQw(),
                     linearVelocity,
                     colliders,
-                    1.0,
+                    density,
                     0.75,
                     0.05
             );
@@ -363,9 +365,11 @@ public final class PhysicsWorldManager {
         }
 
         void markBlockChanged(ServerLevel level, BlockPos pos) {
+            fluids(level).markDirty(level, pos);
             markSectionDirty(level, pos);
             wakeBodiesInAabb(new AABB(pos).inflate(2.0));
             for (Direction direction : Direction.values()) {
+                fluids(level).markDirty(level, pos.relative(direction));
                 markSectionDirty(level, pos.relative(direction));
             }
         }
@@ -765,6 +769,47 @@ public final class PhysicsWorldManager {
             ));
         }
         return colliders;
+    }
+
+    private static double averageBodyDensity(PhysicalizedVolumeSnapshot snapshot) {
+        if (snapshot.blockCount() <= 0) {
+            return PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density();
+        }
+
+        double weightedDensity = 0.0;
+        double volume = 0.0;
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
+        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            double shapeVolume = shapeVolume(shape);
+            if (shapeVolume <= 0.0) {
+                continue;
+            }
+
+            weightedDensity += PhysicsMaterialRegistry.INSTANCE.materialFor(state).density() * shapeVolume;
+            volume += shapeVolume;
+        }
+        return volume <= 0.0 ? PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density() : Math.max(0.05, weightedDensity / volume);
+    }
+
+    private static double shapeVolume(VoxelShape shape) {
+        if (shape.isEmpty()) {
+            return 0.0;
+        }
+
+        double volume = 0.0;
+        for (AABB box : shape.toAabbs()) {
+            volume += Math.max(0.0, box.maxX - box.minX)
+                    * Math.max(0.0, box.maxY - box.minY)
+                    * Math.max(0.0, box.maxZ - box.minZ);
+        }
+        return volume;
     }
 
     private static void mergeFullBlocks(Set<Long> remaining, List<AABB> output) {

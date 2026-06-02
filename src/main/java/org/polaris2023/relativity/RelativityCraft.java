@@ -3,6 +3,7 @@ package org.polaris2023.relativity;
 import com.mojang.logging.LogUtils;
 import org.polaris2023.relativity.command.RelativityCommands;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.WpoFiniteWaterPhysics;
 import org.polaris2023.relativity.interaction.PhysicalizedCollisionShapes;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
@@ -16,6 +17,7 @@ import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.tags.FluidTags;
 import net.minecraft.world.item.CreativeModeTab;
 import net.minecraft.world.item.CreativeModeTabs;
 import net.minecraft.world.level.LevelAccessor;
@@ -34,6 +36,7 @@ import net.neoforged.neoforge.event.level.ChunkEvent;
 import net.neoforged.neoforge.event.level.ExplosionEvent;
 import net.neoforged.neoforge.event.level.PistonEvent;
 import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
+import net.neoforged.neoforge.event.level.block.CreateFluidSourceEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import org.slf4j.Logger;
 
@@ -97,11 +100,13 @@ public final class RelativityCraft {
 
     @SubscribeEvent
     public void onBlockPlaced(BlockEvent.EntityPlaceEvent event) {
+        WpoFiniteWaterPhysics.onBlockPlaced(event);
         markPhysicsTerrainDirty(event.getLevel(), event.getPos());
     }
 
     @SubscribeEvent
     public void onBlocksPlaced(BlockEvent.EntityMultiPlaceEvent event) {
+        WpoFiniteWaterPhysics.onBlocksPlaced(event);
         for (BlockSnapshot snapshot : event.getReplacedBlockSnapshots()) {
             markPhysicsTerrainDirty(snapshot.getLevel(), snapshot.getPos());
         }
@@ -109,13 +114,23 @@ public final class RelativityCraft {
 
     @SubscribeEvent
     public void onBlockBroken(BreakBlockEvent event) {
+        WpoFiniteWaterPhysics.settleAround(event.getLevel(), event.getPos());
         markPhysicsTerrainDirty(event.getLevel(), event.getPos());
     }
 
     @SubscribeEvent
     public void onFluidPlacesBlock(BlockEvent.FluidPlaceBlockEvent event) {
+        WpoFiniteWaterPhysics.settleAround(event.getLevel(), event.getPos());
+        WpoFiniteWaterPhysics.settleAround(event.getLevel(), event.getLiquidPos());
         markPhysicsTerrainDirty(event.getLevel(), event.getPos());
         markPhysicsTerrainDirty(event.getLevel(), event.getLiquidPos());
+    }
+
+    @SubscribeEvent
+    public void onCreateFluidSource(CreateFluidSourceEvent event) {
+        if (event.getFluidState().is(FluidTags.WATER)) {
+            event.setCanConvert(false);
+        }
     }
 
     @SubscribeEvent
@@ -135,12 +150,14 @@ public final class RelativityCraft {
 
     @SubscribeEvent
     public void beforePistonMove(PistonEvent.Pre event) {
+        WpoFiniteWaterPhysics.beforePistonMove(event);
         pushPistonBodies(event);
         markPistonTerrainDirty(event);
     }
 
     @SubscribeEvent
     public void afterPistonMove(PistonEvent.Post event) {
+        WpoFiniteWaterPhysics.settlePiston(event);
         markPistonTerrainDirty(event);
     }
 
