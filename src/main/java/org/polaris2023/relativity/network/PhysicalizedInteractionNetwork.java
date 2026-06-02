@@ -116,7 +116,11 @@ public final class PhysicalizedInteractionNetwork {
                     payload.localFace()
             ).or(() -> fallbackHit(player, volume));
             if (hit.isPresent()) {
-                PhysicalizedInteractionHandler.continueBreakingHit(player, hit.get());
+                if (action == BreakAction.FINISH) {
+                    PhysicalizedInteractionHandler.finishBreakingHit(player, hit.get());
+                } else {
+                    PhysicalizedInteractionHandler.continueBreakingHit(player, hit.get());
+                }
             }
         }
     }
@@ -275,10 +279,14 @@ public final class PhysicalizedInteractionNetwork {
 
     public enum BreakAction {
         CONTINUE,
+        FINISH,
         STOP;
 
         static BreakAction byId(int id) {
-            return id == STOP.ordinal() ? STOP : CONTINUE;
+            if (id == STOP.ordinal()) {
+                return STOP;
+            }
+            return id == FINISH.ordinal() ? FINISH : CONTINUE;
         }
     }
 

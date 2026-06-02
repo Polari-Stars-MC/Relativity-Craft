@@ -23,7 +23,7 @@ public final class RapierNativeWorld implements AutoCloseable {
     private final Set<Long> allBodies = new LinkedHashSet<>();
 
     public RapierNativeWorld(double gravityX, double gravityY, double gravityZ) {
-        this.world = RelativityCraftRapier.createWorld(new RcVec3((float) gravityX, (float) gravityY, (float) gravityZ));
+        this.world = RelativityCraftRapier.createWorld(new RcVec3(gravityX, gravityY, gravityZ));
     }
 
     public long addDynamicBox(double x, double y, double z, double hx, double hy, double hz, double density, double friction, double restitution) {
@@ -31,9 +31,9 @@ public final class RapierNativeWorld implements AutoCloseable {
              RcColliderBuilder collider = RelativityCraftRapier.createColliderBuilder(RcShapeType.CUBOID, vec3(hx, hy, hz))) {
             body.translation(vec3(x, y, z));
             configureDynamicCollider(collider)
-                    .density((float) density)
-                    .friction((float) friction)
-                    .restitution((float) restitution);
+                    .density(density)
+                    .friction(friction)
+                    .restitution(restitution);
             long handle = world.insertRigidBody(body);
             enableCcd(handle);
             world.insertColliderWithParent(collider, handle);
@@ -47,10 +47,10 @@ public final class RapierNativeWorld implements AutoCloseable {
             double x,
             double y,
             double z,
-            float qx,
-            float qy,
-            float qz,
-            float qw,
+            double qx,
+            double qy,
+            double qz,
+            double qw,
             RcVec3 linearVelocity,
             List<BoxCollider> boxes,
             double density,
@@ -61,51 +61,41 @@ public final class RapierNativeWorld implements AutoCloseable {
             return 0L;
         }
 
-        long handle;
-        try (RcRigidBodyBuilder body = RelativityCraftRapier.createRigidBodyBuilder(RcBodyStatus.DYNAMIC)) {
-            body.translation(vec3(x, y, z))
-                    .linearVelocity(linearVelocity)
-                    .linearDamping(0.04F)
-                    .angularDamping(0.18F)
-                    .canSleep(true);
-            handle = world.insertRigidBody(body);
-        }
-        if (handle == 0L) {
-            return 0L;
-        }
-        enableCcd(handle);
-
-        int colliderCount = 0;
+        double[] cuboids = new double[boxes.size() * 6];
+        int cuboidCount = 0;
         for (BoxCollider box : boxes) {
             if (box.halfX() <= 1.0E-5 || box.halfY() <= 1.0E-5 || box.halfZ() <= 1.0E-5) {
                 continue;
             }
-            try (RcColliderBuilder collider = RelativityCraftRapier.createColliderBuilder(
-                    RcShapeType.CUBOID,
-                    vec3(box.halfX(), box.halfY(), box.halfZ())
-            )) {
-                collider.translation(vec3(box.centerX(), box.centerY(), box.centerZ()))
-                        .density((float) density)
-                        .friction((float) friction)
-                        .restitution((float) restitution);
-                configureDynamicCollider(collider);
-                if (world.insertColliderWithParent(collider, handle) != 0L) {
-                    colliderCount++;
-                }
-            }
+            int offset = cuboidCount * 6;
+            cuboids[offset] = box.centerX();
+            cuboids[offset + 1] = box.centerY();
+            cuboids[offset + 2] = box.centerZ();
+            cuboids[offset + 3] = box.halfX();
+            cuboids[offset + 4] = box.halfY();
+            cuboids[offset + 5] = box.halfZ();
+            cuboidCount++;
         }
-        if (colliderCount <= 0) {
-            world.removeRigidBody(handle, true);
+        if (cuboidCount <= 0) {
             return 0L;
         }
 
-        RelativityCraftRapier.rigidBodySetPose(
+        long handle = RelativityCraftRapier.worldInsertDynamicCuboids(
                 world.handle(),
-                handle,
                 vec3(x, y, z),
                 new RcQuat(qx, qy, qz, qw),
-                RcBool.TRUE
+                linearVelocity,
+                cuboids,
+                cuboidCount,
+                density,
+                friction,
+                restitution,
+                DYNAMIC_COLLISION_GROUPS,
+                DYNAMIC_COLLISION_GROUPS
         );
+        if (handle == 0L) {
+            return 0L;
+        }
         dynamicBodies.add(handle);
         allBodies.add(handle);
         return handle;
@@ -116,8 +106,8 @@ public final class RapierNativeWorld implements AutoCloseable {
              RcColliderBuilder collider = RelativityCraftRapier.createColliderBuilder(RcShapeType.CUBOID, vec3(hx, hy, hz))) {
             body.translation(vec3(x, y, z));
             configureStaticCollider(collider)
-                    .friction((float) friction)
-                    .restitution((float) restitution);
+                    .friction(friction)
+                    .restitution(restitution);
             long handle = world.insertRigidBody(body);
             world.insertColliderWithParent(collider, handle);
             allBodies.add(handle);
@@ -126,7 +116,7 @@ public final class RapierNativeWorld implements AutoCloseable {
     }
 
     public long addStaticTriMesh(double[] vertices, int[] indices, double friction, double restitution) {
-        long handle = RelativityCraftRapier.worldInsertStaticTriMesh(world.handle(), vertices, indices, (float) friction, (float) restitution);
+        long handle = RelativityCraftRapier.worldInsertStaticTriMesh(world.handle(), vertices, indices, friction, restitution);
         if (handle != 0L) {
             allBodies.add(handle);
         }
@@ -138,9 +128,9 @@ public final class RapierNativeWorld implements AutoCloseable {
              RcColliderBuilder collider = RelativityCraftRapier.createColliderBuilder(RcShapeType.BALL, vec3(radius, 0.0, 0.0))) {
             body.translation(vec3(x, y, z));
             configureDynamicCollider(collider)
-                    .density((float) density)
-                    .friction((float) friction)
-                    .restitution((float) restitution);
+                    .density(density)
+                    .friction(friction)
+                    .restitution(restitution);
             long handle = world.insertRigidBody(body);
             enableCcd(handle);
             world.insertColliderWithParent(collider, handle);
@@ -155,9 +145,9 @@ public final class RapierNativeWorld implements AutoCloseable {
              RcColliderBuilder collider = RelativityCraftRapier.createColliderBuilder(RcShapeType.CAPSULE_Y, vec3(halfHeight, radius, 0.0))) {
             body.translation(vec3(x, y, z));
             configureDynamicCollider(collider)
-                    .density((float) density)
-                    .friction((float) friction)
-                    .restitution((float) restitution);
+                    .density(density)
+                    .friction(friction)
+                    .restitution(restitution);
             long handle = world.insertRigidBody(body);
             enableCcd(handle);
             world.insertColliderWithParent(collider, handle);
@@ -195,12 +185,16 @@ public final class RapierNativeWorld implements AutoCloseable {
         return world.applyRigidBodyImpulse(bodyHandle, vec3(x, y, z), true).value();
     }
 
+    public boolean applyBodyTorqueImpulse(long bodyHandle, double x, double y, double z) {
+        return world.applyRigidBodyTorqueImpulse(bodyHandle, vec3(x, y, z), true).value();
+    }
+
     public RcVec3 getBodyLinearVelocity(long bodyHandle) {
         return world.getRigidBodyLinearVelocity(bodyHandle);
     }
 
     public void step(double dt) {
-        world.step((float) dt);
+        world.step(dt);
     }
 
     public double[] snapshot() {
@@ -259,7 +253,7 @@ public final class RapierNativeWorld implements AutoCloseable {
     }
 
     private static RcVec3 vec3(double x, double y, double z) {
-        return new RcVec3((float) x, (float) y, (float) z);
+        return new RcVec3(x, y, z);
     }
 
     private void enableCcd(long bodyHandle) {

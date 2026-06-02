@@ -21,14 +21,18 @@ pub(crate) enum JointBuilderKind {
 impl JointBuilderKind {
     fn set_contacts_enabled(&mut self, enabled: bool) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
-            JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder.contacts_enabled(enabled)),
+            JointBuilderKind::Fixed(builder) => {
+                JointBuilderKind::Fixed(builder.contacts_enabled(enabled))
+            }
             JointBuilderKind::Revolute(builder) => {
                 JointBuilderKind::Revolute(builder.contacts_enabled(enabled))
             }
             JointBuilderKind::Prismatic(builder) => {
                 JointBuilderKind::Prismatic(builder.contacts_enabled(enabled))
             }
-            JointBuilderKind::Rope(builder) => JointBuilderKind::Rope(builder.contacts_enabled(enabled)),
+            JointBuilderKind::Rope(builder) => {
+                JointBuilderKind::Rope(builder.contacts_enabled(enabled))
+            }
             JointBuilderKind::Spring(builder) => {
                 JointBuilderKind::Spring(builder.contacts_enabled(enabled))
             }
@@ -40,15 +44,21 @@ impl JointBuilderKind {
 
     fn set_local_anchor1(&mut self, anchor: Vector) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
-            JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder.local_anchor1(anchor)),
+            JointBuilderKind::Fixed(builder) => {
+                JointBuilderKind::Fixed(builder.local_anchor1(anchor))
+            }
             JointBuilderKind::Revolute(builder) => {
                 JointBuilderKind::Revolute(builder.local_anchor1(anchor))
             }
             JointBuilderKind::Prismatic(builder) => {
                 JointBuilderKind::Prismatic(builder.local_anchor1(anchor))
             }
-            JointBuilderKind::Rope(builder) => JointBuilderKind::Rope(builder.local_anchor1(anchor)),
-            JointBuilderKind::Spring(builder) => JointBuilderKind::Spring(builder.local_anchor1(anchor)),
+            JointBuilderKind::Rope(builder) => {
+                JointBuilderKind::Rope(builder.local_anchor1(anchor))
+            }
+            JointBuilderKind::Spring(builder) => {
+                JointBuilderKind::Spring(builder.local_anchor1(anchor))
+            }
             JointBuilderKind::Spherical(builder) => {
                 JointBuilderKind::Spherical(builder.local_anchor1(anchor))
             }
@@ -57,22 +67,28 @@ impl JointBuilderKind {
 
     fn set_local_anchor2(&mut self, anchor: Vector) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
-            JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder.local_anchor2(anchor)),
+            JointBuilderKind::Fixed(builder) => {
+                JointBuilderKind::Fixed(builder.local_anchor2(anchor))
+            }
             JointBuilderKind::Revolute(builder) => {
                 JointBuilderKind::Revolute(builder.local_anchor2(anchor))
             }
             JointBuilderKind::Prismatic(builder) => {
                 JointBuilderKind::Prismatic(builder.local_anchor2(anchor))
             }
-            JointBuilderKind::Rope(builder) => JointBuilderKind::Rope(builder.local_anchor2(anchor)),
-            JointBuilderKind::Spring(builder) => JointBuilderKind::Spring(builder.local_anchor2(anchor)),
+            JointBuilderKind::Rope(builder) => {
+                JointBuilderKind::Rope(builder.local_anchor2(anchor))
+            }
+            JointBuilderKind::Spring(builder) => {
+                JointBuilderKind::Spring(builder.local_anchor2(anchor))
+            }
             JointBuilderKind::Spherical(builder) => {
                 JointBuilderKind::Spherical(builder.local_anchor2(anchor))
             }
         };
     }
 
-    fn set_limits(&mut self, axis: RcJointAxis, min: f32, max: f32) {
+    fn set_limits(&mut self, axis: RcJointAxis, min: f64, max: f64) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
             JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder),
             JointBuilderKind::Revolute(builder) => {
@@ -83,13 +99,13 @@ impl JointBuilderKind {
             }
             JointBuilderKind::Rope(builder) => JointBuilderKind::Rope(builder),
             JointBuilderKind::Spring(builder) => JointBuilderKind::Spring(builder),
-            JointBuilderKind::Spherical(builder) => JointBuilderKind::Spherical(
-                builder.limits(joint_axis_to_rapier(axis), [min, max]),
-            ),
+            JointBuilderKind::Spherical(builder) => {
+                JointBuilderKind::Spherical(builder.limits(joint_axis_to_rapier(axis), [min, max]))
+            }
         };
     }
 
-    fn set_motor_velocity(&mut self, axis: RcJointAxis, target_vel: f32, factor: f32) {
+    fn set_motor_velocity(&mut self, axis: RcJointAxis, target_vel: f64, factor: f64) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
             JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder),
             JointBuilderKind::Revolute(builder) => {
@@ -111,18 +127,18 @@ impl JointBuilderKind {
     fn set_motor_position(
         &mut self,
         axis: RcJointAxis,
-        target_pos: f32,
-        stiffness: f32,
-        damping: f32,
+        target_pos: f64,
+        stiffness: f64,
+        damping: f64,
     ) {
         *self = match std::mem::replace(self, JointBuilderKind::Fixed(FixedJointBuilder::new())) {
             JointBuilderKind::Fixed(builder) => JointBuilderKind::Fixed(builder),
-            JointBuilderKind::Revolute(builder) => JointBuilderKind::Revolute(
-                builder.motor_position(target_pos, stiffness, damping),
-            ),
-            JointBuilderKind::Prismatic(builder) => JointBuilderKind::Prismatic(
-                builder.motor_position(target_pos, stiffness, damping),
-            ),
+            JointBuilderKind::Revolute(builder) => {
+                JointBuilderKind::Revolute(builder.motor_position(target_pos, stiffness, damping))
+            }
+            JointBuilderKind::Prismatic(builder) => {
+                JointBuilderKind::Prismatic(builder.motor_position(target_pos, stiffness, damping))
+            }
             JointBuilderKind::Rope(builder) => {
                 JointBuilderKind::Rope(builder.motor_position(target_pos, stiffness, damping))
             }
@@ -138,23 +154,21 @@ impl JointBuilderKind {
 pub extern "C" fn rc_joint_builder_create(
     joint_type: RcJointType,
     axis_or_primary: RcVec3,
-    b: f32,
-    c: f32,
+    b: f64,
+    c: f64,
 ) -> *mut RcJointBuilderHandle {
     let inner = match joint_type {
         RcJointType::Fixed => JointBuilderKind::Fixed(FixedJointBuilder::new()),
         RcJointType::Revolute => {
             JointBuilderKind::Revolute(RevoluteJointBuilder::new(vec3_to_rapier(axis_or_primary)))
         }
-        RcJointType::Prismatic => JointBuilderKind::Prismatic(PrismaticJointBuilder::new(
-            vec3_to_rapier(axis_or_primary),
-        )),
+        RcJointType::Prismatic => {
+            JointBuilderKind::Prismatic(PrismaticJointBuilder::new(vec3_to_rapier(axis_or_primary)))
+        }
         RcJointType::Rope => JointBuilderKind::Rope(RopeJointBuilder::new(b)),
-        RcJointType::Spring => JointBuilderKind::Spring(SpringJointBuilder::new(
-            axis_or_primary.x,
-            b,
-            c,
-        )),
+        RcJointType::Spring => {
+            JointBuilderKind::Spring(SpringJointBuilder::new(axis_or_primary.x, b, c))
+        }
         RcJointType::Spherical => JointBuilderKind::Spherical(SphericalJointBuilder::new()),
     };
 
@@ -209,8 +223,8 @@ pub extern "C" fn rc_joint_builder_set_local_anchor2(
 pub extern "C" fn rc_joint_builder_set_limits(
     builder: *mut RcJointBuilderHandle,
     axis: RcJointAxis,
-    min: f32,
-    max: f32,
+    min: f64,
+    max: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -222,8 +236,8 @@ pub extern "C" fn rc_joint_builder_set_limits(
 pub extern "C" fn rc_joint_builder_set_motor_velocity(
     builder: *mut RcJointBuilderHandle,
     axis: RcJointAxis,
-    target_vel: f32,
-    factor: f32,
+    target_vel: f64,
+    factor: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -235,9 +249,9 @@ pub extern "C" fn rc_joint_builder_set_motor_velocity(
 pub extern "C" fn rc_joint_builder_set_motor_position(
     builder: *mut RcJointBuilderHandle,
     axis: RcJointAxis,
-    target_pos: f32,
-    stiffness: f32,
-    damping: f32,
+    target_pos: f64,
+    stiffness: f64,
+    damping: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -257,42 +271,42 @@ fn build_and_insert(
     let body1 = unpack_rigid_body_handle(body1);
     let body2 = unpack_rigid_body_handle(body2);
     match builder {
-        JointBuilderKind::Fixed(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
-        JointBuilderKind::Revolute(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
-        JointBuilderKind::Prismatic(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
-        JointBuilderKind::Rope(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
-        JointBuilderKind::Spring(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
-        JointBuilderKind::Spherical(builder) => world.inner.impulse_joints.insert(
-            body1,
-            body2,
-            builder.build(),
-            wake_up,
-        ),
+        JointBuilderKind::Fixed(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
+        JointBuilderKind::Revolute(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
+        JointBuilderKind::Prismatic(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
+        JointBuilderKind::Rope(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
+        JointBuilderKind::Spring(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
+        JointBuilderKind::Spherical(builder) => {
+            world
+                .inner
+                .impulse_joints
+                .insert(body1, body2, builder.build(), wake_up)
+        }
     }
 }
 

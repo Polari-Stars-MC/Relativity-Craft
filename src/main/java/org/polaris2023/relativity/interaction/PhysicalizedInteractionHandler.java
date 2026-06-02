@@ -150,6 +150,43 @@ public final class PhysicalizedInteractionHandler {
         return true;
     }
 
+    public static boolean finishBreakingHit(ServerPlayer player, PhysicalizedHit hit) {
+        if (!(player.level() instanceof ServerLevel level)) {
+            return false;
+        }
+
+        PhysicalizedVolumeEntity target = hit.entity();
+        PhysicalizedBlockSnapshot cell = hit.cell();
+        BlockState state = cell.state();
+        if (state.isAir()) {
+            return true;
+        }
+
+        BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ());
+        if (!player.gameMode.isCreative()) {
+            float progress = BREAK_PROGRESS.getOrDefault(key, 0.0F)
+                    + state.getDestroyProgress(player, level, hit.visualBlockPos());
+            if (progress < 1.0F) {
+                BREAK_PROGRESS.put(key, progress);
+                int stage = Math.max(0, Math.min(9, (int) (progress * 10.0F)));
+                level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), stage);
+                PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, stage);
+                return true;
+            }
+        }
+
+        BREAK_PROGRESS.remove(key);
+        ACTIVE_BREAKS.remove(player.getUUID(), key);
+        LAST_BREAK_ATTEMPT.remove(player.getUUID());
+        level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), -1);
+        PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, -1);
+        destroyPhysicalizedCell(level, player, hit);
+        if (player.gameMode.isCreative()) {
+            LAST_CREATIVE_BREAK_TICK.put(player.getUUID(), level.getGameTime());
+        }
+        return true;
+    }
+
     public static void stopBreaking(ServerPlayer player, PhysicalizedVolumeEntity target) {
         BreakKey key = ACTIVE_BREAKS.remove(player.getUUID());
         if (key == null || key.entityId() != target.getId()) {

@@ -1,6 +1,6 @@
 use rapier3d::prelude::{
-    BroadPhaseBvh, CCDSolver, ColliderSet, ImpulseJointSet, IntegrationParameters,
-    IslandManager, MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodySet, Vector,
+    BroadPhaseBvh, CCDSolver, ColliderSet, ImpulseJointSet, IntegrationParameters, IslandManager,
+    MultibodyJointSet, NarrowPhase, PhysicsPipeline, RigidBodySet, Vector,
 };
 
 use crate::ffi::{
@@ -68,7 +68,7 @@ pub extern "C" fn rc_world_destroy(world: *mut RcWorldHandle) {
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rc_world_step(world: *mut RcWorldHandle, delta_seconds: f32) {
+pub extern "C" fn rc_world_step(world: *mut RcWorldHandle, delta_seconds: f64) {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return;
     };
@@ -135,7 +135,7 @@ pub extern "C" fn rc_world_dynamic_body_snapshot_count(world: *const RcWorldHand
 pub extern "C" fn rc_world_dynamic_body_snapshot(
     world: *const RcWorldHandle,
     out_handles: *mut RcRigidBodyHandle,
-    out_values: *mut f32,
+    out_values: *mut f64,
     capacity: u32,
 ) -> u32 {
     let Some(world) = (unsafe { world.as_ref() }) else {

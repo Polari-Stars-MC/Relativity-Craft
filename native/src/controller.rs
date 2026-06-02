@@ -1,4 +1,6 @@
-use rapier3d::control::{CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController};
+use rapier3d::control::{
+    CharacterAutostep, CharacterCollision, CharacterLength, KinematicCharacterController,
+};
 
 use crate::ffi::{
     RcBool, RcCharacterCollision, RcCharacterControllerHandle, RcEffectiveCharacterMovement,
@@ -52,7 +54,7 @@ pub extern "C" fn rc_character_controller_set_up(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_character_controller_set_offset_absolute(
     controller: *mut RcCharacterControllerHandle,
-    offset: f32,
+    offset: f64,
 ) {
     let Some(controller) = (unsafe { controller.as_mut() }) else {
         return;
@@ -63,7 +65,7 @@ pub extern "C" fn rc_character_controller_set_offset_absolute(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_character_controller_set_offset_relative(
     controller: *mut RcCharacterControllerHandle,
-    offset: f32,
+    offset: f64,
 ) {
     let Some(controller) = (unsafe { controller.as_mut() }) else {
         return;
@@ -86,8 +88,8 @@ pub extern "C" fn rc_character_controller_set_slide(
 pub extern "C" fn rc_character_controller_set_autostep(
     controller: *mut RcCharacterControllerHandle,
     enabled: RcBool,
-    max_height: f32,
-    min_width: f32,
+    max_height: f64,
+    min_width: f64,
     include_dynamic_bodies: RcBool,
 ) {
     let Some(controller) = (unsafe { controller.as_mut() }) else {
@@ -108,7 +110,7 @@ pub extern "C" fn rc_character_controller_set_autostep(
 pub extern "C" fn rc_character_controller_set_snap_to_ground(
     controller: *mut RcCharacterControllerHandle,
     enabled: RcBool,
-    distance: f32,
+    distance: f64,
 ) {
     let Some(controller) = (unsafe { controller.as_mut() }) else {
         return;
@@ -123,8 +125,8 @@ pub extern "C" fn rc_character_controller_set_snap_to_ground(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_character_controller_set_slope_angles(
     controller: *mut RcCharacterControllerHandle,
-    max_climb_angle: f32,
-    min_slide_angle: f32,
+    max_climb_angle: f64,
+    min_slide_angle: f64,
 ) {
     let Some(controller) = (unsafe { controller.as_mut() }) else {
         return;
@@ -137,7 +139,7 @@ pub extern "C" fn rc_character_controller_set_slope_angles(
 pub extern "C" fn rc_character_controller_move_shape(
     world: *const RcWorldHandle,
     controller: *mut RcCharacterControllerHandle,
-    dt: f32,
+    dt: f64,
     shape_desc: RcShapeDesc,
     translation: RcVec3,
     rotation: RcQuat,
@@ -214,9 +216,9 @@ pub extern "C" fn rc_character_controller_get_collision(
 pub extern "C" fn rc_character_controller_solve_impulses(
     world: *mut RcWorldHandle,
     controller: *mut RcCharacterControllerHandle,
-    dt: f32,
+    dt: f64,
     shape_desc: RcShapeDesc,
-    character_mass: f32,
+    character_mass: f64,
 ) -> RcBool {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
@@ -233,12 +235,15 @@ pub extern "C" fn rc_character_controller_solve_impulses(
         rapier3d::prelude::QueryFilter::default(),
     );
 
-    controller.inner.controller.solve_character_collision_impulses(
-        dt,
-        &mut { query },
-        shape.as_ref(),
-        character_mass,
-        controller.inner.collisions.iter(),
-    );
+    controller
+        .inner
+        .controller
+        .solve_character_collision_impulses(
+            dt,
+            &mut { query },
+            shape.as_ref(),
+            character_mass,
+            controller.inner.collisions.iter(),
+        );
     RcBool::TRUE
 }

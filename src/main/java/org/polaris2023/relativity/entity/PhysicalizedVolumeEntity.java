@@ -1,12 +1,15 @@
 package org.polaris2023.relativity.entity;
 
 import org.polaris2023.relativity.physicalization.BlockBox;
+import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
+import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeLookup;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
+import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.syncher.EntityDataAccessor;
 import net.minecraft.network.syncher.EntityDataSerializers;
@@ -23,13 +26,16 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
+import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.neoforge.entity.IEntityWithComplexSpawn;
 
+import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -91,10 +97,24 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private float qyOld = 0.0F;
     private float qzOld = 0.0F;
     private float qwOld = 1.0F;
+    private double centerOfMassLocalX = 0.5;
+    private double centerOfMassLocalY = 0.5;
+    private double centerOfMassLocalZ = 0.5;
+    private double estimatedPhysicsMass = 1.0;
     private int breakLocalX = -1;
     private int breakLocalY = -1;
     private int breakLocalZ = -1;
     private int breakProgress = -1;
+    private List<AABB> cachedMinecraftCollisionBoxes = List.of();
+    private long cachedMinecraftCollisionBoxesGameTime = Long.MIN_VALUE;
+    private double cachedMinecraftCollisionBoxesX;
+    private double cachedMinecraftCollisionBoxesY;
+    private double cachedMinecraftCollisionBoxesZ;
+    private float cachedMinecraftCollisionBoxesQx;
+    private float cachedMinecraftCollisionBoxesQy;
+    private float cachedMinecraftCollisionBoxesQz;
+    private float cachedMinecraftCollisionBoxesQw = 1.0F;
+    private PhysicalizedVolumeSnapshot cachedMinecraftCollisionBoxesSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
     private final Map<Long, Integer> virtualContainerOpenCounts = new HashMap<>();
     private static final long CLIENT_VISUAL_INTERPOLATION_NANOS = 50_000_000L;
     private static final double CLIENT_VISUAL_POSITION_EPSILON = 1.0E-5;
@@ -206,6 +226,22 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return this.entityData.get(DATA_LOCAL_ORIGIN_Z);
     }
 
+    public double centerOfMassLocalX() {
+        return centerOfMassLocalX;
+    }
+
+    public double centerOfMassLocalY() {
+        return centerOfMassLocalY;
+    }
+
+    public double centerOfMassLocalZ() {
+        return centerOfMassLocalZ;
+    }
+
+    public double estimatedPhysicsMass() {
+        return estimatedPhysicsMass;
+    }
+
     public float previousRotationQx() {
         return qxOld;
     }
@@ -279,6 +315,14 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public void setBreakOverlay(int localX, int localY, int localZ, int progress) {
+        if (progress >= 0
+                && this.breakProgress >= 0
+                && this.breakLocalX == localX
+                && this.breakLocalY == localY
+                && this.breakLocalZ == localZ
+                && progress < this.breakProgress) {
+            return;
+        }
         this.breakLocalX = localX;
         this.breakLocalY = localY;
         this.breakLocalZ = localZ;
@@ -302,6 +346,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         return this.entityCenter().add(this.physicsCenterOffset(this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw()));
     }
 
+    public Vec3 physicsCenterForLocalPoint(double localX, double localY, double localZ) {
+        return this.entityCenter().add(this.rotatedLocalOffset(localX, localY, localZ, this.rotationQx(), this.rotationQy(), this.rotationQz(), this.rotationQw()));
+    }
+
     public double physicsCenterY() {
         return this.physicsCenter().y;
     }
@@ -323,6 +371,54 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setBoundingBox(this.makeBoundingBox(this.position()));
     }
 
+    public List<AABB> minecraftCollisionBoxes() {
+        PhysicalizedVolumeSnapshot current = this.currentSnapshot();
+        if (current.blockCount() <= 0) {
+            return List.of();
+        }
+        long gameTime = this.level().getGameTime();
+        if (cachedMinecraftCollisionBoxesGameTime == gameTime
+                && cachedMinecraftCollisionBoxesSnapshot == current
+                && cachedMinecraftCollisionBoxesX == this.getX()
+                && cachedMinecraftCollisionBoxesY == this.getY()
+                && cachedMinecraftCollisionBoxesZ == this.getZ()
+                && cachedMinecraftCollisionBoxesQx == this.rotationQx()
+                && cachedMinecraftCollisionBoxesQy == this.rotationQy()
+                && cachedMinecraftCollisionBoxesQz == this.rotationQz()
+                && cachedMinecraftCollisionBoxesQw == this.rotationQw()) {
+            return cachedMinecraftCollisionBoxes;
+        }
+
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(current);
+        List<AABB> boxes = new ArrayList<>();
+        for (PhysicalizedBlockSnapshot cell : current.cells()) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            for (AABB localShapeBox : shape.toAabbs()) {
+                boxes.add(this.localBoxToWorldAabb(localShapeBox.move(localPos)));
+            }
+        }
+        cachedMinecraftCollisionBoxes = List.copyOf(boxes);
+        cachedMinecraftCollisionBoxesGameTime = gameTime;
+        cachedMinecraftCollisionBoxesSnapshot = current;
+        cachedMinecraftCollisionBoxesX = this.getX();
+        cachedMinecraftCollisionBoxesY = this.getY();
+        cachedMinecraftCollisionBoxesZ = this.getZ();
+        cachedMinecraftCollisionBoxesQx = this.rotationQx();
+        cachedMinecraftCollisionBoxesQy = this.rotationQy();
+        cachedMinecraftCollisionBoxesQz = this.rotationQz();
+        cachedMinecraftCollisionBoxesQw = this.rotationQw();
+        return cachedMinecraftCollisionBoxes;
+    }
+
     public void resolveWorldCollisionAfterShapeChange() {
         if (this.level().isClientSide() || this.isRemoved() || this.noPhysics) {
             return;
@@ -340,6 +436,17 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         if (movement.y < 0.0) {
             this.setDeltaMovement(movement.x, 0.0, movement.z);
         }
+    }
+
+    public double requiredUpwardPushFromWorldCollision() {
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+        WorldCollisionContact contact = worldCollisionContact(this.getBoundingBox());
+        return contact == null ? 0.0 : Math.min(contact.penetration(), WORLD_COLLISION_MAX_PUSH_UP);
+    }
+
+    public WorldCollisionContact worldCollisionContact() {
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+        return worldCollisionContact(this.getBoundingBox());
     }
 
     public void applyNativeSnapshot(double centerX, double centerY, double centerZ, float qx, float qy, float qz, float qw) {
@@ -445,6 +552,38 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
                 centerY + localBounds.maxY() - this.localOriginY(),
                 centerZ + localBounds.maxZ() - this.localOriginZ()
         );
+    }
+
+    private AABB localBoxToWorldAabb(AABB localBox) {
+        LocalBounds localBounds = new LocalBounds(localBox.minX, localBox.minY, localBox.minZ, localBox.maxX, localBox.maxY, localBox.maxZ);
+        float qx = this.rotationQx();
+        float qy = this.rotationQy();
+        float qz = this.rotationQz();
+        float qw = this.rotationQw();
+        float length = qx * qx + qy * qy + qz * qz + qw * qw;
+        if (length <= 1.0E-6F) {
+            return unrotatedLocalBounds(this.position(), localBounds);
+        }
+
+        float invLength = (float) (1.0 / Math.sqrt(length));
+        qx *= invLength;
+        qy *= invLength;
+        qz *= invLength;
+        qw *= invLength;
+
+        double centerX = this.getX();
+        double centerY = this.getY() + this.sizeY() * 0.5;
+        double centerZ = this.getZ();
+        MutableBounds bounds = new MutableBounds();
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.minX(), localBounds.minY(), localBounds.minZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.maxX(), localBounds.minY(), localBounds.minZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.minX(), localBounds.maxY(), localBounds.minZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.maxX(), localBounds.maxY(), localBounds.minZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.minX(), localBounds.minY(), localBounds.maxZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.maxX(), localBounds.minY(), localBounds.maxZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.minX(), localBounds.maxY(), localBounds.maxZ());
+        includeLocalCorner(bounds, centerX, centerY, centerZ, qx, qy, qz, qw, localBounds.maxX(), localBounds.maxY(), localBounds.maxZ());
+        return bounds.toAabb();
     }
 
     private LocalBounds occupiedLocalBounds() {
@@ -721,13 +860,11 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private Vec3 physicsCenterOffset(float qx, float qy, float qz, float qw) {
-        PhysicalizedVolumeSnapshot current = this.currentSnapshot();
-        Vec3 localOffset = new Vec3(
-                current.occupiedCenterX() - this.localOriginX(),
-                current.occupiedCenterY() - this.localOriginY(),
-                current.occupiedCenterZ() - this.localOriginZ()
-        );
-        return rotate(localOffset, qx, qy, qz, qw);
+        return this.rotatedLocalOffset(centerOfMassLocalX, centerOfMassLocalY, centerOfMassLocalZ, qx, qy, qz, qw);
+    }
+
+    private Vec3 rotatedLocalOffset(double localX, double localY, double localZ, float qx, float qy, float qz, float qw) {
+        return rotate(new Vec3(localX - this.localOriginX(), localY - this.localOriginY(), localZ - this.localOriginZ()), qx, qy, qz, qw);
     }
 
     private static Vec3 rotate(Vec3 vector, float qx, float qy, float qz, float qw) {
@@ -750,6 +887,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     private void setSnapshot(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients, Vec3 localOrigin) {
         this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
+        this.cachedMinecraftCollisionBoxesGameTime = Long.MIN_VALUE;
+        this.cachedMinecraftCollisionBoxes = List.of();
+        this.cachedMinecraftCollisionBoxesSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
+        this.recomputeCenterOfMass();
         this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
         if (localOrigin != null) {
             this.setLocalOrigin(localOrigin.x, localOrigin.y, localOrigin.z);
@@ -802,6 +943,43 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     private PhysicalizedVolumeSnapshot currentSnapshot() {
         return this.snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : this.snapshot;
+    }
+
+    private void recomputeCenterOfMass() {
+        if (snapshot.blockCount() <= 0) {
+            centerOfMassLocalX = 0.5;
+            centerOfMassLocalY = 0.5;
+            centerOfMassLocalZ = 0.5;
+            estimatedPhysicsMass = 1.0;
+            return;
+        }
+
+        double totalMass = 0.0;
+        double weightedX = 0.0;
+        double weightedY = 0.0;
+        double weightedZ = 0.0;
+        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
+            if (cell.state().isAir()) {
+                continue;
+            }
+            double density = Math.max(0.05, PhysicsMaterialRegistry.INSTANCE.materialFor(cell.state()).density());
+            totalMass += density;
+            weightedX += (cell.localX() + 0.5) * density;
+            weightedY += (cell.localY() + 0.5) * density;
+            weightedZ += (cell.localZ() + 0.5) * density;
+        }
+
+        if (totalMass <= 0.0) {
+            centerOfMassLocalX = snapshot.occupiedCenterX();
+            centerOfMassLocalY = snapshot.occupiedCenterY();
+            centerOfMassLocalZ = snapshot.occupiedCenterZ();
+            estimatedPhysicsMass = Math.max(1.0, snapshot.blockCount());
+            return;
+        }
+        centerOfMassLocalX = weightedX / totalMass;
+        centerOfMassLocalY = weightedY / totalMass;
+        centerOfMassLocalZ = weightedZ / totalMass;
+        estimatedPhysicsMass = totalMass;
     }
 
     private boolean clientVisualTargetChanged(Vec3 targetPosition, float qx, float qy, float qz, float qw) {
@@ -876,19 +1054,69 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public record ClientVisualPose(Vec3 position, float qx, float qy, float qz, float qw) {
     }
 
+    public record WorldCollisionContact(double pointX, double pointY, double pointZ, double penetration, double supportArea) {
+    }
+
     private double requiredUpwardPush(AABB box) {
-        double pushUp = 0.0;
+        WorldCollisionContact contact = worldCollisionContact(box);
+        return contact == null ? 0.0 : contact.penetration();
+    }
+
+    private WorldCollisionContact worldCollisionContact(AABB box) {
+        double weightedX = 0.0;
+        double weightedY = 0.0;
+        double weightedZ = 0.0;
+        double totalWeight = 0.0;
+        double deepestPenetration = 0.0;
+        double supportArea = 0.0;
+
         for (VoxelShape collision : this.level().getBlockCollisions(this, box.deflate(WORLD_COLLISION_EPSILON))) {
             if (collision.isEmpty()) {
                 continue;
             }
             for (AABB obstacle : collision.toAabbs()) {
-                if (box.intersects(obstacle)) {
-                    pushUp = Math.max(pushUp, obstacle.maxY - box.minY);
+                if (!box.intersects(obstacle)) {
+                    continue;
                 }
+
+                double penetration = obstacle.maxY - box.minY;
+                if (penetration <= WORLD_COLLISION_EPSILON || penetration > WORLD_COLLISION_MAX_PUSH_UP) {
+                    continue;
+                }
+
+                double overlapMinX = Math.max(box.minX, obstacle.minX);
+                double overlapMaxX = Math.min(box.maxX, obstacle.maxX);
+                double overlapMinZ = Math.max(box.minZ, obstacle.minZ);
+                double overlapMaxZ = Math.min(box.maxZ, obstacle.maxZ);
+                double overlapX = overlapMaxX - overlapMinX;
+                double overlapZ = overlapMaxZ - overlapMinZ;
+                if (overlapX <= WORLD_COLLISION_EPSILON || overlapZ <= WORLD_COLLISION_EPSILON) {
+                    continue;
+                }
+
+                double area = overlapX * overlapZ;
+                double weight = area * Math.max(penetration, WORLD_COLLISION_EPSILON);
+                double contactX = (overlapMinX + overlapMaxX) * 0.5;
+                double contactZ = (overlapMinZ + overlapMaxZ) * 0.5;
+                weightedX += contactX * weight;
+                weightedY += obstacle.maxY * weight;
+                weightedZ += contactZ * weight;
+                totalWeight += weight;
+                supportArea += area;
+                deepestPenetration = Math.max(deepestPenetration, penetration);
             }
         }
-        return pushUp;
+
+        if (totalWeight <= 0.0) {
+            return null;
+        }
+        return new WorldCollisionContact(
+                weightedX / totalWeight,
+                weightedY / totalWeight,
+                weightedZ / totalWeight,
+                deepestPenetration,
+                supportArea
+        );
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

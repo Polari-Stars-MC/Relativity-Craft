@@ -61,20 +61,27 @@ typedef struct RcWorldHandle RcWorldHandle;
 typedef uint64_t RcRigidBodyHandle;
 
 typedef struct RcVec3 {
-  float x;
-  float y;
-  float z;
+  double x;
+  double y;
+  double z;
 } RcVec3;
 
-typedef struct RcAabb {
-  struct RcVec3 mins;
-  struct RcVec3 maxs;
-} RcAabb;
+typedef struct RcQuat {
+  double i;
+  double j;
+  double k;
+  double w;
+} RcQuat;
 
 typedef struct RcInteractionGroups {
   uint32_t memberships;
   uint32_t filter;
 } RcInteractionGroups;
+
+typedef struct RcAabb {
+  struct RcVec3 mins;
+  struct RcVec3 maxs;
+} RcAabb;
 
 typedef struct RcBool {
   uint8_t _0;
@@ -96,18 +103,11 @@ typedef struct RcQueryFilterDesc {
 
 typedef struct RcShapeDesc {
   enum RcShapeType shape_type;
-  float a;
-  float b;
-  float c;
-  float d;
+  double a;
+  double b;
+  double c;
+  double d;
 } RcShapeDesc;
-
-typedef struct RcQuat {
-  float i;
-  float j;
-  float k;
-  float w;
-} RcQuat;
 
 typedef struct RcEffectiveCharacterMovement {
   struct RcVec3 translation;
@@ -124,7 +124,7 @@ typedef struct RcCharacterCollision {
   struct RcVec3 world_witness2;
   struct RcVec3 normal1;
   struct RcVec3 normal2;
-  float time_of_impact;
+  double time_of_impact;
 } RcCharacterCollision;
 
 typedef struct RcCollisionEventRecord {
@@ -139,9 +139,9 @@ typedef struct RcContactForceEventRecord {
   RcColliderHandle collider1;
   RcColliderHandle collider2;
   struct RcVec3 total_force;
-  float total_force_magnitude;
+  double total_force_magnitude;
   struct RcVec3 max_force_direction;
-  float max_force_magnitude;
+  double max_force_magnitude;
 } RcContactForceEventRecord;
 
 typedef uint32_t (*RcContactPairFilterCallback)(uintptr_t,
@@ -164,7 +164,7 @@ typedef uint64_t RcImpulseJointHandle;
 
 typedef struct RcRayHit {
   RcColliderHandle collider;
-  float time_of_impact;
+  double time_of_impact;
   struct RcVec3 normal;
   uint32_t feature;
 } RcRayHit;
@@ -176,7 +176,7 @@ typedef struct RcPointProjection {
 
 typedef struct RcShapeCastHit {
   RcColliderHandle collider;
-  float time_of_impact;
+  double time_of_impact;
   struct RcVec3 witness1;
   struct RcVec3 witness2;
   struct RcVec3 normal1;
@@ -185,8 +185,8 @@ typedef struct RcShapeCastHit {
 } RcShapeCastHit;
 
 typedef struct RcShapeCastOptions {
-  float max_time_of_impact;
-  float target_distance;
+  double max_time_of_impact;
+  double target_distance;
   struct RcBool stop_at_penetration;
   struct RcBool compute_impact_geometry_on_penetration;
 } RcShapeCastOptions;
@@ -195,13 +195,25 @@ typedef struct RcShapeCastOptions {
 extern "C" {
 #endif // __cplusplus
 
+RcRigidBodyHandle rc_world_insert_dynamic_cuboids(struct RcWorldHandle *world,
+                                                  struct RcVec3 translation,
+                                                  struct RcQuat rotation,
+                                                  struct RcVec3 linvel,
+                                                  const double *cuboids,
+                                                  uint32_t cuboid_count,
+                                                  double density,
+                                                  double friction,
+                                                  double restitution,
+                                                  struct RcInteractionGroups collision_groups,
+                                                  struct RcInteractionGroups solver_groups);
+
 RcRigidBodyHandle rc_world_insert_static_trimesh(struct RcWorldHandle *world,
-                                                 const float *vertices_xyz,
+                                                 const double *vertices_xyz,
                                                  uint32_t vertex_xyz_len,
                                                  const uint32_t *indices,
                                                  uint32_t index_len,
-                                                 float friction,
-                                                 float restitution);
+                                                 double friction,
+                                                 double restitution);
 
 uint32_t rc_query_intersect_aabb_rigid_body_count(const struct RcWorldHandle *world,
                                                   struct RcAabb aabb,
@@ -232,12 +244,12 @@ void rc_collider_builder_set_pose(struct RcColliderBuilderHandle *builder,
 
 void rc_collider_builder_set_sensor(struct RcColliderBuilderHandle *builder, struct RcBool sensor);
 
-void rc_collider_builder_set_friction(struct RcColliderBuilderHandle *builder, float friction);
+void rc_collider_builder_set_friction(struct RcColliderBuilderHandle *builder, double friction);
 
 void rc_collider_builder_set_restitution(struct RcColliderBuilderHandle *builder,
-                                         float restitution);
+                                         double restitution);
 
-void rc_collider_builder_set_density(struct RcColliderBuilderHandle *builder, float density);
+void rc_collider_builder_set_density(struct RcColliderBuilderHandle *builder, double density);
 
 void rc_collider_builder_set_collision_groups(struct RcColliderBuilderHandle *builder,
                                               struct RcInteractionGroups groups);
@@ -252,7 +264,7 @@ void rc_collider_builder_set_active_hooks(struct RcColliderBuilderHandle *builde
                                           uint32_t active_hooks_bits);
 
 void rc_collider_builder_set_contact_force_event_threshold(struct RcColliderBuilderHandle *builder,
-                                                           float threshold);
+                                                           double threshold);
 
 RcColliderHandle rc_world_insert_collider(struct RcWorldHandle *world,
                                           struct RcColliderBuilderHandle *builder);
@@ -285,11 +297,11 @@ struct RcBool rc_collider_set_sensor(struct RcWorldHandle *world,
 
 struct RcBool rc_collider_set_friction(struct RcWorldHandle *world,
                                        RcColliderHandle handle,
-                                       float friction);
+                                       double friction);
 
 struct RcBool rc_collider_set_restitution(struct RcWorldHandle *world,
                                           RcColliderHandle handle,
-                                          float restitution);
+                                          double restitution);
 
 struct RcBool rc_collider_set_collision_groups(struct RcWorldHandle *world,
                                                RcColliderHandle handle,
@@ -309,9 +321,9 @@ struct RcBool rc_collider_set_active_hooks(struct RcWorldHandle *world,
 
 struct RcBool rc_collider_set_contact_force_event_threshold(struct RcWorldHandle *world,
                                                             RcColliderHandle handle,
-                                                            float threshold);
+                                                            double threshold);
 
-float rc_collider_get_density(const struct RcWorldHandle *world, RcColliderHandle handle);
+double rc_collider_get_density(const struct RcWorldHandle *world, RcColliderHandle handle);
 
 struct RcCharacterControllerHandle *rc_character_controller_create(void);
 
@@ -321,31 +333,31 @@ void rc_character_controller_set_up(struct RcCharacterControllerHandle *controll
                                     struct RcVec3 up);
 
 void rc_character_controller_set_offset_absolute(struct RcCharacterControllerHandle *controller,
-                                                 float offset);
+                                                 double offset);
 
 void rc_character_controller_set_offset_relative(struct RcCharacterControllerHandle *controller,
-                                                 float offset);
+                                                 double offset);
 
 void rc_character_controller_set_slide(struct RcCharacterControllerHandle *controller,
                                        struct RcBool slide);
 
 void rc_character_controller_set_autostep(struct RcCharacterControllerHandle *controller,
                                           struct RcBool enabled,
-                                          float max_height,
-                                          float min_width,
+                                          double max_height,
+                                          double min_width,
                                           struct RcBool include_dynamic_bodies);
 
 void rc_character_controller_set_snap_to_ground(struct RcCharacterControllerHandle *controller,
                                                 struct RcBool enabled,
-                                                float distance);
+                                                double distance);
 
 void rc_character_controller_set_slope_angles(struct RcCharacterControllerHandle *controller,
-                                              float max_climb_angle,
-                                              float min_slide_angle);
+                                              double max_climb_angle,
+                                              double min_slide_angle);
 
 struct RcEffectiveCharacterMovement rc_character_controller_move_shape(const struct RcWorldHandle *world,
                                                                        struct RcCharacterControllerHandle *controller,
-                                                                       float dt,
+                                                                       double dt,
                                                                        struct RcShapeDesc shape_desc,
                                                                        struct RcVec3 translation,
                                                                        struct RcQuat rotation,
@@ -358,9 +370,9 @@ struct RcCharacterCollision rc_character_controller_get_collision(const struct R
 
 struct RcBool rc_character_controller_solve_impulses(struct RcWorldHandle *world,
                                                      struct RcCharacterControllerHandle *controller,
-                                                     float dt,
+                                                     double dt,
                                                      struct RcShapeDesc shape_desc,
-                                                     float character_mass);
+                                                     double character_mass);
 
 void rc_world_clear_events(struct RcWorldHandle *world);
 
@@ -388,8 +400,8 @@ void rc_world_clear_intersection_pair_filter_callback(struct RcWorldHandle *worl
 
 struct RcJointBuilderHandle *rc_joint_builder_create(enum RcJointType joint_type,
                                                      struct RcVec3 axis_or_primary,
-                                                     float b,
-                                                     float c);
+                                                     double b,
+                                                     double c);
 
 void rc_joint_builder_destroy(struct RcJointBuilderHandle *builder);
 
@@ -402,19 +414,19 @@ void rc_joint_builder_set_local_anchor2(struct RcJointBuilderHandle *builder, st
 
 void rc_joint_builder_set_limits(struct RcJointBuilderHandle *builder,
                                  enum RcJointAxis axis,
-                                 float min,
-                                 float max);
+                                 double min,
+                                 double max);
 
 void rc_joint_builder_set_motor_velocity(struct RcJointBuilderHandle *builder,
                                          enum RcJointAxis axis,
-                                         float target_vel,
-                                         float factor);
+                                         double target_vel,
+                                         double factor);
 
 void rc_joint_builder_set_motor_position(struct RcJointBuilderHandle *builder,
                                          enum RcJointAxis axis,
-                                         float target_pos,
-                                         float stiffness,
-                                         float damping);
+                                         double target_pos,
+                                         double stiffness,
+                                         double damping);
 
 RcImpulseJointHandle rc_world_insert_impulse_joint(struct RcWorldHandle *world,
                                                    RcRigidBodyHandle body1,
@@ -429,13 +441,13 @@ struct RcBool rc_world_remove_impulse_joint(struct RcWorldHandle *world,
 struct RcRayHit rc_query_cast_ray(const struct RcWorldHandle *world,
                                   struct RcVec3 origin,
                                   struct RcVec3 direction,
-                                  float max_toi,
+                                  double max_toi,
                                   struct RcBool solid,
                                   struct RcQueryFilterDesc filter);
 
 struct RcPointProjection rc_query_project_point(const struct RcWorldHandle *world,
                                                 struct RcVec3 point,
-                                                float max_dist,
+                                                double max_dist,
                                                 struct RcBool solid,
                                                 struct RcQueryFilterDesc filter,
                                                 RcColliderHandle *out_collider);
@@ -487,13 +499,13 @@ void rc_rigid_body_builder_set_angvel(struct RcRigidBodyBuilderHandle *builder,
                                       struct RcVec3 angvel);
 
 void rc_rigid_body_builder_set_gravity_scale(struct RcRigidBodyBuilderHandle *builder,
-                                             float gravity_scale);
+                                             double gravity_scale);
 
 void rc_rigid_body_builder_set_linear_damping(struct RcRigidBodyBuilderHandle *builder,
-                                              float linear_damping);
+                                              double linear_damping);
 
 void rc_rigid_body_builder_set_angular_damping(struct RcRigidBodyBuilderHandle *builder,
-                                               float angular_damping);
+                                               double angular_damping);
 
 void rc_rigid_body_builder_set_can_sleep(struct RcRigidBodyBuilderHandle *builder,
                                          struct RcBool can_sleep);
@@ -508,7 +520,7 @@ void rc_rigid_body_builder_set_user_data(struct RcRigidBodyBuilderHandle *builde
                                          uint64_t user_data_high);
 
 void rc_rigid_body_builder_set_additional_mass(struct RcRigidBodyBuilderHandle *builder,
-                                               float mass);
+                                               double mass);
 
 RcRigidBodyHandle rc_world_insert_rigid_body(struct RcWorldHandle *world,
                                              struct RcRigidBodyBuilderHandle *builder);
@@ -628,13 +640,20 @@ struct RcWorldHandle *rc_world_create(struct RcVec3 gravity);
 
 void rc_world_destroy(struct RcWorldHandle *world);
 
-void rc_world_step(struct RcWorldHandle *world, float delta_seconds);
+void rc_world_step(struct RcWorldHandle *world, double delta_seconds);
 
 void rc_world_set_gravity(struct RcWorldHandle *world, struct RcVec3 gravity);
 
 struct RcVec3 rc_world_get_gravity(const struct RcWorldHandle *world);
 
 void rc_world_get_gravity_out(const struct RcWorldHandle *world, struct RcVec3 *out_gravity);
+
+uint32_t rc_world_dynamic_body_snapshot_count(const struct RcWorldHandle *world);
+
+uint32_t rc_world_dynamic_body_snapshot(const struct RcWorldHandle *world,
+                                        RcRigidBodyHandle *out_handles,
+                                        double *out_values,
+                                        uint32_t capacity);
 
 #ifdef __cplusplus
 }  // extern "C"

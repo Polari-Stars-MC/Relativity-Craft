@@ -14,21 +14,21 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public abstract class MultiPlayerGameModePhysicalizedMixin {
     @Inject(method = "startDestroyBlock", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$startPhysicalizedDestroy(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> cir) {
-        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHit(Minecraft.getInstance(), true, true)) {
+        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHitAt(Minecraft.getInstance(), pos, true, true)) {
             cir.setReturnValue(true);
         }
     }
 
     @Inject(method = "continueDestroyBlock", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$continuePhysicalizedDestroy(BlockPos pos, Direction direction, CallbackInfoReturnable<Boolean> cir) {
-        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHit(Minecraft.getInstance(), false, false)) {
+        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHitAt(Minecraft.getInstance(), pos, false, false)) {
             cir.setReturnValue(true);
         }
     }
 
     @Inject(method = "destroyBlock", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$cancelPredictedWorldDestroy(BlockPos pos, CallbackInfoReturnable<Boolean> cir) {
-        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHit(Minecraft.getInstance(), false, false)) {
+        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHitAt(Minecraft.getInstance(), pos, false, false)) {
             cir.setReturnValue(false);
         }
     }

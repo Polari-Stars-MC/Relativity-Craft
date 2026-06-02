@@ -34,17 +34,17 @@ public final class RcRigidBodyBuilder implements AutoCloseable {
         return this;
     }
 
-    public RcRigidBodyBuilder gravityScale(float gravityScale) {
+    public RcRigidBodyBuilder gravityScale(double gravityScale) {
         RelativityCraftRapier.rigidBodyBuilderSetGravityScale(handle, gravityScale);
         return this;
     }
 
-    public RcRigidBodyBuilder linearDamping(float damping) {
+    public RcRigidBodyBuilder linearDamping(double damping) {
         RelativityCraftRapier.rigidBodyBuilderSetLinearDamping(handle, damping);
         return this;
     }
 
-    public RcRigidBodyBuilder angularDamping(float damping) {
+    public RcRigidBodyBuilder angularDamping(double damping) {
         RelativityCraftRapier.rigidBodyBuilderSetAngularDamping(handle, damping);
         return this;
     }
