@@ -14,6 +14,9 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 public interface SignalGetterMixin {
     @Inject(method = "getDirectSignal", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$physicalizedDirectSignal(BlockPos pos, Direction direction, CallbackInfoReturnable<Integer> cir) {
+        if (!((BlockGetter) this).getBlockState(pos).isAir()) {
+            return;
+        }
         int signal = PhysicalizedRedstoneMapping.global().virtualSignal((BlockGetter) this, pos, direction, true);
         if (signal > 0) {
             cir.setReturnValue(signal);
@@ -22,6 +25,9 @@ public interface SignalGetterMixin {
 
     @Inject(method = "getSignal", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$physicalizedSignal(BlockPos pos, Direction direction, CallbackInfoReturnable<Integer> cir) {
+        if (!((BlockGetter) this).getBlockState(pos).isAir()) {
+            return;
+        }
         int signal = PhysicalizedRedstoneMapping.global().virtualSignal((BlockGetter) this, pos, direction, false);
         if (signal > 0) {
             cir.setReturnValue(signal);
@@ -35,6 +41,9 @@ public interface SignalGetterMixin {
             boolean onlyDiodes,
             CallbackInfoReturnable<Integer> cir
     ) {
+        if (!((BlockGetter) this).getBlockState(pos).isAir()) {
+            return;
+        }
         int signal = PhysicalizedRedstoneMapping.global().virtualControlInputSignal((BlockGetter) this, pos, direction, onlyDiodes);
         if (signal > 0) {
             cir.setReturnValue(signal);

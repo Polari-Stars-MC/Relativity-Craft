@@ -38,6 +38,7 @@ public final class PhysicalizedInteractionNetwork {
         event.registrar("1")
                 .playToClient(SnapshotPayload.TYPE, SnapshotPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleSnapshot)
                 .playToClient(BreakOverlayPayload.TYPE, BreakOverlayPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakOverlay)
+                .playToClient(ContainerOpenPayload.TYPE, ContainerOpenPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleContainerOpen)
                 .playToServer(UseCommandPayload.TYPE, UseCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleUseCommand)
                 .playToServer(BreakCommandPayload.TYPE, BreakCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakCommand)
                 .playToServer(PickCommandPayload.TYPE, PickCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handlePickCommand);
@@ -63,6 +64,13 @@ public final class PhysicalizedInteractionNetwork {
         );
     }
 
+    public static void sendContainerOpen(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, int openCount) {
+        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                entity,
+                new ContainerOpenPayload(entity.getId(), cell.localX(), cell.localY(), cell.localZ(), openCount)
+        );
+    }
+
     private static void handleSnapshot(SnapshotPayload payload, IPayloadContext context) {
         Entity entity = context.player().level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
@@ -74,6 +82,13 @@ public final class PhysicalizedInteractionNetwork {
         Entity entity = context.player().level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
             volume.setBreakOverlay(payload.localX(), payload.localY(), payload.localZ(), payload.progress());
+        }
+    }
+
+    private static void handleContainerOpen(ContainerOpenPayload payload, IPayloadContext context) {
+        Entity entity = context.player().level().getEntity(payload.entityId());
+        if (entity instanceof PhysicalizedVolumeEntity volume) {
+            volume.setVirtualContainerOpenCount(payload.localX(), payload.localY(), payload.localZ(), payload.openCount());
         }
     }
 
@@ -163,7 +178,7 @@ public final class PhysicalizedInteractionNetwork {
     private static ItemStack pickStack(ServerPlayer player, PhysicalizedHit hit, boolean includeData) {
         boolean includeBlockEntityData = includeData && player.hasInfiniteMaterials();
         ItemStack stack = hit.cell().state().getCloneItemStack(player.level(), hit.visualBlockPos(), includeBlockEntityData);
-        if (stack.isEmpty() || !includeBlockEntityData || !hit.cell().hasBlockEntityNbt()) {
+        if (stack.isEmpty() || !includeBlockEntityData || !hit.cell().hasLoadableBlockEntityNbt()) {
             return stack;
         }
 
@@ -325,6 +340,33 @@ public final class PhysicalizedInteractionNetwork {
             buffer.writeVarInt(localY);
             buffer.writeVarInt(localZ);
             buffer.writeVarInt(progress);
+        }
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    public record ContainerOpenPayload(int entityId, int localX, int localY, int localZ, int openCount) implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<ContainerOpenPayload> TYPE = new CustomPacketPayload.Type<>(
+                Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_container_open")
+        );
+        public static final StreamCodec<RegistryFriendlyByteBuf, ContainerOpenPayload> STREAM_CODEC = StreamCodec.of(
+                (buffer, payload) -> payload.write(buffer),
+                ContainerOpenPayload::read
+        );
+
+        private static ContainerOpenPayload read(RegistryFriendlyByteBuf buffer) {
+            return new ContainerOpenPayload(buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt());
+        }
+
+        private void write(RegistryFriendlyByteBuf buffer) {
+            buffer.writeVarInt(entityId);
+            buffer.writeVarInt(localX);
+            buffer.writeVarInt(localY);
+            buffer.writeVarInt(localZ);
+            buffer.writeVarInt(openCount);
         }
 
         @Override

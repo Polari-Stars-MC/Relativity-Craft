@@ -1,5 +1,6 @@
 package org.polaris2023.relativity.mixin;
 
+import org.polaris2023.relativity.client.PhysicalizedClientInteractions;
 import org.polaris2023.relativity.interaction.PhysicalizedBlockHitResult;
 import org.polaris2023.relativity.interaction.PhysicalizedHit;
 import org.polaris2023.relativity.render.PhysicalizedSelectionOutlineRenderer;
@@ -19,6 +20,7 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 import java.util.List;
+import java.util.Optional;
 
 @Mixin(LevelRenderer.class)
 public abstract class LevelRendererMixin {
@@ -30,13 +32,21 @@ public abstract class LevelRendererMixin {
 
     @Inject(method = "extractBlockOutline", at = @At("RETURN"))
     private void relativityCraft$extractPhysicalizedBlockOutline(Camera camera, LevelRenderState levelRenderState, CallbackInfo ci) {
-        if (!(this.minecraft.hitResult instanceof PhysicalizedBlockHitResult blockHitResult)
-                || blockHitResult.getType() == HitResult.Type.MISS
-                || this.level == null) {
+        if (this.level == null) {
             return;
         }
 
-        PhysicalizedHit hit = blockHitResult.physicalizedHit();
+        PhysicalizedHit hit;
+        if (this.minecraft.hitResult instanceof PhysicalizedBlockHitResult blockHitResult
+                && blockHitResult.getType() != HitResult.Type.MISS) {
+            hit = blockHitResult.physicalizedHit();
+        } else {
+            Optional<PhysicalizedHit> fallbackHit = PhysicalizedClientInteractions.physicalizedOutlineHit(this.minecraft);
+            if (fallbackHit.isEmpty()) {
+                return;
+            }
+            hit = fallbackHit.get();
+        }
         if (hit.entity().isRemoved()) {
             return;
         }

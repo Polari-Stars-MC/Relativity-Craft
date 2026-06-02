@@ -25,7 +25,7 @@ public final class PhysicalizedBlockPlaceContext extends BlockPlaceContext {
 
     @Override
     public boolean canPlace() {
-        return this.getLevel().getBlockState(targetPos).canBeReplaced(this);
+        return true;
     }
 
     @Override

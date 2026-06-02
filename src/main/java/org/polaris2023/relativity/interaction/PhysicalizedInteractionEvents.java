@@ -17,6 +17,12 @@ import java.util.Optional;
 @EventBusSubscriber(modid = RelativityCraft.MOD_ID)
 public final class PhysicalizedInteractionEvents {
     private static final double SERVER_RAYCAST_EPSILON = 1.0E-4;
+    // The client resolves the crosshair target with interpolated (partial-tick) poses, while the
+    // server re-raycasts at the full tick. For a volume floating in the world the two surface
+    // points are the same face but can differ by up to roughly the player's per-tick movement.
+    // This tolerance lets an equal/near-equal physicalized hit win over the reported block hit so
+    // placement routes to the volume, while a real block that is clearly closer still wins.
+    private static final double TARGET_MATCH_TOLERANCE = 0.5;
 
     private PhysicalizedInteractionEvents() {
     }
@@ -108,7 +114,12 @@ public final class PhysicalizedInteractionEvents {
 
     private static boolean isCloserThanBlockHit(ServerPlayer player, PhysicalizedHit hit, BlockHitResult blockHit) {
         Vec3 origin = player.getEyePosition();
-        return hit.distance() * hit.distance() < origin.distanceToSqr(blockHit.getLocation()) - SERVER_RAYCAST_EPSILON;
+        // Use a linear (not squared) comparison with a movement-sized tolerance so the physicalized
+        // volume wins whenever its surface is at, near, or in front of the reported block hit.
+        // Squared distances with a tiny epsilon were too strict and silently rejected valid hits on
+        // the sides of a volume, which is why blocks could not be placed around it.
+        double blockDistance = origin.distanceTo(blockHit.getLocation());
+        return hit.distance() <= blockDistance + TARGET_MATCH_TOLERANCE;
     }
 
     private static boolean isCloserThanBlockPos(ServerPlayer player, PhysicalizedHit hit, net.minecraft.core.BlockPos pos) {

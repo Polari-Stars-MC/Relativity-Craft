@@ -1,0 +1,13 @@
+[package]
+name = "relativity_craft_rapier"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+rapier3d = { version = "0.32.0", features = ["parallel", "simd-stable"] }
+
+[build-dependencies]
+cbindgen = "0.29.2"

@@ -22,6 +22,13 @@ public record PhysicalizedBlockSnapshot(int localX, int localY, int localZ, int 
         return blockEntityNbt != null && !blockEntityNbt.isEmpty();
     }
 
+    public boolean hasLoadableBlockEntityNbt() {
+        return blockEntityNbt != null
+                && !blockEntityNbt.isEmpty()
+                && blockEntityNbt.contains("id")
+                && !blockEntityNbt.getStringOr("id", "").isEmpty();
+    }
+
     public PhysicalizedBlockSnapshot withBlockEntityNbt(CompoundTag nbt) {
         return new PhysicalizedBlockSnapshot(localX, localY, localZ, stateId, nbt);
     }

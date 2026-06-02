@@ -21,7 +21,9 @@ import net.minecraft.world.level.storage.ValueOutput;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 
 public final class PhysicalizedVolumeSnapshot {
@@ -33,12 +35,57 @@ public final class PhysicalizedVolumeSnapshot {
     private final int sizeY;
     private final int sizeZ;
     private final List<PhysicalizedBlockSnapshot> cells;
+    // Precomputed O(1) lookup index and occupied bounds. The snapshot is immutable, so these are
+    // computed once here instead of re-scanning the cell list on every cellAt()/makeBoundingBox()
+    // call. Those scans were a primary source of per-tick lag for large volumes.
+    private final Map<Long, PhysicalizedBlockSnapshot> cellIndex;
+    private final int occupiedMinX;
+    private final int occupiedMinY;
+    private final int occupiedMinZ;
+    private final int occupiedMaxX;
+    private final int occupiedMaxY;
+    private final int occupiedMaxZ;
 
     public PhysicalizedVolumeSnapshot(int sizeX, int sizeY, int sizeZ, List<PhysicalizedBlockSnapshot> cells) {
         this.sizeX = Math.max(1, sizeX);
         this.sizeY = Math.max(1, sizeY);
         this.sizeZ = Math.max(1, sizeZ);
         this.cells = List.copyOf(cells);
+
+        Map<Long, PhysicalizedBlockSnapshot> index = new HashMap<>(Math.max(16, this.cells.size() * 2));
+        int minX = Integer.MAX_VALUE;
+        int minY = Integer.MAX_VALUE;
+        int minZ = Integer.MAX_VALUE;
+        int maxX = Integer.MIN_VALUE;
+        int maxY = Integer.MIN_VALUE;
+        int maxZ = Integer.MIN_VALUE;
+        for (PhysicalizedBlockSnapshot cell : this.cells) {
+            // Preserve the previous "first match wins" semantics of the old linear scan.
+            index.putIfAbsent(pack(cell.localX(), cell.localY(), cell.localZ()), cell);
+            minX = Math.min(minX, cell.localX());
+            minY = Math.min(minY, cell.localY());
+            minZ = Math.min(minZ, cell.localZ());
+            maxX = Math.max(maxX, cell.localX());
+            maxY = Math.max(maxY, cell.localY());
+            maxZ = Math.max(maxZ, cell.localZ());
+        }
+        this.cellIndex = index;
+        if (this.cells.isEmpty()) {
+            // Match the legacy empty-volume behaviour: min = 0, max = size - 1.
+            this.occupiedMinX = 0;
+            this.occupiedMinY = 0;
+            this.occupiedMinZ = 0;
+            this.occupiedMaxX = Math.max(0, this.sizeX - 1);
+            this.occupiedMaxY = Math.max(0, this.sizeY - 1);
+            this.occupiedMaxZ = Math.max(0, this.sizeZ - 1);
+        } else {
+            this.occupiedMinX = minX;
+            this.occupiedMinY = minY;
+            this.occupiedMinZ = minZ;
+            this.occupiedMaxX = maxX;
+            this.occupiedMaxY = maxY;
+            this.occupiedMaxZ = maxZ;
+        }
     }
 
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
@@ -158,27 +205,27 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public int occupiedMinX() {
-        return occupiedMin(CoordinateAxis.X);
+        return occupiedMinX;
     }
 
     public int occupiedMinY() {
-        return occupiedMin(CoordinateAxis.Y);
+        return occupiedMinY;
     }
 
     public int occupiedMinZ() {
-        return occupiedMin(CoordinateAxis.Z);
+        return occupiedMinZ;
     }
 
     public int occupiedMaxX() {
-        return occupiedMax(CoordinateAxis.X, sizeX);
+        return occupiedMaxX;
     }
 
     public int occupiedMaxY() {
-        return occupiedMax(CoordinateAxis.Y, sizeY);
+        return occupiedMaxY;
     }
 
     public int occupiedMaxZ() {
-        return occupiedMax(CoordinateAxis.Z, sizeZ);
+        return occupiedMaxZ;
     }
 
     public int occupiedSizeX() {
@@ -210,13 +257,15 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public Optional<PhysicalizedBlockSnapshot> cellAt(int localX, int localY, int localZ) {
-        long key = pack(localX, localY, localZ);
-        for (PhysicalizedBlockSnapshot cell : cells) {
-            if (pack(cell.localX(), cell.localY(), cell.localZ()) == key) {
-                return Optional.of(cell);
-            }
-        }
-        return Optional.empty();
+        return Optional.ofNullable(cellAtOrNull(localX, localY, localZ));
+    }
+
+    public PhysicalizedBlockSnapshot cellAtOrNull(int localX, int localY, int localZ) {
+        return cellIndex.get(pack(localX, localY, localZ));
+    }
+
+    public Map<Long, PhysicalizedBlockSnapshot> cellsByKeyView() {
+        return cellIndex;
     }
 
     public PhysicalizedVolumeSnapshot withoutCell(PhysicalizedBlockSnapshot removedCell) {
@@ -350,53 +399,6 @@ public final class PhysicalizedVolumeSnapshot {
 
     private static long pack(int x, int y, int z) {
         return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
-    }
-
-    private int occupiedMin(CoordinateAxis axis) {
-        if (cells.isEmpty()) {
-            return 0;
-        }
-
-        int min = Integer.MAX_VALUE;
-        for (PhysicalizedBlockSnapshot cell : cells) {
-            min = Math.min(min, axis.of(cell));
-        }
-        return min;
-    }
-
-    private int occupiedMax(CoordinateAxis axis, int size) {
-        if (cells.isEmpty()) {
-            return Math.max(0, size - 1);
-        }
-
-        int max = Integer.MIN_VALUE;
-        for (PhysicalizedBlockSnapshot cell : cells) {
-            max = Math.max(max, axis.of(cell));
-        }
-        return max;
-    }
-
-    private enum CoordinateAxis {
-        X {
-            @Override
-            int of(PhysicalizedBlockSnapshot cell) {
-                return cell.localX();
-            }
-        },
-        Y {
-            @Override
-            int of(PhysicalizedBlockSnapshot cell) {
-                return cell.localY();
-            }
-        },
-        Z {
-            @Override
-            int of(PhysicalizedBlockSnapshot cell) {
-                return cell.localZ();
-            }
-        };
-
-        abstract int of(PhysicalizedBlockSnapshot cell);
     }
 
     public record ExpandedPlacement(PhysicalizedVolumeSnapshot snapshot, int shiftX, int shiftY, int shiftZ) {

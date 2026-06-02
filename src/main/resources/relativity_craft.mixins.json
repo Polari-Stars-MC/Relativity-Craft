@@ -3,14 +3,23 @@
   "package": "org.polaris2023.relativity.mixin",
   "compatibilityLevel": "JAVA_25",
   "mixins": [
+    "AbstractBoatWaterPhysicsMixin",
     "BlockGetterMixin",
+    "BlockStateBaseMixin",
+    "BucketItemMixin",
     "CollisionGetterMixin",
     "EntityGetterMixin",
-    "LevelEntityGetterAccessor"
+    "EntityWaterPhysicsMixin",
+    "FlowingFluidMixin",
+    "LevelEntityGetterAccessor",
+    "PistonMovingBlockEntityMixin",
+    "SignalGetterMixin"
   ],
   "client": [
     "LevelRendererMixin",
-    "MinecraftPickMixin"
+    "MinecraftPhysicalizedInputMixin",
+    "MinecraftPickMixin",
+    "MultiPlayerGameModePhysicalizedMixin"
   ],
   "injectors": {
     "defaultRequire": 1

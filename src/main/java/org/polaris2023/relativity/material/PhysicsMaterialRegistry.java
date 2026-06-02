@@ -1,9 +1,14 @@
 package org.polaris2023.relativity.material;
 
+import net.minecraft.core.registries.BuiltInRegistries;
+import net.minecraft.world.level.block.state.BlockState;
+
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicsMaterialRegistry {
+    public static final PhysicsMaterialRegistry INSTANCE = new PhysicsMaterialRegistry();
+
     private final Map<String, PhysicsMaterial> materials = new ConcurrentHashMap<>();
 
     public PhysicsMaterialRegistry() {
@@ -16,6 +21,10 @@ public final class PhysicsMaterialRegistry {
 
     public PhysicsMaterial materialFor(String blockId) {
         return materials.getOrDefault(blockId, PhysicsMaterial.DEFAULT);
+    }
+
+    public PhysicsMaterial materialFor(BlockState state) {
+        return materialFor(BuiltInRegistries.BLOCK.getKey(state.getBlock()).toString());
     }
 
     private void registerDefaults() {

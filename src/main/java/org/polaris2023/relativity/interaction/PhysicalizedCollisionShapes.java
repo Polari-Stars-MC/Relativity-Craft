@@ -1,12 +1,13 @@
 package org.polaris2023.relativity.interaction;
 
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.fluid.SimulatedWaterEntityPhysics;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
+import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import net.minecraft.core.BlockPos;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntitySelector;
-import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.level.CollisionGetter;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.block.state.BlockState;
@@ -25,6 +26,8 @@ public final class PhysicalizedCollisionShapes {
     private static final double QUERY_EPSILON = 1.0E-5;
     private static final double PUSH_OUT_EPSILON = 1.0E-3;
     private static final int MAX_PUSH_OUT_ITERATIONS = 6;
+    private static final int PUSH_SCAN_INTERVAL_TICKS = 4;
+    private static final int MAX_PUSH_SCANS_PER_TICK = 64;
 
     private PhysicalizedCollisionShapes() {
     }
@@ -34,20 +37,26 @@ public final class PhysicalizedCollisionShapes {
             return List.of();
         }
 
-        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
-        if (volumes.isEmpty()) {
-            return List.of();
-        }
-
         List<VoxelShape> shapes = new ArrayList<>();
+        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
         for (PhysicalizedVolumeEntity volume : volumes) {
             collectVolumeShapes(volume, source, queryBox, shapes);
         }
-        return shapes;
+        shapes.addAll(SimulatedWaterEntityPhysics.waterSurfaceCollisions(getter, source, queryBox));
+        return shapes.isEmpty() ? List.of() : shapes;
     }
 
     public static void pushIntersectingEntities(ServerLevel level) {
+        long gameTime = level.getGameTime();
+        int scanned = 0;
         for (PhysicalizedVolumeEntity volume : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+            if (scanned >= MAX_PUSH_SCANS_PER_TICK) {
+                return;
+            }
+            if (Math.floorMod(gameTime + volume.getId(), PUSH_SCAN_INTERVAL_TICKS) != 0) {
+                continue;
+            }
+            scanned++;
             AABB searchBox = volume.getBoundingBox().inflate(0.25);
             for (Entity entity : level.getEntities(volume, searchBox, candidate -> shouldPushOut(candidate, volume))) {
                 pushOutOfVolume(volume, entity);
@@ -67,38 +76,45 @@ public final class PhysicalizedCollisionShapes {
             Consumer<AABB> output
     ) {
         PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
-        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(volume.snapshot());
+        PhysicalizedVolumeSnapshot snapshot = volume.snapshot();
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
         AABB localQuery = mapping.localAabbOfWorld(queryBox.inflate(QUERY_EPSILON)).inflate(1.0);
-        int minX = Mth.floor(localQuery.minX) - 1;
-        int minY = Mth.floor(localQuery.minY) - 1;
-        int minZ = Mth.floor(localQuery.minZ) - 1;
-        int maxX = Mth.floor(localQuery.maxX) + 1;
-        int maxY = Mth.floor(localQuery.maxY) + 1;
-        int maxZ = Mth.floor(localQuery.maxZ) + 1;
+        int minX = Math.max(snapshot.occupiedMinX(), Mth.floor(localQuery.minX) - 1);
+        int minY = Math.max(snapshot.occupiedMinY(), Mth.floor(localQuery.minY) - 1);
+        int minZ = Math.max(snapshot.occupiedMinZ(), Mth.floor(localQuery.minZ) - 1);
+        int maxX = Math.min(snapshot.occupiedMaxX(), Mth.floor(localQuery.maxX) + 1);
+        int maxY = Math.min(snapshot.occupiedMaxY(), Mth.floor(localQuery.maxY) + 1);
+        int maxZ = Math.min(snapshot.occupiedMaxZ(), Mth.floor(localQuery.maxZ) + 1);
+        if (minX > maxX || minY > maxY || minZ > maxZ) {
+            return;
+        }
         CollisionContext context = collisionContext(source, mapping);
 
-        for (PhysicalizedBlockSnapshot cell : volume.snapshot().cells()) {
-            if (cell.localX() < minX || cell.localX() > maxX
-                    || cell.localY() < minY || cell.localY() > maxY
-                    || cell.localZ() < minZ || cell.localZ() > maxZ) {
-                continue;
-            }
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    PhysicalizedBlockSnapshot cell = snapshot.cellAtOrNull(x, y, z);
+                    if (cell == null) {
+                        continue;
+                    }
 
-            BlockState state = cell.state();
-            if (state.isAir()) {
-                continue;
-            }
+                    BlockState state = cell.state();
+                    if (state.isAir()) {
+                        continue;
+                    }
 
-            BlockPos localPos = mapping.localBlockPos(cell);
-            VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
-            if (localShape.isEmpty()) {
-                continue;
-            }
+                    BlockPos localPos = mapping.localBlockPos(cell);
+                    VoxelShape localShape = state.getCollisionShape(localLevel, localPos, context);
+                    if (localShape.isEmpty()) {
+                        continue;
+                    }
 
-            for (AABB localPart : localShape.toAabbs()) {
-                AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
-                if (worldPart.intersects(queryBox)) {
-                    output.accept(worldPart);
+                    for (AABB localPart : localShape.toAabbs()) {
+                        AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
+                        if (worldPart.intersects(queryBox)) {
+                            output.accept(worldPart);
+                        }
+                    }
                 }
             }
         }
@@ -107,7 +123,6 @@ public final class PhysicalizedCollisionShapes {
     private static boolean shouldPushOut(Entity entity, PhysicalizedVolumeEntity volume) {
         return entity != volume
                 && !(entity instanceof PhysicalizedVolumeEntity)
-                && !(entity instanceof Player)
                 && !entity.isRemoved()
                 && entity.isAlive()
                 && !entity.noPhysics
@@ -193,7 +208,7 @@ public final class PhysicalizedCollisionShapes {
 
     private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB queryBox) {
         List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level)) {
+        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, queryBox, 2.0)) {
             if (entity.getBoundingBox().inflate(QUERY_EPSILON).intersects(queryBox)) {
                 candidates.add(entity);
             }
