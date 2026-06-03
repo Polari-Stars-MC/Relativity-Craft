@@ -34,8 +34,9 @@ import java.util.concurrent.ConcurrentHashMap;
 public final class PhysicsWorldManager {
     private static final PhysicsWorldManager GLOBAL = new PhysicsWorldManager();
     private static final double GRAVITY_Y = -9.81;
-    private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
-    private static final int SUBSTEPS_PER_SERVER_TICK = 3;
+    private static final double PHYSICS_TICK_SECONDS = 1.0 / 20.0;
+    private static final int SUBSTEPS_PER_SERVER_TICK = 2;
+    private static final double PHYSICS_SUBSTEP_SECONDS = PHYSICS_TICK_SECONDS / SUBSTEPS_PER_SERVER_TICK;
     private static final int SNAPSHOT_STRIDE = 8;
     private static final int TERRAIN_MARGIN_BLOCKS = 8;
     private static final double PISTON_PUSH_VELOCITY = 2.0;
@@ -494,11 +495,14 @@ public final class PhysicsWorldManager {
             }
 
             ChunkSectionKey key = ChunkSectionKey.containing(dimensionId(level), pos.getX(), pos.getY(), pos.getZ());
-            if (requestedTerrainSections.contains(key)) {
-                cancelQueuedBuild(key);
-                priorityQueuedSections.add(key);
-                priorityTerrainJobs.addFirst(new TerrainBuildJob(key));
+            if (!requestedTerrainSections.contains(key) || priorityQueuedSections.contains(key)) {
+                return;
             }
+            if (backgroundQueuedSections.remove(key)) {
+                backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
+            }
+            priorityQueuedSections.add(key);
+            priorityTerrainJobs.addFirst(new TerrainBuildJob(key));
         }
 
         private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
@@ -748,9 +752,10 @@ public final class PhysicsWorldManager {
             return List.of();
         }
 
-        double originX = entity.localOriginX();
-        double originY = entity.localOriginY();
-        double originZ = entity.localOriginZ();
+        // Rapier's body translation is entity.physicsCenter(), so collider offsets use the same occupied-center origin.
+        double originX = snapshot.occupiedCenterX();
+        double originY = snapshot.occupiedCenterY();
+        double originZ = snapshot.occupiedCenterZ();
         List<RapierNativeWorld.BoxCollider> colliders = new ArrayList<>(parts.size());
         for (AABB part : parts) {
             double sizeX = part.maxX - part.minX;

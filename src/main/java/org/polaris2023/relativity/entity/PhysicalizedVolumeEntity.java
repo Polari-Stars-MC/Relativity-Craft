@@ -163,19 +163,36 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot) {
-        this.setSnapshot(snapshot, true, null);
+        this.setSnapshotPreservingEntityCenter(snapshot, true, null);
     }
 
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin) {
-        this.setSnapshot(snapshot, true, localOrigin);
+        this.setSnapshotPreservingEntityCenter(snapshot, true, localOrigin);
+    }
+
+    public void updateSnapshotAtEntityCenter(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin, Vec3 entityCenter) {
+        this.setSnapshotAtEntityCenter(snapshot, true, localOrigin, entityCenter);
     }
 
     public void receiveSnapshot(PhysicalizedVolumeSnapshot snapshot) {
-        this.setSnapshot(snapshot, false, null);
+        this.setSnapshotPreservingEntityCenter(snapshot, false, null);
     }
 
     public void receiveSnapshot(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin) {
-        this.setSnapshot(snapshot, false, localOrigin);
+        this.setSnapshotPreservingEntityCenter(snapshot, false, localOrigin);
+    }
+
+    public void receiveSnapshotAtPose(
+            PhysicalizedVolumeSnapshot snapshot,
+            Vec3 localOrigin,
+            Vec3 entityCenter,
+            float qx,
+            float qy,
+            float qz,
+            float qw
+    ) {
+        this.setPhysicsRotation(qx, qy, qz, qw);
+        this.setSnapshotAtEntityCenter(snapshot, false, localOrigin, entityCenter);
     }
 
     public float rotationQx() {
@@ -321,6 +338,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public void setEntityCenter(Vec3 center) {
         this.setPos(center.x, center.y - this.sizeY() * 0.5, center.z);
         this.setBoundingBox(this.makeBoundingBox(this.position()));
+    }
+
+    public Vec3 entityCenter() {
+        return new Vec3(this.getX(), this.getY() + this.sizeY() * 0.5, this.getZ());
     }
 
     public void resolveWorldCollisionAfterShapeChange() {
@@ -668,12 +689,30 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         buffer.writeFloat((float) this.localOriginX());
         buffer.writeFloat((float) this.localOriginY());
         buffer.writeFloat((float) this.localOriginZ());
+        Vec3 center = this.entityCenter();
+        buffer.writeDouble(center.x);
+        buffer.writeDouble(center.y);
+        buffer.writeDouble(center.z);
+        buffer.writeFloat(this.rotationQx());
+        buffer.writeFloat(this.rotationQy());
+        buffer.writeFloat(this.rotationQz());
+        buffer.writeFloat(this.rotationQw());
     }
 
     @Override
     public void readSpawnData(RegistryFriendlyByteBuf additionalData) {
         PhysicalizedVolumeSnapshot snapshot = PhysicalizedVolumeSnapshot.read(additionalData);
-        this.receiveSnapshot(snapshot, new Vec3(additionalData.readFloat(), additionalData.readFloat(), additionalData.readFloat()));
+        Vec3 localOrigin = new Vec3(additionalData.readFloat(), additionalData.readFloat(), additionalData.readFloat());
+        Vec3 entityCenter = new Vec3(additionalData.readDouble(), additionalData.readDouble(), additionalData.readDouble());
+        this.receiveSnapshotAtPose(
+                snapshot,
+                localOrigin,
+                entityCenter,
+                additionalData.readFloat(),
+                additionalData.readFloat(),
+                additionalData.readFloat(),
+                additionalData.readFloat()
+        );
     }
 
     private void setSizes(int sizeX, int sizeY, int sizeZ) {
@@ -710,10 +749,6 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.entityData.set(DATA_QY, qy);
         this.entityData.set(DATA_QZ, qz);
         this.entityData.set(DATA_QW, qw);
-    }
-
-    private Vec3 entityCenter() {
-        return new Vec3(this.getX(), this.getY() + this.sizeY() * 0.5, this.getZ());
     }
 
     private Vec3 entityCenterForPhysicsCenter(Vec3 physicsCenter) {
@@ -756,6 +791,24 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         }
         this.entityData.set(DATA_BLOCK_COUNT, this.snapshot.blockCount());
         this.refreshDimensions();
+        if (syncToTrackingClients && !this.level().isClientSide()) {
+            PhysicalizedInteractionNetwork.sendSnapshot(this);
+        }
+    }
+
+    private void setSnapshotPreservingEntityCenter(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients, Vec3 localOrigin) {
+        Vec3 center = this.entityCenter();
+        this.setSnapshotAtEntityCenter(snapshot, syncToTrackingClients, localOrigin, center);
+    }
+
+    private void setSnapshotAtEntityCenter(
+            PhysicalizedVolumeSnapshot snapshot,
+            boolean syncToTrackingClients,
+            Vec3 localOrigin,
+            Vec3 entityCenter
+    ) {
+        this.setSnapshot(snapshot, false, localOrigin);
+        this.setEntityCenter(entityCenter);
         if (syncToTrackingClients && !this.level().isClientSide()) {
             PhysicalizedInteractionNetwork.sendSnapshot(this);
         }

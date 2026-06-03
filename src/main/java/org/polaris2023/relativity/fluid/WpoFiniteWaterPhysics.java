@@ -52,6 +52,7 @@ public final class WpoFiniteWaterPhysics {
     private static final int MAX_EQUALIZE_DISTANCE = 16;
     private static final int MAX_SLIDE_DISTANCE = 5;
     private static final int MAX_DISPLACEMENT_DISTANCE = 10;
+    private static final int MAX_POROUS_PASS_DISTANCE = 8;
     private static final int MAX_SEARCH_NODES = 1_536;
     private static final Direction[] HORIZONTAL_DIRECTIONS = {
             Direction.NORTH,
@@ -316,18 +317,17 @@ public final class WpoFiniteWaterPhysics {
     }
 
     private static DownFlowResult tryFlowDown(ServerLevel level, BlockPos pos, BlockState state, int amount, FlowingFluid fluid) {
-        BlockPos belowPos = pos.below();
-        if (!canTouch(level, belowPos)) {
+        if (!canTouch(level, pos.below())) {
             setWaterAmount(level, pos, state, fluid, 0, false);
             return new DownFlowResult(true, false);
         }
 
-        BlockState belowState = level.getBlockState(belowPos);
-        if (!canReceiveFrom(level, pos, state, belowPos, belowState, Direction.DOWN, fluid)) {
+        FlowTarget below = findReceiveTarget(level, pos, state, Direction.DOWN, fluid);
+        if (below == null) {
             return DownFlowResult.NONE;
         }
 
-        int belowAmount = sameWater(belowState.getFluidState(), fluid) ? fluidAmount(belowState.getFluidState()) : 0;
+        int belowAmount = sameWater(below.state().getFluidState(), fluid) ? fluidAmount(below.state().getFluidState()) : 0;
         if (belowAmount >= MAX_LEVEL) {
             return DownFlowResult.NONE;
         }
@@ -346,7 +346,7 @@ public final class WpoFiniteWaterPhysics {
             newBelow = total;
         }
 
-        boolean changed = setWaterAmount(level, belowPos, belowState, fluid, newBelow, true);
+        boolean changed = setWaterAmount(level, below.pos(), below.state(), fluid, newBelow, true);
         changed |= setWaterAmount(level, pos, state, fluid, newCurrent, false);
         return new DownFlowResult(changed, newBelow >= MAX_LEVEL);
     }
@@ -358,17 +358,12 @@ public final class WpoFiniteWaterPhysics {
         int sum = amount;
 
         for (Direction direction : directions) {
-            BlockPos targetPos = pos.relative(direction);
-            if (!canTouch(level, targetPos)) {
+            FlowTarget target = findReceiveTarget(level, pos, state, direction, fluid);
+            if (target == null) {
                 continue;
             }
 
-            BlockState targetState = level.getBlockState(targetPos);
-            if (!canReceiveFrom(level, pos, state, targetPos, targetState, direction, fluid)) {
-                continue;
-            }
-
-            int targetAmount = sameWater(targetState.getFluidState(), fluid) ? fluidAmount(targetState.getFluidState()) : 0;
+            int targetAmount = sameWater(target.state().getFluidState(), fluid) ? fluidAmount(target.state().getFluidState()) : 0;
             if (targetAmount >= amount || targetAmount >= MAX_LEVEL) {
                 continue;
             }
@@ -379,7 +374,7 @@ public final class WpoFiniteWaterPhysics {
                 sum = amount;
             }
             if (targetAmount == lowest) {
-                targets.add(new SideTarget(targetPos, targetState, targetAmount));
+                targets.add(new SideTarget(target.pos(), target.state(), targetAmount));
                 sum += targetAmount;
             }
         }
@@ -415,22 +410,17 @@ public final class WpoFiniteWaterPhysics {
         }
 
         for (Direction direction : shuffledHorizontalDirections(level.getRandom())) {
-            BlockPos targetPos = pos.relative(direction);
-            if (!canTouch(level, targetPos)) {
+            FlowTarget target = findReceiveTarget(level, pos, state, direction, fluid);
+            if (target == null || !hasDropPath(level, target.pos(), target.state(), fluid)) {
                 continue;
             }
 
-            BlockState targetState = level.getBlockState(targetPos);
-            if (!canReceiveFrom(level, pos, state, targetPos, targetState, direction, fluid) || !hasDropPath(level, targetPos, targetState, fluid)) {
-                continue;
-            }
-
-            int targetAmount = sameWater(targetState.getFluidState(), fluid) ? fluidAmount(targetState.getFluidState()) : 0;
+            int targetAmount = sameWater(target.state().getFluidState(), fluid) ? fluidAmount(target.state().getFluidState()) : 0;
             if (targetAmount > 0) {
                 continue;
             }
 
-            boolean changed = setWaterAmount(level, targetPos, targetState, fluid, 1, false);
+            boolean changed = setWaterAmount(level, target.pos(), target.state(), fluid, 1, false);
             changed |= setWaterAmount(level, pos, state, fluid, amount - 1, false);
             return changed;
         }
@@ -513,20 +503,18 @@ public final class WpoFiniteWaterPhysics {
                 cursor = above;
                 cursorState = aboveState;
             } else {
-                BlockPos next = cursor.relative(moveDirection);
-                BlockState nextState = level.getBlockState(next);
-                if (canEqualizeThrough(level, cursor, cursorState, next, nextState, moveDirection, fluid, originAmount)) {
-                    cursor = next;
-                    cursorState = nextState;
+                FlowTarget next = findEqualizeStep(level, cursor, cursorState, moveDirection, fluid, originAmount);
+                if (next != null) {
+                    cursor = next.pos();
+                    cursorState = next.state();
                     blocked = false;
                 } else {
-                    BlockPos lower = cursor.below();
-                    BlockState lowerState = level.getBlockState(lower);
-                    if (!canEqualizeThrough(level, cursor, cursorState, lower, lowerState, Direction.DOWN, fluid, originAmount)) {
+                    FlowTarget lower = findEqualizeStep(level, cursor, cursorState, Direction.DOWN, fluid, originAmount);
+                    if (lower == null) {
                         return null;
                     }
-                    cursor = lower;
-                    cursorState = lowerState;
+                    cursor = lower.pos();
+                    cursorState = lower.state();
                     blocked = true;
                 }
             }
@@ -563,25 +551,25 @@ public final class WpoFiniteWaterPhysics {
             return null;
         }
 
-        BlockPos above = cursor.above();
-        if (!canTouch(level, above)) {
+        FlowTarget above = findEqualizeStep(level, cursor, cursorState, Direction.UP, fluid, originAmount);
+        if (above == null) {
             return null;
         }
 
-        BlockState aboveState = level.getBlockState(above);
+        BlockState aboveState = above.state();
         FluidState aboveFluid = aboveState.getFluidState();
         int aboveAmount = sameWater(aboveFluid, fluid) ? fluidAmount(aboveFluid) : 0;
         if (!canEqualizeInto(aboveState, aboveAmount, fluid)) {
             return null;
         }
-        if (!canReach(level, cursor, above, cursorState, aboveState)) {
+        if (!canReach(level, cursor, above.pos(), cursorState, aboveState)) {
             return null;
         }
-        if (absoluteLevel(origin.getY(), originAmount) - absoluteLevel(above.getY(), aboveAmount) <= 1) {
+        if (absoluteLevel(origin.getY(), originAmount) - absoluteLevel(above.pos().getY(), aboveAmount) <= 1) {
             return null;
         }
 
-        return new EqualizeTarget(above, aboveState, aboveAmount);
+        return new EqualizeTarget(above.pos(), aboveState, aboveAmount);
     }
 
     private static boolean canEqualizeThrough(
@@ -600,6 +588,19 @@ public final class WpoFiniteWaterPhysics {
 
         FluidState targetFluid = targetState.getFluidState();
         return sameWater(targetFluid, fluid) || targetFluid.isEmpty() && originAmount > 1 && canOccupy(targetState, fluid);
+    }
+
+    private static FlowTarget findEqualizeStep(
+            ServerLevel level,
+            BlockPos sourcePos,
+            BlockState sourceState,
+            Direction direction,
+            FlowingFluid fluid,
+            int originAmount
+    ) {
+        return findTargetSkippingPorous(level, sourcePos, sourceState, direction,
+                (fromPos, fromState, targetPos, targetState) ->
+                        canEqualizeThrough(level, fromPos, fromState, targetPos, targetState, direction, fluid, originAmount));
     }
 
     private static boolean canEqualizeInto(BlockState state, int amount, FlowingFluid fluid) {
@@ -642,9 +643,7 @@ public final class WpoFiniteWaterPhysics {
     }
 
     private static boolean hasDropPath(ServerLevel level, BlockPos pos, BlockState state, FlowingFluid fluid) {
-        BlockPos belowPos = pos.below();
-        return canTouch(level, belowPos)
-                && canReceiveFrom(level, pos, state, belowPos, level.getBlockState(belowPos), Direction.DOWN, fluid);
+        return findReceiveTarget(level, pos, state, Direction.DOWN, fluid) != null;
     }
 
     private static boolean setWaterAmount(ServerLevel level, BlockPos pos, BlockState oldState, FlowingFluid fluid, int amount, boolean falling) {
@@ -735,15 +734,12 @@ public final class WpoFiniteWaterPhysics {
             }
 
             for (Direction direction : searchDirections(level.getRandom())) {
-                BlockPos next = node.pos().relative(direction);
-                if (!visited.add(next.asLong()) || !canTouch(level, next)) {
+                FlowTarget next = findConnectedWaterTarget(level, node.pos(), state, direction, fluid);
+                if (next == null || !visited.add(next.pos().asLong())) {
                     continue;
                 }
 
-                BlockState nextState = level.getBlockState(next);
-                if (sameWater(nextState.getFluidState(), fluid) && canReach(level, node.pos(), next, state, nextState)) {
-                    queue.addLast(new SearchNode(next, node.distance() + 1));
-                }
+                queue.addLast(new SearchNode(next.pos(), node.distance() + 1));
             }
         }
 
@@ -849,17 +845,12 @@ public final class WpoFiniteWaterPhysics {
                     ? fluid.getFlowing(Math.max(1, MAX_LEVEL - 1), false).createLegacyBlock()
                     : level.getBlockState(node.pos());
             for (Direction direction : searchDirections(level.getRandom())) {
-                BlockPos next = node.pos().relative(direction);
-                if (!visited.add(next.asLong()) || !canTouch(level, next) || excluded.contains(next.asLong())) {
+                FlowTarget next = findDisplacementSearchTarget(level, node.pos(), fromState, direction, fluid);
+                if (next == null || !visited.add(next.pos().asLong()) || excluded.contains(next.pos().asLong())) {
                     continue;
                 }
 
-                BlockState nextState = level.getBlockState(next);
-                FluidState nextFluid = nextState.getFluidState();
-                if ((nextState.isAir() || sameWater(nextFluid, fluid) || canOccupy(nextState, fluid))
-                        && canReach(level, node.pos(), next, fromState, nextState)) {
-                    queue.addLast(new SearchNode(next, node.distance() + 1));
-                }
+                queue.addLast(new SearchNode(next.pos(), node.distance() + 1));
             }
         }
 
@@ -895,11 +886,95 @@ public final class WpoFiniteWaterPhysics {
         return canPassThroughWall(direction, level, sourcePos, sourceState, targetPos, targetState);
     }
 
+    private static FlowTarget findReceiveTarget(ServerLevel level, BlockPos sourcePos, BlockState sourceState, Direction direction, FlowingFluid fluid) {
+        return findTargetSkippingPorous(level, sourcePos, sourceState, direction,
+                (fromPos, fromState, targetPos, targetState) ->
+                        canReceiveFrom(level, fromPos, fromState, targetPos, targetState, direction, fluid));
+    }
+
+    private static FlowTarget findConnectedWaterTarget(
+            ServerLevel level,
+            BlockPos sourcePos,
+            BlockState sourceState,
+            Direction direction,
+            FlowingFluid fluid
+    ) {
+        return findTargetSkippingPorous(level, sourcePos, sourceState, direction,
+                (fromPos, fromState, targetPos, targetState) ->
+                        sameWater(targetState.getFluidState(), fluid)
+                                && targetState.getBlock() instanceof LiquidBlock
+                                && canReach(level, fromPos, targetPos, fromState, targetState));
+    }
+
+    private static FlowTarget findDisplacementSearchTarget(
+            ServerLevel level,
+            BlockPos sourcePos,
+            BlockState sourceState,
+            Direction direction,
+            FlowingFluid fluid
+    ) {
+        return findTargetSkippingPorous(level, sourcePos, sourceState, direction, (fromPos, fromState, targetPos, targetState) -> {
+            FluidState targetFluid = targetState.getFluidState();
+            return (targetState.isAir() || sameWater(targetFluid, fluid) || canOccupy(targetState, fluid))
+                    && canReach(level, fromPos, targetPos, fromState, targetState);
+        });
+    }
+
+    private static FlowTarget findTargetSkippingPorous(
+            ServerLevel level,
+            BlockPos sourcePos,
+            BlockState sourceState,
+            Direction direction,
+            FlowTargetPredicate accepts
+    ) {
+        BlockPos targetPos = sourcePos.relative(direction);
+        if (!canTouch(level, targetPos)) {
+            return null;
+        }
+
+        BlockState targetState = level.getBlockState(targetPos);
+        if (!isPorousFluidPassage(targetState)) {
+            return accepts.accepts(sourcePos, sourceState, targetPos, targetState)
+                    ? new FlowTarget(targetPos, targetState)
+                    : null;
+        }
+
+        BlockPos fromPos = sourcePos;
+        BlockState fromState = sourceState;
+        for (int distance = 0; distance < MAX_POROUS_PASS_DISTANCE; distance++) {
+            if (!canPassThroughWall(direction, level, fromPos, fromState, targetPos, targetState)) {
+                return null;
+            }
+
+            fromPos = targetPos;
+            fromState = targetState;
+            targetPos = fromPos.relative(direction);
+            if (!canTouch(level, targetPos)) {
+                return null;
+            }
+
+            targetState = level.getBlockState(targetPos);
+            if (isPorousFluidPassage(targetState)) {
+                continue;
+            }
+
+            return accepts.accepts(fromPos, fromState, targetPos, targetState)
+                    ? new FlowTarget(targetPos, targetState)
+                    : null;
+        }
+
+        return null;
+    }
+
     private static boolean canOccupy(BlockState state, FlowingFluid fluid) {
         return state.isAir()
                 || (!state.hasBlockEntity()
                 && !state.blocksMotion()
                 && state.canBeReplaced(fluid));
+    }
+
+    private static boolean isPorousFluidPassage(BlockState state) {
+        return state.is(Blocks.IRON_BARS);
     }
 
     private static boolean canPassThroughWall(
@@ -1049,6 +1124,14 @@ public final class WpoFiniteWaterPhysics {
     }
 
     private record DisplacementTarget(BlockPos pos, BlockState state, int amount) {
+    }
+
+    private record FlowTarget(BlockPos pos, BlockState state) {
+    }
+
+    @FunctionalInterface
+    private interface FlowTargetPredicate {
+        boolean accepts(BlockPos sourcePos, BlockState sourceState, BlockPos targetPos, BlockState targetState);
     }
 
     private record SearchNode(BlockPos pos, int distance) {

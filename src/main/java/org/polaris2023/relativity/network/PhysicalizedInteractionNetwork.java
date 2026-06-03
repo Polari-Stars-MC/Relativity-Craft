@@ -45,6 +45,7 @@ public final class PhysicalizedInteractionNetwork {
     }
 
     public static void sendSnapshot(PhysicalizedVolumeEntity entity) {
+        Vec3 entityCenter = entity.entityCenter();
         PacketDistributor.sendToPlayersTrackingEntityAndSelf(
                 entity,
                 new SnapshotPayload(
@@ -52,7 +53,14 @@ public final class PhysicalizedInteractionNetwork {
                         entity.snapshot(),
                         entity.localOriginX(),
                         entity.localOriginY(),
-                        entity.localOriginZ()
+                        entity.localOriginZ(),
+                        entityCenter.x,
+                        entityCenter.y,
+                        entityCenter.z,
+                        entity.rotationQx(),
+                        entity.rotationQy(),
+                        entity.rotationQz(),
+                        entity.rotationQw()
                 )
         );
     }
@@ -74,7 +82,15 @@ public final class PhysicalizedInteractionNetwork {
     private static void handleSnapshot(SnapshotPayload payload, IPayloadContext context) {
         Entity entity = context.player().level().getEntity(payload.entityId());
         if (entity instanceof PhysicalizedVolumeEntity volume) {
-            volume.receiveSnapshot(payload.snapshot(), new Vec3(payload.localOriginX(), payload.localOriginY(), payload.localOriginZ()));
+            volume.receiveSnapshotAtPose(
+                    payload.snapshot(),
+                    new Vec3(payload.localOriginX(), payload.localOriginY(), payload.localOriginZ()),
+                    new Vec3(payload.entityCenterX(), payload.entityCenterY(), payload.entityCenterZ()),
+                    payload.qx(),
+                    payload.qy(),
+                    payload.qz(),
+                    payload.qw()
+            );
         }
     }
 
@@ -287,7 +303,14 @@ public final class PhysicalizedInteractionNetwork {
             PhysicalizedVolumeSnapshot snapshot,
             double localOriginX,
             double localOriginY,
-            double localOriginZ
+            double localOriginZ,
+            double entityCenterX,
+            double entityCenterY,
+            double entityCenterZ,
+            float qx,
+            float qy,
+            float qz,
+            float qw
     ) implements CustomPacketPayload {
         public static final CustomPacketPayload.Type<SnapshotPayload> TYPE = new CustomPacketPayload.Type<>(
                 Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_snapshot")
@@ -303,7 +326,14 @@ public final class PhysicalizedInteractionNetwork {
                     PhysicalizedVolumeSnapshot.read(buffer),
                     buffer.readDouble(),
                     buffer.readDouble(),
-                    buffer.readDouble()
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readDouble(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat()
             );
         }
 
@@ -313,6 +343,13 @@ public final class PhysicalizedInteractionNetwork {
             buffer.writeDouble(localOriginX);
             buffer.writeDouble(localOriginY);
             buffer.writeDouble(localOriginZ);
+            buffer.writeDouble(entityCenterX);
+            buffer.writeDouble(entityCenterY);
+            buffer.writeDouble(entityCenterZ);
+            buffer.writeFloat(qx);
+            buffer.writeFloat(qy);
+            buffer.writeFloat(qz);
+            buffer.writeFloat(qw);
         }
 
         @Override
