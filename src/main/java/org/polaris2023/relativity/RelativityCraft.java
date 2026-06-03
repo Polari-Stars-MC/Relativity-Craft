@@ -137,12 +137,14 @@ public final class RelativityCraft {
     @SubscribeEvent
     public void onToolChangesBlock(BlockEvent.BlockToolModificationEvent event) {
         if (!event.isSimulated()) {
+            WpoFiniteWaterPhysics.settleAroundIfTouchingWater(event.getLevel(), event.getPos());
             markPhysicsTerrainDirty(event.getLevel(), event.getPos());
         }
     }
 
     @SubscribeEvent
     public void onNeighborNotify(BlockEvent.NeighborNotifyEvent event) {
+        WpoFiniteWaterPhysics.settleNeighborNotify(event);
         markPhysicsTerrainDirty(event.getLevel(), event.getPos());
         for (Direction direction : event.getNotifiedSides()) {
             markPhysicsTerrainDirty(event.getLevel(), event.getPos().relative(direction));

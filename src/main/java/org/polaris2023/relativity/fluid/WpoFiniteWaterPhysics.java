@@ -1,6 +1,5 @@
 package org.polaris2023.relativity.fluid;
 
-import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.advancements.CriteriaTriggers;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -44,10 +43,13 @@ import java.util.Set;
 
 public final class WpoFiniteWaterPhysics {
     private static final int MAX_LEVEL = 8;
-    private static final int FLUID_STEP_INTERVAL_TICKS = 2;
-    private static final int MAX_SIMULATED_FLUID_CELLS_PER_STEP = 192;
-    private static final int MAX_WATER_BLOCK_UPDATES_PER_STEP = 48;
+    private static final int SLOW_FLUID_STEP_INTERVAL_TICKS = 3;
+    private static final int MAX_SIMULATED_FLUID_CELLS_PER_STEP = 128;
+    private static final int MAX_WATER_BLOCK_UPDATES_PER_STEP = 32;
     private static final int MAX_VERTICAL_TRANSFER_PER_STEP = 4;
+    private static final long MAX_FLUID_STEP_NANOS = 1_000_000L;
+    private static final int MAX_PENDING_FLUID_CELLS = 4_096;
+    private static final int FAST_FLUID_PENDING_THRESHOLD = 512;
     private static final Direction[] HORIZONTAL_DIRECTIONS = {
             Direction.NORTH,
             Direction.SOUTH,
@@ -79,14 +81,19 @@ public final class WpoFiniteWaterPhysics {
         }
 
         TickState state = tickState(level);
-        if (state.gameTime % FLUID_STEP_INTERVAL_TICKS != 0L) {
+        if (queue.pending.size() > FAST_FLUID_PENDING_THRESHOLD
+                && state.gameTime % SLOW_FLUID_STEP_INTERVAL_TICKS != 0L) {
             return 0;
         }
 
         int[] processed = {0};
         runMutation(() -> {
+            long deadline = System.nanoTime() + MAX_FLUID_STEP_NANOS;
             int remaining = Math.min(MAX_SIMULATED_FLUID_CELLS_PER_STEP, queue.pending.size());
-            while (remaining-- > 0 && !queue.pending.isEmpty() && !isBlockUpdateBudgetExhausted(level)) {
+            while (remaining-- > 0
+                    && !queue.pending.isEmpty()
+                    && !isBlockUpdateBudgetExhausted(level)
+                    && System.nanoTime() < deadline) {
                 long packed = queue.pending.removeFirst();
                 queue.queued.remove(packed);
                 simulateCell(level, BlockPos.of(packed));
@@ -185,6 +192,24 @@ public final class WpoFiniteWaterPhysics {
         enqueue(level, pos);
         for (Direction direction : Direction.values()) {
             enqueue(level, pos.relative(direction));
+        }
+    }
+
+    public static void settleAroundIfTouchingWater(LevelAccessor levelAccessor, BlockPos pos) {
+        if (!(levelAccessor instanceof ServerLevel level) || !touchesWater(level, pos)) {
+            return;
+        }
+        settleAround(level, pos);
+    }
+
+    public static void settleNeighborNotify(BlockEvent.NeighborNotifyEvent event) {
+        if (!(event.getLevel() instanceof ServerLevel level) || isMutating()) {
+            return;
+        }
+        BlockPos pos = event.getPos();
+        settleAroundIfTouchingWater(level, pos);
+        for (Direction direction : event.getNotifiedSides()) {
+            settleAroundIfTouchingWater(level, pos.relative(direction));
         }
     }
 
@@ -298,7 +323,26 @@ public final class WpoFiniteWaterPhysics {
         }
 
         if (bestDirection == null) {
-            return false;
+            Direction momentumDirection = rememberedHorizontalDirection(level, pos);
+            if (momentumDirection == null) {
+                return false;
+            }
+            BlockPos targetPos = pos.relative(momentumDirection);
+            if (!canTouch(level, targetPos)) {
+                return false;
+            }
+            BlockState targetState = level.getBlockState(targetPos);
+            if (!canReceiveDirectly(level, pos, state, targetPos, targetState, momentumDirection, fluid)) {
+                return false;
+            }
+            int targetAmount = sameWater(targetState.getFluidState(), fluid) ? fluidAmount(targetState.getFluidState()) : 0;
+            if (targetAmount != amount || targetAmount >= MAX_LEVEL) {
+                return false;
+            }
+            bestAmount = targetAmount;
+            bestDirection = momentumDirection;
+            bestPos = targetPos;
+            bestState = targetState;
         }
 
         int delta = amount - bestAmount;
@@ -319,6 +363,10 @@ public final class WpoFiniteWaterPhysics {
 
         boolean changed = setWaterAmount(level, bestPos, bestState, fluid, bestAmount + transfer, false);
         changed |= setWaterAmount(level, pos, state, fluid, amount - transfer, false);
+        if (changed) {
+            rememberHorizontalMomentum(level, pos, bestDirection);
+            rememberHorizontalMomentum(level, bestPos, bestDirection);
+        }
         return changed;
     }
 
@@ -341,7 +389,9 @@ public final class WpoFiniteWaterPhysics {
                 ? Blocks.AIR.defaultBlockState()
                 : waterStateForAmount(fluid, clamped, falling).createLegacyBlock();
         level.setBlock(pos, newState, Block.UPDATE_ALL);
-        markChanged(level, pos);
+        if (clamped <= 0) {
+            forgetHorizontalMomentum(level, pos);
+        }
         enqueueNeighbors(level, pos);
         return true;
     }
@@ -420,6 +470,19 @@ public final class WpoFiniteWaterPhysics {
         return pos.getY() >= level.getMinY() && pos.getY() < level.getMaxY() && level.hasChunkAt(pos);
     }
 
+    private static boolean touchesWater(ServerLevel level, BlockPos pos) {
+        if (canTouch(level, pos) && level.getFluidState(pos).is(FluidTags.WATER)) {
+            return true;
+        }
+        for (Direction direction : Direction.values()) {
+            BlockPos neighbor = pos.relative(direction);
+            if (canTouch(level, neighbor) && level.getFluidState(neighbor).is(FluidTags.WATER)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private static int horizontalStart(ServerLevel level, BlockPos pos) {
         long seed = level.getGameTime() ^ pos.asLong() ^ 0x9E3779B97F4A7C15L;
         return (int) ((seed ^ (seed >>> 32)) & 3L);
@@ -430,6 +493,9 @@ public final class WpoFiniteWaterPhysics {
             return;
         }
         FluidQueue queue = queue(level);
+        if (queue.pending.size() >= MAX_PENDING_FLUID_CELLS) {
+            return;
+        }
         long packed = pos.asLong();
         if (queue.queued.add(packed)) {
             queue.pending.addLast(packed);
@@ -445,21 +511,29 @@ public final class WpoFiniteWaterPhysics {
         }
     }
 
+    private static Direction rememberedHorizontalDirection(ServerLevel level, BlockPos pos) {
+        Byte ordinal = queue(level).horizontalMomentum.get(pos.asLong());
+        if (ordinal == null) {
+            return null;
+        }
+        Direction direction = Direction.values()[ordinal];
+        return direction.getAxis().isHorizontal() ? direction : null;
+    }
+
+    private static void rememberHorizontalMomentum(ServerLevel level, BlockPos pos, Direction direction) {
+        if (direction.getAxis().isHorizontal()) {
+            queue(level).horizontalMomentum.put(pos.asLong(), (byte) direction.ordinal());
+        }
+    }
+
+    private static void forgetHorizontalMomentum(ServerLevel level, BlockPos pos) {
+        queue(level).horizontalMomentum.remove(pos.asLong());
+    }
+
     private static FluidQueue queue(ServerLevel level) {
         return QUEUES.computeIfAbsent(level.dimension().identifier().toString(), ignored -> new FluidQueue());
     }
 
-    private static void markChanged(ServerLevel level, BlockPos pos) {
-        if (!canTouch(level, pos)) {
-            return;
-        }
-        TickState state = tickState(level);
-        if (!state.marked.add(pos.asLong())) {
-            return;
-        }
-        FluidDomainManager.forLevel(level).markDirty(level, pos);
-        PhysicsWorldManager.global().markBlockChanged(level, pos);
-    }
 
     private static boolean reserveBlockUpdate(ServerLevel level) {
         TickState state = tickState(level);
@@ -507,6 +581,7 @@ public final class WpoFiniteWaterPhysics {
     private static final class FluidQueue {
         private final ArrayDeque<Long> pending = new ArrayDeque<>();
         private final Set<Long> queued = new HashSet<>();
+        private final Map<Long, Byte> horizontalMomentum = new HashMap<>();
     }
 
     private static final class TickState {
