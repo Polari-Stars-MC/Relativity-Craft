@@ -42,18 +42,22 @@ import net.neoforged.neoforge.event.level.PistonEvent;
 
 import java.util.ArrayDeque;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 public final class WpoFiniteWaterPhysics {
     private static final int MAX_LEVEL = 8;
     private static final int MAX_BUCKET_DISTANCE = 8;
-    private static final int MAX_EQUALIZE_DISTANCE = 16;
+    private static final int MAX_EQUALIZE_DISTANCE = 6;
     private static final int MAX_SLIDE_DISTANCE = 5;
     private static final int MAX_DISPLACEMENT_DISTANCE = 10;
     private static final int MAX_POROUS_PASS_DISTANCE = 8;
     private static final int MAX_SEARCH_NODES = 1_536;
+    private static final int MAX_WATER_UPDATES_PER_LEVEL_TICK = 96;
+    private static final int WATER_UPDATE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE;
     private static final Direction[] HORIZONTAL_DIRECTIONS = {
             Direction.NORTH,
             Direction.SOUTH,
@@ -61,6 +65,7 @@ public final class WpoFiniteWaterPhysics {
             Direction.EAST
     };
     private static final ThreadLocal<Boolean> MUTATING = ThreadLocal.withInitial(() -> false);
+    private static final Map<String, TickMutationState> TICK_MUTATION_STATES = new HashMap<>();
 
     private WpoFiniteWaterPhysics() {
     }
@@ -657,7 +662,10 @@ public final class WpoFiniteWaterPhysics {
             return false;
         }
         if (oldAmount == clamped && sameFalling(oldFluid, falling)) {
-            scheduleAndMark(level, pos);
+            return false;
+        }
+        if (!reserveWaterUpdate(level)) {
+            scheduleNearbyWater(level, pos);
             return false;
         }
 
@@ -668,13 +676,19 @@ public final class WpoFiniteWaterPhysics {
             BlockEntity blockEntity = oldState.hasBlockEntity() ? level.getBlockEntity(pos) : null;
             Block.dropResources(oldState, level, pos, blockEntity);
         }
-        level.setBlock(pos, newState, Block.UPDATE_ALL);
+        int updateFlags = lightweightWaterUpdate(oldState, oldFluid, fluid) ? WATER_UPDATE_FLAGS : Block.UPDATE_ALL;
+        level.setBlock(pos, newState, updateFlags);
         scheduleAndMark(level, pos);
         for (Direction direction : Direction.values()) {
-            scheduleIfWater(level, pos.relative(direction));
-            markFluidChanged(level, pos.relative(direction));
+            BlockPos neighbor = pos.relative(direction);
+            scheduleIfWater(level, neighbor);
+            markFluidChanged(level, neighbor);
         }
         return true;
+    }
+
+    private static boolean lightweightWaterUpdate(BlockState oldState, FluidState oldFluid, FlowingFluid fluid) {
+        return !oldState.hasBlockEntity() && (oldState.isAir() || sameWater(oldFluid, fluid));
     }
 
     private static boolean displaceExistingWaterAt(
@@ -1076,10 +1090,13 @@ public final class WpoFiniteWaterPhysics {
         if (!canTouch(level, pos)) {
             return;
         }
+        if (!tickState(level).scheduledFluidTicks.add(pos.asLong())) {
+            return;
+        }
 
         FluidState fluid = level.getFluidState(pos);
         if (fluid.is(FluidTags.WATER)) {
-            level.scheduleTick(pos, fluid.getType(), Math.max(1, fluid.getType().getTickDelay(level) / 2));
+            level.scheduleTick(pos, fluid.getType(), Math.max(1, fluid.getType().getTickDelay(level)));
         }
     }
 
@@ -1087,8 +1104,40 @@ public final class WpoFiniteWaterPhysics {
         if (!canTouch(level, pos)) {
             return;
         }
+        if (!tickState(level).markedFluidPositions.add(pos.asLong())) {
+            return;
+        }
         FluidDomainManager.forLevel(level).markDirty(level, pos);
         PhysicsWorldManager.global().markBlockChanged(level, pos);
+    }
+
+    private static void scheduleNearbyWater(ServerLevel level, BlockPos pos) {
+        scheduleIfWater(level, pos);
+        for (Direction direction : Direction.values()) {
+            scheduleIfWater(level, pos.relative(direction));
+        }
+    }
+
+    private static boolean reserveWaterUpdate(ServerLevel level) {
+        TickMutationState state = tickState(level);
+        if (state.waterUpdates >= MAX_WATER_UPDATES_PER_LEVEL_TICK) {
+            return false;
+        }
+        state.waterUpdates++;
+        return true;
+    }
+
+    private static TickMutationState tickState(ServerLevel level) {
+        String key = level.dimension().identifier().toString();
+        long gameTime = level.getGameTime();
+        TickMutationState state = TICK_MUTATION_STATES.get(key);
+        if (state == null) {
+            state = new TickMutationState(gameTime);
+            TICK_MUTATION_STATES.put(key, state);
+        } else if (state.gameTime != gameTime) {
+            state.reset(gameTime);
+        }
+        return state;
     }
 
     private static boolean isMutating() {
@@ -1106,6 +1155,24 @@ public final class WpoFiniteWaterPhysics {
 
     private record DownFlowResult(boolean changed, boolean bottomFilled) {
         private static final DownFlowResult NONE = new DownFlowResult(false, false);
+    }
+
+    private static final class TickMutationState {
+        private final Set<Long> scheduledFluidTicks = new HashSet<>();
+        private final Set<Long> markedFluidPositions = new HashSet<>();
+        private long gameTime;
+        private int waterUpdates;
+
+        private TickMutationState(long gameTime) {
+            this.gameTime = gameTime;
+        }
+
+        private void reset(long gameTime) {
+            this.gameTime = gameTime;
+            waterUpdates = 0;
+            scheduledFluidTicks.clear();
+            markedFluidPositions.clear();
+        }
     }
 
     private record SideTarget(BlockPos pos, BlockState state, int amount) {

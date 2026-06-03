@@ -105,7 +105,7 @@ pub extern "C" fn rc_rigid_body_builder_set_angvel(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_builder_set_gravity_scale(
     builder: *mut RcRigidBodyBuilderHandle,
-    gravity_scale: f32,
+    gravity_scale: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -118,7 +118,7 @@ pub extern "C" fn rc_rigid_body_builder_set_gravity_scale(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_builder_set_linear_damping(
     builder: *mut RcRigidBodyBuilderHandle,
-    linear_damping: f32,
+    linear_damping: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -131,7 +131,7 @@ pub extern "C" fn rc_rigid_body_builder_set_linear_damping(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_builder_set_angular_damping(
     builder: *mut RcRigidBodyBuilderHandle,
-    angular_damping: f32,
+    angular_damping: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -187,7 +187,7 @@ pub extern "C" fn rc_rigid_body_builder_set_user_data(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_rigid_body_builder_set_additional_mass(
     builder: *mut RcRigidBodyBuilderHandle,
-    mass: f32,
+    mass: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -358,10 +358,7 @@ pub extern "C" fn rc_rigid_body_set_pose(
         return RcBool::FALSE;
     };
 
-    body.set_position(
-        isometry_from_parts(translation, rotation),
-        wake_up.0 != 0,
-    );
+    body.set_position(isometry_from_parts(translation, rotation), wake_up.0 != 0);
     RcBool::TRUE
 }
 
@@ -585,7 +582,10 @@ pub extern "C" fn rc_rigid_body_sleep(
 }
 
 #[unsafe(no_mangle)]
-pub extern "C" fn rc_rigid_body_sleep_flag(world: *mut RcWorldHandle, handle: RcRigidBodyHandle) -> u8 {
+pub extern "C" fn rc_rigid_body_sleep_flag(
+    world: *mut RcWorldHandle,
+    handle: RcRigidBodyHandle,
+) -> u8 {
     rc_rigid_body_sleep(world, handle).0
 }
 

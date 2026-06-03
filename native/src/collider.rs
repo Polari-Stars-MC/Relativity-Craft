@@ -105,7 +105,7 @@ pub extern "C" fn rc_collider_builder_set_sensor(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_collider_builder_set_friction(
     builder: *mut RcColliderBuilderHandle,
-    friction: f32,
+    friction: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -118,7 +118,7 @@ pub extern "C" fn rc_collider_builder_set_friction(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_collider_builder_set_restitution(
     builder: *mut RcColliderBuilderHandle,
-    restitution: f32,
+    restitution: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -131,7 +131,7 @@ pub extern "C" fn rc_collider_builder_set_restitution(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_collider_builder_set_density(
     builder: *mut RcColliderBuilderHandle,
-    density: f32,
+    density: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -196,7 +196,7 @@ pub extern "C" fn rc_collider_builder_set_active_hooks(
 #[unsafe(no_mangle)]
 pub extern "C" fn rc_collider_builder_set_contact_force_event_threshold(
     builder: *mut RcColliderBuilderHandle,
-    threshold: f32,
+    threshold: f64,
 ) {
     let Some(builder) = (unsafe { builder.as_mut() }) else {
         return;
@@ -319,7 +319,11 @@ pub extern "C" fn rc_collider_set_pose(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -336,7 +340,11 @@ pub extern "C" fn rc_collider_set_sensor(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -348,12 +356,16 @@ pub extern "C" fn rc_collider_set_sensor(
 pub extern "C" fn rc_collider_set_friction(
     world: *mut RcWorldHandle,
     handle: RcColliderHandle,
-    friction: f32,
+    friction: f64,
 ) -> RcBool {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -365,12 +377,16 @@ pub extern "C" fn rc_collider_set_friction(
 pub extern "C" fn rc_collider_set_restitution(
     world: *mut RcWorldHandle,
     handle: RcColliderHandle,
-    restitution: f32,
+    restitution: f64,
 ) -> RcBool {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -387,7 +403,11 @@ pub extern "C" fn rc_collider_set_collision_groups(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -404,7 +424,11 @@ pub extern "C" fn rc_collider_set_solver_groups(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -421,7 +445,11 @@ pub extern "C" fn rc_collider_set_active_events(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -438,7 +466,11 @@ pub extern "C" fn rc_collider_set_active_hooks(
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -450,12 +482,16 @@ pub extern "C" fn rc_collider_set_active_hooks(
 pub extern "C" fn rc_collider_set_contact_force_event_threshold(
     world: *mut RcWorldHandle,
     handle: RcColliderHandle,
-    threshold: f32,
+    threshold: f64,
 ) -> RcBool {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return RcBool::FALSE;
     };
-    let Some(collider) = world.inner.colliders.get_mut(unpack_collider_handle(handle)) else {
+    let Some(collider) = world
+        .inner
+        .colliders
+        .get_mut(unpack_collider_handle(handle))
+    else {
         return RcBool::FALSE;
     };
 
@@ -467,7 +503,7 @@ pub extern "C" fn rc_collider_set_contact_force_event_threshold(
 pub extern "C" fn rc_collider_get_density(
     world: *const RcWorldHandle,
     handle: RcColliderHandle,
-) -> f32 {
+) -> f64 {
     let Some(world) = (unsafe { world.as_ref() }) else {
         return 0.0;
     };

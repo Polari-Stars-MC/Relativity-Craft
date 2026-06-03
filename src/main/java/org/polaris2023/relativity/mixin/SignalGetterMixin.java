@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.mixin;
 
+import com.llamalad7.mixinextras.sugar.Local;
+import net.minecraft.world.level.block.state.BlockState;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
@@ -11,40 +13,43 @@ import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 @Mixin(SignalGetter.class)
-public interface SignalGetterMixin {
+public interface SignalGetterMixin extends BlockGetter {
     @Inject(method = "getDirectSignal", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$physicalizedDirectSignal(BlockPos pos, Direction direction, CallbackInfoReturnable<Integer> cir) {
         if (!((BlockGetter) this).getBlockState(pos).isAir()) {
             return;
         }
-        int signal = PhysicalizedRedstoneMapping.global().virtualSignal((BlockGetter) this, pos, direction, true);
+        int signal = PhysicalizedRedstoneMapping.global().virtualSignal(this, pos, direction, true);
         if (signal > 0) {
             cir.setReturnValue(signal);
         }
     }
 
-    @Inject(method = "getSignal", at = @At("HEAD"), cancellable = true)
-    private void relativityCraft$physicalizedSignal(BlockPos pos, Direction direction, CallbackInfoReturnable<Integer> cir) {
-        if (!((BlockGetter) this).getBlockState(pos).isAir()) {
+    @Inject(method = "getSignal", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/block/state/BlockState;getSignal(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;)I"), cancellable = true)
+    private void relativityCraft$physicalizedSignal(BlockPos pos,
+                                                    Direction direction,
+                                                    CallbackInfoReturnable<Integer> cir,
+                                                    @Local(name = "state") BlockState state) {
+        if (state.isAir()) {
             return;
         }
-        int signal = PhysicalizedRedstoneMapping.global().virtualSignal((BlockGetter) this, pos, direction, false);
+        int signal = PhysicalizedRedstoneMapping.global().virtualSignal(this, pos, direction, false);
         if (signal > 0) {
             cir.setReturnValue(signal);
         }
     }
 
-    @Inject(method = "getControlInputSignal", at = @At("HEAD"), cancellable = true)
+    @Inject(method = "getControlInputSignal", at = @At(value = "HEAD"), cancellable = true)
     private void relativityCraft$physicalizedControlInputSignal(
             BlockPos pos,
             Direction direction,
             boolean onlyDiodes,
             CallbackInfoReturnable<Integer> cir
     ) {
-        if (!((BlockGetter) this).getBlockState(pos).isAir()) {
+        if (!this.getBlockState(pos).isAir()) {
             return;
         }
-        int signal = PhysicalizedRedstoneMapping.global().virtualControlInputSignal((BlockGetter) this, pos, direction, onlyDiodes);
+        int signal = PhysicalizedRedstoneMapping.global().virtualControlInputSignal(this, pos, direction, onlyDiodes);
         if (signal > 0) {
             cir.setReturnValue(signal);
         }

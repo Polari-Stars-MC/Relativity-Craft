@@ -19,17 +19,17 @@ public final class RcColliderBuilder implements AutoCloseable {
         return this;
     }
 
-    public RcColliderBuilder friction(float friction) {
+    public RcColliderBuilder friction(double friction) {
         RelativityCraftRapier.colliderBuilderSetFriction(handle, friction);
         return this;
     }
 
-    public RcColliderBuilder restitution(float restitution) {
+    public RcColliderBuilder restitution(double restitution) {
         RelativityCraftRapier.colliderBuilderSetRestitution(handle, restitution);
         return this;
     }
 
-    public RcColliderBuilder density(float density) {
+    public RcColliderBuilder density(double density) {
         RelativityCraftRapier.colliderBuilderSetDensity(handle, density);
         return this;
     }

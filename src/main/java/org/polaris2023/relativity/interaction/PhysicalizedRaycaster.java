@@ -84,14 +84,27 @@ public final class PhysicalizedRaycaster {
     }
 
     public static BlockHitResult replaceIfCloser(Level level, ClipContext context, BlockHitResult original) {
-        Optional<PhysicalizedHit> physicalizedHit = raycastSegment(level, context.getFrom(), context.getTo());
+        Vec3 delta = context.getTo().subtract(context.getFrom());
+        double distance = delta.length();
+        if (distance < RAY_EPSILON) {
+            return original;
+        }
+
+        double maxDistance = distance;
+        double originalDistance = Double.POSITIVE_INFINITY;
+        if (original.getType() != HitResult.Type.MISS) {
+            originalDistance = Math.sqrt(context.getFrom().distanceToSqr(original.getLocation()));
+            maxDistance = Math.min(maxDistance, originalDistance + BLOCK_CLIP_TOLERANCE);
+        }
+
+        Optional<PhysicalizedHit> physicalizedHit = raycast(level, context.getFrom(), delta.scale(1.0 / distance), maxDistance);
         if (physicalizedHit.isEmpty()) {
             return original;
         }
 
         PhysicalizedHit hit = physicalizedHit.get();
         if (original.getType() == HitResult.Type.MISS
-                || hit.distance() <= Math.sqrt(context.getFrom().distanceToSqr(original.getLocation())) + BLOCK_CLIP_TOLERANCE) {
+                || hit.distance() <= originalDistance + BLOCK_CLIP_TOLERANCE) {
             return new PhysicalizedBlockHitResult(hit);
         }
         return original;
@@ -241,7 +254,7 @@ public final class PhysicalizedRaycaster {
     private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, double maxDistance) {
         List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
         AABB broadPhase = swept.inflate(QUERY_EPSILON);
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, broadPhase, maxDistance + 1.0)) {
+        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, broadPhase, 0.25)) {
             PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
             if (PhysicalizedVolumeLookup.localVolumeIntersects(entity, mapping, broadPhase, 1.0 + QUERY_EPSILON)) {
                 candidates.add(entity);

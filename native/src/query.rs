@@ -2,8 +2,8 @@ use rapier3d::geometry::{Aabb, Ray};
 use rapier3d::parry::shape::FeatureId;
 
 use crate::ffi::{
-    RcAabb, RcBool, RcColliderHandle, RcPointProjection, RcQueryFilterDesc, RcRayHit, RcShapeCastHit,
-    RcShapeCastOptions, RcShapeDesc, RcVec3, RcWorldHandle, pack_collider_handle,
+    RcAabb, RcBool, RcColliderHandle, RcPointProjection, RcQueryFilterDesc, RcRayHit,
+    RcShapeCastHit, RcShapeCastOptions, RcShapeDesc, RcVec3, RcWorldHandle, pack_collider_handle,
     query_filter_from_desc, shape_cast_options_to_rapier, shape_from_desc, vec3_from_rapier,
     vec3_to_rapier,
 };
@@ -26,7 +26,7 @@ pub extern "C" fn rc_query_cast_ray(
     world: *const RcWorldHandle,
     origin: RcVec3,
     direction: RcVec3,
-    max_toi: f32,
+    max_toi: f64,
     solid: RcBool,
     filter: RcQueryFilterDesc,
 ) -> RcRayHit {
@@ -57,7 +57,7 @@ pub extern "C" fn rc_query_cast_ray(
 pub extern "C" fn rc_query_project_point(
     world: *const RcWorldHandle,
     point: RcVec3,
-    max_dist: f32,
+    max_dist: f64,
     solid: RcBool,
     filter: RcQueryFilterDesc,
     out_collider: *mut RcColliderHandle,
@@ -144,7 +144,11 @@ pub extern "C" fn rc_query_intersect_aabb_rigid_body_count_all(
     world: *const RcWorldHandle,
     aabb: RcAabb,
 ) -> u32 {
-    crate::compat::rc_query_intersect_aabb_rigid_body_count(world, aabb, RcQueryFilterDesc::default())
+    crate::compat::rc_query_intersect_aabb_rigid_body_count(
+        world,
+        aabb,
+        RcQueryFilterDesc::default(),
+    )
 }
 
 #[unsafe(no_mangle)]

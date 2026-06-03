@@ -9,18 +9,18 @@ use rapier3d::prelude::{
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcVec3 {
-    pub x: f32,
-    pub y: f32,
-    pub z: f32,
+    pub x: f64,
+    pub y: f64,
+    pub z: f64,
 }
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcQuat {
-    pub i: f32,
-    pub j: f32,
-    pub k: f32,
-    pub w: f32,
+    pub i: f64,
+    pub j: f64,
+    pub k: f64,
+    pub w: f64,
 }
 
 #[repr(C)]
@@ -34,11 +34,7 @@ impl RcBool {
 
 impl From<bool> for RcBool {
     fn from(value: bool) -> Self {
-        if value {
-            Self::TRUE
-        } else {
-            Self::FALSE
-        }
+        if value { Self::TRUE } else { Self::FALSE }
     }
 }
 
@@ -76,10 +72,10 @@ impl Default for RcShapeType {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcShapeDesc {
     pub shape_type: RcShapeType,
-    pub a: f32,
-    pub b: f32,
-    pub c: f32,
-    pub d: f32,
+    pub a: f64,
+    pub b: f64,
+    pub c: f64,
+    pub d: f64,
 }
 
 #[repr(C)]
@@ -104,8 +100,8 @@ pub struct RcQueryFilterDesc {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcShapeCastOptions {
-    pub max_time_of_impact: f32,
-    pub target_distance: f32,
+    pub max_time_of_impact: f64,
+    pub target_distance: f64,
     pub stop_at_penetration: RcBool,
     pub compute_impact_geometry_on_penetration: RcBool,
 }
@@ -121,7 +117,7 @@ pub struct RcPointProjection {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcRayHit {
     pub collider: RcColliderHandle,
-    pub time_of_impact: f32,
+    pub time_of_impact: f64,
     pub normal: RcVec3,
     pub feature: u32,
 }
@@ -130,7 +126,7 @@ pub struct RcRayHit {
 #[derive(Clone, Copy, Debug, Default)]
 pub struct RcShapeCastHit {
     pub collider: RcColliderHandle,
-    pub time_of_impact: f32,
+    pub time_of_impact: f64,
     pub witness1: RcVec3,
     pub witness2: RcVec3,
     pub normal1: RcVec3,
@@ -164,7 +160,7 @@ pub struct RcCharacterCollision {
     pub world_witness2: RcVec3,
     pub normal1: RcVec3,
     pub normal2: RcVec3,
-    pub time_of_impact: f32,
+    pub time_of_impact: f64,
 }
 
 #[repr(C)]
@@ -183,9 +179,9 @@ pub struct RcContactForceEventRecord {
     pub collider1: RcColliderHandle,
     pub collider2: RcColliderHandle,
     pub total_force: RcVec3,
-    pub total_force_magnitude: f32,
+    pub total_force_magnitude: f64,
     pub max_force_direction: RcVec3,
-    pub max_force_magnitude: f32,
+    pub max_force_magnitude: f64,
 }
 
 #[repr(C)]
@@ -309,9 +305,7 @@ pub(crate) fn body_status_to_rapier(status: RcBodyStatus) -> rapier3d::prelude::
     }
 }
 
-pub(crate) fn body_status_from_rapier(
-    status: rapier3d::prelude::RigidBodyType,
-) -> RcBodyStatus {
+pub(crate) fn body_status_from_rapier(status: rapier3d::prelude::RigidBodyType) -> RcBodyStatus {
     match status {
         rapier3d::prelude::RigidBodyType::Dynamic => RcBodyStatus::Dynamic,
         rapier3d::prelude::RigidBodyType::Fixed => RcBodyStatus::Fixed,
@@ -376,9 +370,7 @@ pub(crate) fn shape_cast_options_to_rapier(options: RcShapeCastOptions) -> Shape
         max_time_of_impact: options.max_time_of_impact,
         target_distance: options.target_distance,
         stop_at_penetration: options.stop_at_penetration.0 != 0,
-        compute_impact_geometry_on_penetration: options
-            .compute_impact_geometry_on_penetration
-            .0
+        compute_impact_geometry_on_penetration: options.compute_impact_geometry_on_penetration.0
             != 0,
     }
 }

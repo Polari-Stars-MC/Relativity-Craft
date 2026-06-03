@@ -37,11 +37,21 @@ public final class PhysicsWorldManager {
     private static final double PHYSICS_TICK_SECONDS = 1.0 / 20.0;
     private static final int SUBSTEPS_PER_SERVER_TICK = 2;
     private static final double PHYSICS_SUBSTEP_SECONDS = PHYSICS_TICK_SECONDS / SUBSTEPS_PER_SERVER_TICK;
+    private static final double GRAVITY_Y = -0.04 * 20.0 * 20.0;
+    private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
+    private static final int SUBSTEPS_PER_SERVER_TICK = 2;
     private static final int SNAPSHOT_STRIDE = 8;
     private static final int TERRAIN_MARGIN_BLOCKS = 8;
     private static final double PISTON_PUSH_VELOCITY = 2.0;
     private static final long PRIORITY_TERRAIN_BUILD_BUDGET_NANOS = 3_000_000L;
     private static final long BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS = 1_500_000L;
+    private static final double WORLD_CONTACT_BIAS_SECONDS = 0.12;
+    private static final double WORLD_CONTACT_MAX_UPWARD_SPEED = 6.0;
+    private static final double WORLD_CONTACT_TORQUE_SCALE = 0.55;
+    private static final double WORLD_CONTACT_MAX_TORQUE_IMPULSE = 32.0;
+    private static final double WORLD_CONTACT_DEEP_PENETRATION = 0.35;
+    private static final double WORLD_CONTACT_MAX_POSITION_RECOVERY = 0.08;
+    private static final int WORLD_CONTACT_SCAN_INTERVAL_TICKS = 2;
 
     private final Map<String, LevelPhysicsState> levels = new ConcurrentHashMap<>();
     private boolean warnedNativeUnavailable;
@@ -270,9 +280,12 @@ public final class PhysicsWorldManager {
         }
 
         private long insertBody(PhysicalizedVolumeEntity entity, RcVec3 linearVelocity) {
-            List<RapierNativeWorld.BoxCollider> colliders = dynamicCollisionBoxes(entity);
+            DynamicBodyShape shape = dynamicBodyShape(entity);
+            List<RapierNativeWorld.BoxCollider> colliders = shape.colliders();
+            if (colliders.isEmpty()) {
+                return 0L;
+            }
             Vec3 physicsCenter = entity.physicsCenter();
-            double density = averageBodyDensity(entity.snapshot());
             return world.addDynamicBoxes(
                     physicsCenter.x,
                     physicsCenter.y,
@@ -283,7 +296,7 @@ public final class PhysicsWorldManager {
                     entity.rotationQw(),
                     linearVelocity,
                     colliders,
-                    density,
+                    shape.density(),
                     0.75,
                     0.05
             );
@@ -319,10 +332,11 @@ public final class PhysicsWorldManager {
         void tick(ServerLevel level) {
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
             drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
-            if ((level.getGameTime() & 1L) == 0L) {
+            if ((level.getGameTime() & 7L) == 0L) {
                 updateWaterSurfaceColliders(level);
             }
             applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK);
+            applyMinecraftCollisionForces(level);
             for (int i = 0; i < SUBSTEPS_PER_SERVER_TICK; i++) {
                 world.step(PHYSICS_SUBSTEP_SECONDS);
             }
@@ -363,6 +377,78 @@ public final class PhysicsWorldManager {
                 );
                 requestTerrainAroundBody(level, body, volume.getBoundingBox(), false, false);
             }
+        }
+
+        private void applyMinecraftCollisionForces(ServerLevel level) {
+            if (bodyByEntityId.isEmpty()) {
+                return;
+            }
+
+            for (Map.Entry<Integer, Long> entry : bodyByEntityId.entrySet()) {
+                if (Math.floorMod(level.getGameTime() + entry.getKey(), WORLD_CONTACT_SCAN_INTERVAL_TICKS) != 0) {
+                    continue;
+                }
+                Entity entity = level.getEntity(entry.getKey());
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    applyMinecraftCollisionForces(level, volume, entry.getValue());
+                }
+            }
+        }
+
+        private void applyMinecraftCollisionForces(ServerLevel level, PhysicalizedVolumeEntity volume, long body) {
+            PhysicalizedVolumeEntity.WorldCollisionContact contact = volume.worldCollisionContact();
+            if (contact == null || contact.penetration() <= 0.0) {
+                return;
+            }
+
+            RcVec3 velocity = world.getBodyLinearVelocity(body);
+            double gravityCompensation = -GRAVITY_Y * PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK;
+            double upwardSpeed = Math.max(0.0, -velocity.y()) + gravityCompensation + contact.penetration() / WORLD_CONTACT_BIAS_SECONDS;
+            upwardSpeed = Math.min(upwardSpeed, WORLD_CONTACT_MAX_UPWARD_SPEED);
+            if (upwardSpeed <= 1.0E-5) {
+                return;
+            }
+
+            double mass = estimateBodyMass(volume);
+            double impulseY = mass * upwardSpeed;
+            world.applyBodyImpulse(body, 0.0, impulseY, 0.0);
+
+            Vec3 center = volume.physicsCenter();
+            double rx = contact.pointX() - center.x;
+            double rz = contact.pointZ() - center.z;
+            double torqueX = clamp(-rz * impulseY * WORLD_CONTACT_TORQUE_SCALE, -WORLD_CONTACT_MAX_TORQUE_IMPULSE, WORLD_CONTACT_MAX_TORQUE_IMPULSE);
+            double torqueZ = clamp(rx * impulseY * WORLD_CONTACT_TORQUE_SCALE, -WORLD_CONTACT_MAX_TORQUE_IMPULSE, WORLD_CONTACT_MAX_TORQUE_IMPULSE);
+            if (Math.abs(torqueX) > 1.0E-5 || Math.abs(torqueZ) > 1.0E-5) {
+                world.applyBodyTorqueImpulse(body, torqueX, 0.0, torqueZ);
+            }
+
+            if (contact.penetration() > WORLD_CONTACT_DEEP_PENETRATION) {
+                double recovery = Math.min(
+                        (contact.penetration() - WORLD_CONTACT_DEEP_PENETRATION) * 0.2,
+                        WORLD_CONTACT_MAX_POSITION_RECOVERY
+                );
+                if (recovery > 1.0E-5) {
+                    world.setBodyTranslation(body, center.x, center.y + recovery, center.z);
+                    volume.applyNativeSnapshot(
+                            center.x,
+                            center.y + recovery,
+                            center.z,
+                            volume.rotationQx(),
+                            volume.rotationQy(),
+                            volume.rotationQz(),
+                            volume.rotationQw()
+                    );
+                    fluids(level).forget(volume);
+                }
+            }
+        }
+
+        private static double estimateBodyMass(PhysicalizedVolumeEntity volume) {
+            return Math.max(0.05, volume.estimatedPhysicsMass());
+        }
+
+        private static double clamp(double value, double min, double max) {
+            return Math.max(min, Math.min(max, value));
         }
 
         void markBlockChanged(ServerLevel level, BlockPos pos) {
@@ -717,15 +803,17 @@ public final class PhysicsWorldManager {
 
     }
 
-    private static List<RapierNativeWorld.BoxCollider> dynamicCollisionBoxes(PhysicalizedVolumeEntity entity) {
+    private static DynamicBodyShape dynamicBodyShape(PhysicalizedVolumeEntity entity) {
         PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
         if (snapshot.blockCount() <= 0) {
-            return List.of();
+            return DynamicBodyShape.EMPTY;
         }
 
         PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
         Set<Long> fullBlocks = new HashSet<>();
         List<AABB> parts = new ArrayList<>();
+        double weightedDensity = 0.0;
+        double volume = 0.0;
         for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
             BlockState state = cell.state();
             if (state.isAir()) {
@@ -739,23 +827,34 @@ public final class PhysicsWorldManager {
             }
             if (isFullBlockShape(shape)) {
                 fullBlocks.add(packLocal(cell.localX(), cell.localY(), cell.localZ()));
+                weightedDensity += PhysicsMaterialRegistry.INSTANCE.materialFor(state).density();
+                volume += 1.0;
                 continue;
             }
 
+            double shapeVolume = 0.0;
             for (AABB box : shape.toAabbs()) {
                 parts.add(box.move(localPos));
+                shapeVolume += boxVolume(box);
+            }
+            if (shapeVolume > 0.0) {
+                weightedDensity += PhysicsMaterialRegistry.INSTANCE.materialFor(state).density() * shapeVolume;
+                volume += shapeVolume;
             }
         }
 
         mergeFullBlocks(fullBlocks, parts);
         if (parts.isEmpty()) {
-            return List.of();
+            return DynamicBodyShape.EMPTY;
         }
 
         // Rapier's body translation is entity.physicsCenter(), so collider offsets use the same occupied-center origin.
         double originX = snapshot.occupiedCenterX();
         double originY = snapshot.occupiedCenterY();
         double originZ = snapshot.occupiedCenterZ();
+        double originX = entity.centerOfMassLocalX();
+        double originY = entity.centerOfMassLocalY();
+        double originZ = entity.centerOfMassLocalZ();
         List<RapierNativeWorld.BoxCollider> colliders = new ArrayList<>(parts.size());
         for (AABB part : parts) {
             double sizeX = part.maxX - part.minX;
@@ -773,48 +872,20 @@ public final class PhysicsWorldManager {
                     sizeZ * 0.5
             ));
         }
-        return colliders;
+        double density = volume <= 0.0
+                ? PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density()
+                : Math.max(0.05, weightedDensity / volume);
+        return new DynamicBodyShape(colliders, density);
     }
 
-    private static double averageBodyDensity(PhysicalizedVolumeSnapshot snapshot) {
-        if (snapshot.blockCount() <= 0) {
-            return PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density();
-        }
-
-        double weightedDensity = 0.0;
-        double volume = 0.0;
-        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
-        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
-            BlockState state = cell.state();
-            if (state.isAir()) {
-                continue;
-            }
-
-            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
-            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
-            double shapeVolume = shapeVolume(shape);
-            if (shapeVolume <= 0.0) {
-                continue;
-            }
-
-            weightedDensity += PhysicsMaterialRegistry.INSTANCE.materialFor(state).density() * shapeVolume;
-            volume += shapeVolume;
-        }
-        return volume <= 0.0 ? PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density() : Math.max(0.05, weightedDensity / volume);
+    private static double boxVolume(AABB box) {
+        return Math.max(0.0, box.maxX - box.minX)
+                * Math.max(0.0, box.maxY - box.minY)
+                * Math.max(0.0, box.maxZ - box.minZ);
     }
 
-    private static double shapeVolume(VoxelShape shape) {
-        if (shape.isEmpty()) {
-            return 0.0;
-        }
-
-        double volume = 0.0;
-        for (AABB box : shape.toAabbs()) {
-            volume += Math.max(0.0, box.maxX - box.minX)
-                    * Math.max(0.0, box.maxY - box.minY)
-                    * Math.max(0.0, box.maxZ - box.minZ);
-        }
-        return volume;
+    private record DynamicBodyShape(List<RapierNativeWorld.BoxCollider> colliders, double density) {
+        private static final DynamicBodyShape EMPTY = new DynamicBodyShape(List.of(), PhysicsMaterialRegistry.INSTANCE.materialFor("minecraft:air").density());
     }
 
     private static void mergeFullBlocks(Set<Long> remaining, List<AABB> output) {

@@ -56,22 +56,6 @@ public final class PhysicalizedInteractionEvents {
     }
 
     @SubscribeEvent
-    public static void leftClickBlock(PlayerInteractEvent.LeftClickBlock event) {
-        if (!(event.getEntity() instanceof ServerPlayer player)) {
-            return;
-        }
-
-        Optional<PhysicalizedHit> hit = PhysicalizedRaycaster.raycast(player);
-        if (hit.isEmpty() || !isCloserThanBlockPos(player, hit.get(), event.getPos())) {
-            return;
-        }
-
-        if (PhysicalizedInteractionHandler.continueBreaking(player, hit.get().entity())) {
-            event.setCanceled(true);
-        }
-    }
-
-    @SubscribeEvent
     public static void rightClickSpecific(PlayerInteractEvent.EntityInteractSpecific event) {
         if (event.getTarget() instanceof PhysicalizedVolumeEntity volume && event.getEntity() instanceof ServerPlayer player) {
             InteractionResult result = PhysicalizedInteractionHandler.use(player, event.getHand(), volume);
@@ -122,8 +106,4 @@ public final class PhysicalizedInteractionEvents {
         return hit.distance() <= blockDistance + TARGET_MATCH_TOLERANCE;
     }
 
-    private static boolean isCloserThanBlockPos(ServerPlayer player, PhysicalizedHit hit, net.minecraft.core.BlockPos pos) {
-        Vec3 origin = player.getEyePosition();
-        return hit.distance() * hit.distance() + 0.25 < origin.distanceToSqr(Vec3.atCenterOf(pos));
-    }
 }

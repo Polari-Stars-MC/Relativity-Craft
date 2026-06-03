@@ -12,7 +12,10 @@ import org.polaris2023.relativity.interaction.PhysicalizedVolumeMapping;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
+import org.polaris2023.relativity.registry.ModItems;
 import com.mojang.blaze3d.platform.InputConstants;
+import net.minecraft.gizmos.GizmoStyle;
+import net.minecraft.gizmos.Gizmos;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.particle.TerrainParticle;
@@ -34,6 +37,7 @@ import net.minecraft.world.level.block.RepeaterBlock;
 import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
@@ -117,7 +121,7 @@ public final class PhysicalizedClientInteractions {
         if (minecraft.player != null && minecraft.player.getAbilities().instabuild) {
             creativeBreak(minecraft, hit.get(), true);
         } else {
-            beginOrContinueBreaking(minecraft, target, true);
+            beginOrContinueBreaking(minecraft, hit.get(), true);
             if (minecraft.player != null) {
                 minecraft.player.swing(InteractionHand.MAIN_HAND);
             }
@@ -134,7 +138,9 @@ public final class PhysicalizedClientInteractions {
                         .filter(hit -> hit.entity() == target)
                         .ifPresent(hit -> creativeBreak(minecraft, hit, true));
             } else {
-                beginOrContinueBreaking(minecraft, target, true);
+                physicalizedHit(minecraft)
+                        .filter(hit -> hit.entity() == target)
+                        .ifPresent(hit -> beginOrContinueBreaking(minecraft, hit, true));
                 if (minecraft.player != null) {
                     minecraft.player.swing(InteractionHand.MAIN_HAND);
                 }
@@ -145,6 +151,7 @@ public final class PhysicalizedClientInteractions {
     @SubscribeEvent
     public static void afterClientTick(ClientTickEvent.Post event) {
         Minecraft minecraft = Minecraft.getInstance();
+        renderSelectionWandCollisionBoxes(minecraft);
         if (minecraft.player != null && minecraft.level != null && minecraft.player.getAbilities().instabuild) {
             if (minecraft.options.keyAttack.isDown()) {
                 if (creativeDestroyDelay > 0) {
@@ -180,6 +187,25 @@ public final class PhysicalizedClientInteractions {
             minecraft.player.swing(InteractionHand.MAIN_HAND);
         }
         beginOrContinueBreaking(minecraft, target, false);
+    }
+
+    private static void renderSelectionWandCollisionBoxes(Minecraft minecraft) {
+        if (minecraft.player == null || minecraft.level == null || !minecraft.player.getMainHandItem().is(ModItems.SELECTION_WAND.get())) {
+            return;
+        }
+
+        Vec3 eye = minecraft.player.getEyePosition();
+        double range = 48.0;
+        try (Gizmos.TemporaryCollection ignored = minecraft.collectPerTickGizmos()) {
+            for (Entity entity : minecraft.level.entitiesForRendering()) {
+                if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved() || volume.distanceToSqr(eye) > range * range) {
+                    continue;
+                }
+                for (AABB box : volume.minecraftCollisionBoxes()) {
+                    Gizmos.cuboid(box, GizmoStyle.stroke(0xFF55FFFF, 1.5F));
+                }
+            }
+        }
     }
 
     private static boolean usePhysicalizedHit(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand, boolean swingHand) {
@@ -230,6 +256,14 @@ public final class PhysicalizedClientInteractions {
         return attackPhysicalizedHit(minecraft, swingHand, resetIfNewTarget, true);
     }
 
+    public static boolean attackCurrentPhysicalizedHitAt(Minecraft minecraft, BlockPos pos, boolean swingHand, boolean resetIfNewTarget) {
+        Optional<PhysicalizedHit> hit = currentPhysicalizedHit(minecraft);
+        if (hit.isEmpty() || !hit.get().visualBlockPos().equals(pos)) {
+            return false;
+        }
+        return attackPhysicalizedHit(minecraft, swingHand, resetIfNewTarget, true);
+    }
+
     private static boolean attackPhysicalizedHit(Minecraft minecraft, boolean swingHand, boolean resetIfNewTarget, boolean requireCurrentHit) {
         Optional<PhysicalizedHit> hit = requireCurrentHit ? currentPhysicalizedHit(minecraft) : physicalizedHit(minecraft);
         if (hit.isEmpty()) {
@@ -240,7 +274,7 @@ public final class PhysicalizedClientInteractions {
         if (minecraft.player != null && minecraft.player.getAbilities().instabuild) {
             creativeBreak(minecraft, physicalizedHit, swingHand);
         } else {
-            beginOrContinueBreaking(minecraft, physicalizedHit.entity(), resetIfNewTarget);
+            beginOrContinueBreaking(minecraft, physicalizedHit, resetIfNewTarget);
             if (swingHand && minecraft.player != null) {
                 minecraft.player.swing(InteractionHand.MAIN_HAND);
             }
@@ -488,7 +522,21 @@ public final class PhysicalizedClientInteractions {
             return;
         }
 
-        PhysicalizedHit physicalizedHit = hit.get();
+        beginOrContinueBreaking(minecraft, hit.get(), resetIfNewTarget);
+    }
+
+    private static void beginOrContinueBreaking(Minecraft minecraft, PhysicalizedHit physicalizedHit, boolean resetIfNewTarget) {
+        if (minecraft.player == null || minecraft.level == null || physicalizedHit.entity().isRemoved() || physicalizedHit.cell().state().isAir()) {
+            stopBreaking(minecraft);
+            return;
+        }
+
+        PhysicalizedVolumeEntity target = physicalizedHit.entity();
+        if (minecraft.player.getAbilities().instabuild) {
+            creativeBreak(minecraft, physicalizedHit, false);
+            return;
+        }
+
         if (resetIfNewTarget || breakingEntityId != target.getId() || breakingLocalX != physicalizedHit.cell().localX()
                 || breakingLocalY != physicalizedHit.cell().localY() || breakingLocalZ != physicalizedHit.cell().localZ()) {
             breakingEntityId = target.getId();
@@ -499,20 +547,24 @@ public final class PhysicalizedClientInteractions {
             hitEffectTicker = 0;
         }
 
-        updateLocalBreakOverlay(minecraft.player, physicalizedHit);
+        boolean finished = updateLocalBreakOverlay(minecraft.player, physicalizedHit);
         playHitEffects(minecraft, physicalizedHit);
-        sendBreakCommand(physicalizedHit, PhysicalizedInteractionNetwork.BreakAction.CONTINUE);
+        sendBreakCommand(
+                physicalizedHit,
+                finished ? PhysicalizedInteractionNetwork.BreakAction.FINISH : PhysicalizedInteractionNetwork.BreakAction.CONTINUE
+        );
     }
 
-    private static void updateLocalBreakOverlay(Player player, PhysicalizedHit hit) {
+    private static boolean updateLocalBreakOverlay(Player player, PhysicalizedHit hit) {
         BlockState state = hit.cell().state();
         if (state.isAir()) {
             hit.entity().setBreakOverlay(hit.cell().localX(), hit.cell().localY(), hit.cell().localZ(), -1);
-            return;
+            return false;
         }
         clientBreakProgress += state.getDestroyProgress(player, player.level(), hit.visualBlockPos());
         int stage = Math.max(0, Math.min(9, (int) (clientBreakProgress * 10.0F)));
         hit.entity().setBreakOverlay(hit.cell().localX(), hit.cell().localY(), hit.cell().localZ(), stage);
+        return clientBreakProgress >= 1.0F;
     }
 
     private static void playHitEffects(Minecraft minecraft, PhysicalizedHit hit) {

@@ -14,7 +14,7 @@ public final class RcWorld implements AutoCloseable {
         return handle;
     }
 
-    public void step(float deltaSeconds) {
+    public void step(double deltaSeconds) {
         RelativityCraftRapier.worldStep(handle, deltaSeconds);
     }
 
@@ -52,6 +52,10 @@ public final class RcWorld implements AutoCloseable {
 
     public RcBool applyRigidBodyImpulse(long rigidBodyHandle, RcVec3 impulse, boolean wakeUp) {
         return RelativityCraftRapier.rigidBodyApplyImpulse(handle, rigidBodyHandle, impulse, RcBool.of(wakeUp));
+    }
+
+    public RcBool applyRigidBodyTorqueImpulse(long rigidBodyHandle, RcVec3 torqueImpulse, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodyApplyTorqueImpulse(handle, rigidBodyHandle, torqueImpulse, RcBool.of(wakeUp));
     }
 
     public RcBool enableRigidBodyCcd(long rigidBodyHandle, boolean enabled) {

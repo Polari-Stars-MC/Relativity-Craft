@@ -20,15 +20,15 @@ public final class RelativityCraftRapier {
     private static final String VERSION = "0.1.4";
 
     static final GroupLayout RC_VEC3 = MemoryLayout.structLayout(
-        ValueLayout.JAVA_FLOAT.withName("x"),
-        ValueLayout.JAVA_FLOAT.withName("y"),
-        ValueLayout.JAVA_FLOAT.withName("z")
+        ValueLayout.JAVA_DOUBLE.withName("x"),
+        ValueLayout.JAVA_DOUBLE.withName("y"),
+        ValueLayout.JAVA_DOUBLE.withName("z")
     ).withName("RcVec3");
     static final GroupLayout RC_QUAT = MemoryLayout.structLayout(
-        ValueLayout.JAVA_FLOAT.withName("i"),
-        ValueLayout.JAVA_FLOAT.withName("j"),
-        ValueLayout.JAVA_FLOAT.withName("k"),
-        ValueLayout.JAVA_FLOAT.withName("w")
+        ValueLayout.JAVA_DOUBLE.withName("i"),
+        ValueLayout.JAVA_DOUBLE.withName("j"),
+        ValueLayout.JAVA_DOUBLE.withName("k"),
+        ValueLayout.JAVA_DOUBLE.withName("w")
     ).withName("RcQuat");
     static final GroupLayout RC_BOOL = MemoryLayout.structLayout(
         ValueLayout.JAVA_BYTE.withName("_0")
@@ -54,7 +54,7 @@ public final class RelativityCraftRapier {
     );
     private static final MethodHandle RC_WORLD_STEP = downcall(
         "rc_world_step",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_WORLD_SET_GRAVITY = downcall(
         "rc_world_set_gravity",
@@ -104,15 +104,15 @@ public final class RelativityCraftRapier {
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_GRAVITY_SCALE = downcall(
         "rc_rigid_body_builder_set_gravity_scale",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_LINEAR_DAMPING = downcall(
         "rc_rigid_body_builder_set_linear_damping",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_ANGULAR_DAMPING = downcall(
         "rc_rigid_body_builder_set_angular_damping",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_CAN_SLEEP = downcall(
         "rc_rigid_body_builder_set_can_sleep",
@@ -154,6 +154,10 @@ public final class RelativityCraftRapier {
         "rc_rigid_body_apply_impulse",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
+    private static final MethodHandle RC_RIGID_BODY_APPLY_TORQUE_IMPULSE = downcall(
+        "rc_rigid_body_apply_torque_impulse",
+        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
+    );
     private static final MethodHandle RC_RIGID_BODY_ENABLE_CCD = downcall(
         "rc_rigid_body_enable_ccd",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
@@ -184,15 +188,15 @@ public final class RelativityCraftRapier {
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_FRICTION = downcall(
         "rc_collider_builder_set_friction",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_RESTITUTION = downcall(
         "rc_collider_builder_set_restitution",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_DENSITY = downcall(
         "rc_collider_builder_set_density",
-        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_FLOAT)
+        FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_COLLISION_GROUPS = downcall(
         "rc_collider_builder_set_collision_groups",
@@ -214,6 +218,23 @@ public final class RelativityCraftRapier {
         "rc_world_remove_collider_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
+    private static final MethodHandle RC_WORLD_INSERT_DYNAMIC_CUBOIDS = downcall(
+        "rc_world_insert_dynamic_cuboids",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_LONG,
+            ValueLayout.ADDRESS,
+            RC_VEC3,
+            RC_QUAT,
+            RC_VEC3,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_DOUBLE,
+            ValueLayout.JAVA_DOUBLE,
+            ValueLayout.JAVA_DOUBLE,
+            RC_INTERACTION_GROUPS,
+            RC_INTERACTION_GROUPS
+        )
+    );
     private static final MethodHandle RC_WORLD_INSERT_STATIC_TRIMESH = downcall(
         "rc_world_insert_static_trimesh",
         FunctionDescriptor.of(
@@ -223,8 +244,8 @@ public final class RelativityCraftRapier {
             ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS,
             ValueLayout.JAVA_INT,
-            ValueLayout.JAVA_FLOAT,
-            ValueLayout.JAVA_FLOAT
+            ValueLayout.JAVA_DOUBLE,
+            ValueLayout.JAVA_DOUBLE
         )
     );
     private static final MethodHandle RC_QUERY_INTERSECT_AABB_RIGID_BODY_COUNT = downcall(
@@ -287,7 +308,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void worldStep(MemorySegment world, float deltaSeconds) {
+    static void worldStep(MemorySegment world, double deltaSeconds) {
         try {
             RC_WORLD_STEP.invokeExact(world, deltaSeconds);
         } catch (Throwable t) {
@@ -325,20 +346,20 @@ public final class RelativityCraftRapier {
             }
 
             MemorySegment handles = arena.allocate(ValueLayout.JAVA_LONG, count);
-            MemorySegment values = arena.allocate(ValueLayout.JAVA_FLOAT, count * 7L);
+            MemorySegment values = arena.allocate(ValueLayout.JAVA_DOUBLE, count * 7L);
             int written = (int) RC_WORLD_DYNAMIC_BODY_SNAPSHOT.invokeExact(world, handles, values, count);
             double[] snapshot = new double[written * 8];
             for (int i = 0; i < written; i++) {
                 int out = i * 8;
                 int value = i * 7;
                 snapshot[out] = handles.getAtIndex(ValueLayout.JAVA_LONG, i);
-                snapshot[out + 1] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value);
-                snapshot[out + 2] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 1);
-                snapshot[out + 3] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 2);
-                snapshot[out + 4] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 3);
-                snapshot[out + 5] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 4);
-                snapshot[out + 6] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 5);
-                snapshot[out + 7] = values.getAtIndex(ValueLayout.JAVA_FLOAT, value + 6);
+                snapshot[out + 1] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value);
+                snapshot[out + 2] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 1);
+                snapshot[out + 3] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 2);
+                snapshot[out + 4] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 3);
+                snapshot[out + 5] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 4);
+                snapshot[out + 6] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 5);
+                snapshot[out + 7] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 6);
             }
             return snapshot;
         } catch (Throwable ignored) {
@@ -386,7 +407,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetGravityScale(MemorySegment builder, float gravityScale) {
+    static void rigidBodyBuilderSetGravityScale(MemorySegment builder, double gravityScale) {
         try {
             RC_RIGID_BODY_BUILDER_SET_GRAVITY_SCALE.invokeExact(builder, gravityScale);
         } catch (Throwable t) {
@@ -394,7 +415,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetLinearDamping(MemorySegment builder, float damping) {
+    static void rigidBodyBuilderSetLinearDamping(MemorySegment builder, double damping) {
         try {
             RC_RIGID_BODY_BUILDER_SET_LINEAR_DAMPING.invokeExact(builder, damping);
         } catch (Throwable t) {
@@ -402,7 +423,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetAngularDamping(MemorySegment builder, float damping) {
+    static void rigidBodyBuilderSetAngularDamping(MemorySegment builder, double damping) {
         try {
             RC_RIGID_BODY_BUILDER_SET_ANGULAR_DAMPING.invokeExact(builder, damping);
         } catch (Throwable t) {
@@ -539,6 +560,37 @@ public final class RelativityCraftRapier {
         }
     }
 
+    static RcBool rigidBodyApplyTorqueImpulse(MemorySegment world, long handle, RcVec3 torqueImpulse, RcBool wakeUp) {
+        try (Arena arena = Arena.ofConfined()) {
+            Object result;
+            try {
+                result = RC_RIGID_BODY_APPLY_TORQUE_IMPULSE.invoke(
+                    (SegmentAllocator) arena,
+                    world,
+                    handle,
+                    encodeVec3(arena, torqueImpulse),
+                    encodeBool(arena, wakeUp)
+                );
+            } catch (WrongMethodTypeException ignored) {
+                result = RC_RIGID_BODY_APPLY_TORQUE_IMPULSE.invoke(
+                    world,
+                    handle,
+                    encodeVec3(arena, torqueImpulse),
+                    encodeBool(arena, wakeUp)
+                );
+            }
+            if (result instanceof MemorySegment segment) {
+                return decodeBool(segment);
+            }
+            if (result instanceof Byte value) {
+                return RcBool.of(value != 0);
+            }
+            throw new IllegalStateException("Unexpected rc_rigid_body_apply_torque_impulse return type: " + result);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_rigid_body_apply_torque_impulse", t);
+        }
+    }
+
     static RcBool rigidBodyEnableCcd(MemorySegment world, long handle, RcBool enabled) {
         try (Arena arena = Arena.ofConfined()) {
             Object result;
@@ -603,7 +655,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void colliderBuilderSetFriction(MemorySegment builder, float friction) {
+    static void colliderBuilderSetFriction(MemorySegment builder, double friction) {
         try {
             RC_COLLIDER_BUILDER_SET_FRICTION.invokeExact(builder, friction);
         } catch (Throwable t) {
@@ -611,7 +663,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void colliderBuilderSetRestitution(MemorySegment builder, float restitution) {
+    static void colliderBuilderSetRestitution(MemorySegment builder, double restitution) {
         try {
             RC_COLLIDER_BUILDER_SET_RESTITUTION.invokeExact(builder, restitution);
         } catch (Throwable t) {
@@ -619,7 +671,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void colliderBuilderSetDensity(MemorySegment builder, float density) {
+    static void colliderBuilderSetDensity(MemorySegment builder, double density) {
         try {
             RC_COLLIDER_BUILDER_SET_DENSITY.invokeExact(builder, density);
         } catch (Throwable t) {
@@ -671,12 +723,48 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static long worldInsertStaticTriMesh(MemorySegment world, double[] vertices, int[] indices, float friction, float restitution) {
+    static long worldInsertDynamicCuboids(
+        MemorySegment world,
+        RcVec3 translation,
+        RcQuat rotation,
+        RcVec3 linearVelocity,
+        double[] cuboids,
+        int cuboidCount,
+        double density,
+        double friction,
+        double restitution,
+        RcInteractionGroups collisionGroups,
+        RcInteractionGroups solverGroups
+    ) {
         try (Arena arena = Arena.ofConfined()) {
-            MemorySegment vertexBuffer = arena.allocate(ValueLayout.JAVA_FLOAT, vertices.length);
-            float[] vertexValues = toFloatArray(vertices);
+            MemorySegment cuboidBuffer = arena.allocate(ValueLayout.JAVA_DOUBLE, cuboids.length);
+            for (int i = 0; i < cuboids.length; i++) {
+                cuboidBuffer.setAtIndex(ValueLayout.JAVA_DOUBLE, i, cuboids[i]);
+            }
+            return (long) RC_WORLD_INSERT_DYNAMIC_CUBOIDS.invokeExact(
+                world,
+                encodeVec3(arena, translation),
+                encodeQuat(arena, rotation),
+                encodeVec3(arena, linearVelocity),
+                cuboidBuffer,
+                cuboidCount,
+                density,
+                friction,
+                restitution,
+                encodeInteractionGroups(arena, collisionGroups),
+                encodeInteractionGroups(arena, solverGroups)
+            );
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_world_insert_dynamic_cuboids", t);
+        }
+    }
+
+    static long worldInsertStaticTriMesh(MemorySegment world, double[] vertices, int[] indices, double friction, double restitution) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment vertexBuffer = arena.allocate(ValueLayout.JAVA_DOUBLE, vertices.length);
+            double[] vertexValues = vertices;
             for (int i = 0; i < vertexValues.length; i++) {
-                vertexBuffer.setAtIndex(ValueLayout.JAVA_FLOAT, i, vertexValues[i]);
+                vertexBuffer.setAtIndex(ValueLayout.JAVA_DOUBLE, i, vertexValues[i]);
             }
             MemorySegment indexBuffer = arena.allocate(ValueLayout.JAVA_INT, indices.length);
             for (int i = 0; i < indices.length; i++) {
@@ -717,18 +805,18 @@ public final class RelativityCraftRapier {
 
     static MemorySegment encodeVec3(Arena arena, RcVec3 vec3) {
         MemorySegment segment = arena.allocate(RC_VEC3);
-        segment.set(ValueLayout.JAVA_FLOAT, 0, vec3.x());
-        segment.set(ValueLayout.JAVA_FLOAT, 4, vec3.y());
-        segment.set(ValueLayout.JAVA_FLOAT, 8, vec3.z());
+        segment.set(ValueLayout.JAVA_DOUBLE, 0, vec3.x());
+        segment.set(ValueLayout.JAVA_DOUBLE, 8, vec3.y());
+        segment.set(ValueLayout.JAVA_DOUBLE, 16, vec3.z());
         return segment;
     }
 
     static MemorySegment encodeQuat(Arena arena, RcQuat quat) {
         MemorySegment segment = arena.allocate(RC_QUAT);
-        segment.set(ValueLayout.JAVA_FLOAT, 0, quat.i());
-        segment.set(ValueLayout.JAVA_FLOAT, 4, quat.j());
-        segment.set(ValueLayout.JAVA_FLOAT, 8, quat.k());
-        segment.set(ValueLayout.JAVA_FLOAT, 12, quat.w());
+        segment.set(ValueLayout.JAVA_DOUBLE, 0, quat.i());
+        segment.set(ValueLayout.JAVA_DOUBLE, 8, quat.j());
+        segment.set(ValueLayout.JAVA_DOUBLE, 16, quat.k());
+        segment.set(ValueLayout.JAVA_DOUBLE, 24, quat.w());
         return segment;
     }
 
@@ -747,25 +835,25 @@ public final class RelativityCraftRapier {
     }
 
     private static void encodeVec3(RcVec3 vec3, MemorySegment segment) {
-        segment.set(ValueLayout.JAVA_FLOAT, 0, vec3.x());
-        segment.set(ValueLayout.JAVA_FLOAT, 4, vec3.y());
-        segment.set(ValueLayout.JAVA_FLOAT, 8, vec3.z());
+        segment.set(ValueLayout.JAVA_DOUBLE, 0, vec3.x());
+        segment.set(ValueLayout.JAVA_DOUBLE, 8, vec3.y());
+        segment.set(ValueLayout.JAVA_DOUBLE, 16, vec3.z());
     }
 
     static RcVec3 decodeVec3(MemorySegment segment) {
         return new RcVec3(
-            segment.get(ValueLayout.JAVA_FLOAT, 0),
-            segment.get(ValueLayout.JAVA_FLOAT, 4),
-            segment.get(ValueLayout.JAVA_FLOAT, 8)
+                segment.get(ValueLayout.JAVA_DOUBLE, 0),
+                segment.get(ValueLayout.JAVA_DOUBLE, 8),
+                segment.get(ValueLayout.JAVA_DOUBLE, 16)
         );
     }
 
     static RcQuat decodeQuat(MemorySegment segment) {
         return new RcQuat(
-            segment.get(ValueLayout.JAVA_FLOAT, 0),
-            segment.get(ValueLayout.JAVA_FLOAT, 4),
-            segment.get(ValueLayout.JAVA_FLOAT, 8),
-            segment.get(ValueLayout.JAVA_FLOAT, 12)
+                segment.get(ValueLayout.JAVA_DOUBLE, 0),
+                segment.get(ValueLayout.JAVA_DOUBLE, 8),
+                segment.get(ValueLayout.JAVA_DOUBLE, 16),
+                segment.get(ValueLayout.JAVA_DOUBLE, 24)
         );
     }
 
@@ -777,14 +865,6 @@ public final class RelativityCraftRapier {
 
     static RcBool decodeBool(MemorySegment segment) {
         return RcBool.of(segment.get(ValueLayout.JAVA_BYTE, 0) != 0);
-    }
-
-    private static float[] toFloatArray(double[] values) {
-        float[] result = new float[values.length];
-        for (int i = 0; i < values.length; i++) {
-            result[i] = (float) values[i];
-        }
-        return result;
     }
 
     private static MethodHandle downcall(String symbol, FunctionDescriptor descriptor) {
