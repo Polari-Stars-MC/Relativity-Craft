@@ -35,7 +35,7 @@ public final class PhysicsWorldManager {
     private static final PhysicsWorldManager GLOBAL = new PhysicsWorldManager();
     private static final double GRAVITY_Y = -0.04 * 20.0 * 20.0;
     private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
-    private static final int SUBSTEPS_PER_SERVER_TICK = 3;
+    private static final int SUBSTEPS_PER_SERVER_TICK = 2;
     private static final int SNAPSHOT_STRIDE = 8;
     private static final int TERRAIN_MARGIN_BLOCKS = 8;
     private static final double PISTON_PUSH_VELOCITY = 2.0;
@@ -47,6 +47,7 @@ public final class PhysicsWorldManager {
     private static final double WORLD_CONTACT_MAX_TORQUE_IMPULSE = 32.0;
     private static final double WORLD_CONTACT_DEEP_PENETRATION = 0.35;
     private static final double WORLD_CONTACT_MAX_POSITION_RECOVERY = 0.08;
+    private static final int WORLD_CONTACT_SCAN_INTERVAL_TICKS = 2;
 
     private final Map<String, LevelPhysicsState> levels = new ConcurrentHashMap<>();
     private boolean warnedNativeUnavailable;
@@ -327,7 +328,7 @@ public final class PhysicsWorldManager {
         void tick(ServerLevel level) {
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
             drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
-            if ((level.getGameTime() & 1L) == 0L) {
+            if ((level.getGameTime() & 7L) == 0L) {
                 updateWaterSurfaceColliders(level);
             }
             applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK);
@@ -380,6 +381,9 @@ public final class PhysicsWorldManager {
             }
 
             for (Map.Entry<Integer, Long> entry : bodyByEntityId.entrySet()) {
+                if (Math.floorMod(level.getGameTime() + entry.getKey(), WORLD_CONTACT_SCAN_INTERVAL_TICKS) != 0) {
+                    continue;
+                }
                 Entity entity = level.getEntity(entry.getKey());
                 if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
                     applyMinecraftCollisionForces(level, volume, entry.getValue());

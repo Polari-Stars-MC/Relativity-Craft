@@ -28,6 +28,10 @@ sourceSets.main.resources {
 
 repositories {
     mavenCentral()
+    maven {
+        name = "Modrinth"
+        url = "https://api.modrinth.com/maven"
+    }
     // Add here additional repositories if required by some of the dependencies below.
 }
 
@@ -293,6 +297,7 @@ dependencies {
     implementation(platform("io.github.over-run:overrungl-bom:$overrungl_version"))
     implementation("io.github.over-run:overrungl")
     jarJar("io.github.over-run:overrungl:$overrungl_version")
+    localRuntime("maven.modrinth:spark:1.10.172-neoforge")
 }
 
 // This block of code expands all declared replace properties in the specified resource targets.

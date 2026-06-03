@@ -25,9 +25,9 @@ import java.util.function.Consumer;
 public final class PhysicalizedCollisionShapes {
     private static final double QUERY_EPSILON = 1.0E-5;
     private static final double PUSH_OUT_EPSILON = 1.0E-3;
-    private static final int MAX_PUSH_OUT_ITERATIONS = 6;
-    private static final int PUSH_SCAN_INTERVAL_TICKS = 4;
-    private static final int MAX_PUSH_SCANS_PER_TICK = 64;
+    private static final int MAX_PUSH_OUT_ITERATIONS = 2;
+    private static final int PUSH_SCAN_INTERVAL_TICKS = 20;
+    private static final int MAX_PUSH_SCANS_PER_TICK = 8;
 
     private PhysicalizedCollisionShapes() {
     }

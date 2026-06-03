@@ -41,6 +41,9 @@ public abstract class MinecraftPickMixin {
         }
 
         double reach = Math.max(4.5, player.blockInteractionRange());
+        if (hitResult != null && hitResult.getType() != HitResult.Type.MISS && !(hitResult instanceof PhysicalizedBlockHitResult)) {
+            reach = Math.min(reach, Math.sqrt(player.getEyePosition(partialTicks).distanceToSqr(hitResult.getLocation())) + RELATIVITY_PICK_TOLERANCE);
+        }
         Optional<PhysicalizedHit> hit = PhysicalizedRaycaster.raycast(
                 level,
                 player.getEyePosition(partialTicks),

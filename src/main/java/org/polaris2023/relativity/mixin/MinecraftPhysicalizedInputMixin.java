@@ -20,7 +20,7 @@ public abstract class MinecraftPhysicalizedInputMixin {
 
     @Inject(method = "startAttack", at = @At("HEAD"), cancellable = true)
     private void relativityCraft$startPhysicalizedAttack(CallbackInfoReturnable<Boolean> cir) {
-        if (PhysicalizedClientInteractions.attackPhysicalizedHit((Minecraft) (Object) this, true, true)) {
+        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHit((Minecraft) (Object) this, true, true)) {
             cir.setReturnValue(true);
         }
     }
@@ -35,7 +35,7 @@ public abstract class MinecraftPhysicalizedInputMixin {
             return;
         }
 
-        if (PhysicalizedClientInteractions.attackPhysicalizedHit(minecraft, false, false)) {
+        if (PhysicalizedClientInteractions.attackCurrentPhysicalizedHit(minecraft, false, false)) {
             ci.cancel();
         }
     }
