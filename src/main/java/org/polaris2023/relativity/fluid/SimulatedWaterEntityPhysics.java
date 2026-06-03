@@ -6,6 +6,7 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.item.ItemEntity;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.entity.vehicle.boat.AbstractBoat;
 import net.minecraft.world.level.CollisionGetter;
@@ -20,9 +21,9 @@ import java.util.ArrayList;
 import java.util.List;
 
 public final class SimulatedWaterEntityPhysics {
-    private static final int MAX_ENTITY_SURFACE_PROBES = 36;
-    private static final int MAX_BOAT_SURFACE_PROBES = 72;
-    private static final int MAX_COLLISION_SURFACE_PROBES = 96;
+    private static final int MAX_ENTITY_SURFACE_PROBES = 12;
+    private static final int MAX_BOAT_SURFACE_PROBES = 24;
+    private static final int MAX_COLLISION_SURFACE_PROBES = 32;
     private static final double SURFACE_SCAN_BELOW = 2.0;
     private static final double SURFACE_SCAN_ABOVE = 2.0;
     private static final double SURFACE_SHELL_HALF_HEIGHT = 0.085;
@@ -87,8 +88,13 @@ public final class SimulatedWaterEntityPhysics {
             return;
         }
 
+        long gameTime = entity.level().getGameTime();
+        if (!boat && !(entity instanceof Player) && ((gameTime + entity.getId()) & 1L) != 0L) {
+            return;
+        }
+
         AABB box = entity.getBoundingBox();
-        WaterContact contact = contactFor(entity.level(), box.inflate(boat ? 0.45 : 0.18, 0.25, boat ? 0.45 : 0.18), entity.level().getGameTime(), boat);
+        WaterContact contact = contactFor(entity.level(), box.inflate(boat ? 0.45 : 0.18, 0.25, boat ? 0.45 : 0.18), gameTime, boat);
         if (contact == null) {
             return;
         }
@@ -152,6 +158,7 @@ public final class SimulatedWaterEntityPhysics {
 
     private static boolean shouldApplyWaterForces(Entity entity) {
         return !(entity instanceof PhysicalizedVolumeEntity)
+                && !(entity instanceof ItemEntity)
                 && !entity.isRemoved()
                 && entity.isAlive()
                 && !entity.noPhysics
@@ -163,6 +170,7 @@ public final class SimulatedWaterEntityPhysics {
     private static boolean shouldCollideWithWaterSurface(Entity source) {
         if (source == null
                 || source instanceof PhysicalizedVolumeEntity
+                || source instanceof ItemEntity
                 || source.isRemoved()
                 || !source.isAlive()
                 || source.noPhysics

@@ -5,6 +5,7 @@ import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.material.FluidState;
+import net.minecraft.core.Direction;
 import net.minecraft.world.phys.Vec3;
 
 public final class FluidDomain {
@@ -210,10 +211,6 @@ public final class FluidDomain {
                     FluidState fluid = level.getFluidState(pos);
                     if (!fluid.isEmpty() && fluid.is(FluidTags.WATER)) {
                         waterLevel[index] = clamp((float) fluid.getHeight(level, pos), 0.0F, 1.0F);
-                        Vec3 flow = fluid.getFlow(level, pos);
-                        flowX[index] = clamp(flowX[index] * (1.0F - VANILLA_FLOW_BLEND) + (float) flow.x * VANILLA_FLOW_BLEND, -MAX_FLOW_SPEED, MAX_FLOW_SPEED);
-                        flowY[index] = clamp(flowY[index] * (1.0F - VANILLA_FLOW_BLEND) + (float) flow.y * VANILLA_FLOW_BLEND, -MAX_FLOW_SPEED, MAX_FLOW_SPEED);
-                        flowZ[index] = clamp(flowZ[index] * (1.0F - VANILLA_FLOW_BLEND) + (float) flow.z * VANILLA_FLOW_BLEND, -MAX_FLOW_SPEED, MAX_FLOW_SPEED);
                         waterCells++;
                     } else if (waterLevel[index] != 0.0F
                             || waveHeight[index] != 0.0F
@@ -226,6 +223,56 @@ public final class FluidDomain {
                 }
             }
         }
+        blendVanillaFlow();
+    }
+
+    private void blendVanillaFlow() {
+        for (int y = 0; y < SECTION_SIZE; y++) {
+            for (int z = 0; z < SECTION_SIZE; z++) {
+                for (int x = 0; x < SECTION_SIZE; x++) {
+                    int index = index(x, y, z);
+                    if (waterLevel[index] <= 0.0F) {
+                        continue;
+                    }
+
+                    float center = waterLevel[index];
+                    float estimatedX = waterAt(x - 1, y, z) - waterAt(x + 1, y, z);
+                    float estimatedY = waterAt(x, y - 1, z) - waterAt(x, y + 1, z);
+                    float estimatedZ = waterAt(x, y, z - 1) - waterAt(x, y, z + 1);
+                    if (isOpenAtBoundary(x, Direction.WEST)) {
+                        estimatedX += center;
+                    }
+                    if (isOpenAtBoundary(x, Direction.EAST)) {
+                        estimatedX -= center;
+                    }
+                    if (isOpenAtBoundary(y, Direction.DOWN)) {
+                        estimatedY += center;
+                    }
+                    if (isOpenAtBoundary(y, Direction.UP)) {
+                        estimatedY -= center;
+                    }
+                    if (isOpenAtBoundary(z, Direction.NORTH)) {
+                        estimatedZ += center;
+                    }
+                    if (isOpenAtBoundary(z, Direction.SOUTH)) {
+                        estimatedZ -= center;
+                    }
+
+                    flowX[index] = blendFlow(flowX[index], estimatedX);
+                    flowY[index] = blendFlow(flowY[index], estimatedY);
+                    flowZ[index] = blendFlow(flowZ[index], estimatedZ);
+                }
+            }
+        }
+    }
+
+    private static boolean isOpenAtBoundary(int coordinate, Direction direction) {
+        return coordinate == 0 && direction.getAxisDirection() == Direction.AxisDirection.NEGATIVE
+                || coordinate == SECTION_SIZE - 1 && direction.getAxisDirection() == Direction.AxisDirection.POSITIVE;
+    }
+
+    private static float blendFlow(float current, float estimated) {
+        return clamp(current * (1.0F - VANILLA_FLOW_BLEND) + estimated * VANILLA_FLOW_BLEND, -MAX_FLOW_SPEED, MAX_FLOW_SPEED);
     }
 
     private void buildActiveSet() {
