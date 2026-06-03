@@ -740,10 +740,16 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public void tick() {
+        if (this.discardIfEmpty()) {
+            return;
+        }
         PhysicalizedVolumeLookup.track(this);
         this.updatePreviousPhysicsRotation();
         super.tick();
         if (this.level().isClientSide()) {
+            return;
+        }
+        if (this.discardIfEmpty()) {
             return;
         }
 
@@ -920,6 +926,14 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.qwOld = this.rotationQw();
     }
 
+    private boolean discardIfEmpty() {
+        if (this.isRemoved() || this.currentSnapshot().blockCount() > 0) {
+            return false;
+        }
+        this.discard();
+        return true;
+    }
+
     private void setSnapshot(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients, Vec3 localOrigin) {
         this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
         this.cachedMinecraftCollisionBoxesGameTime = Long.MIN_VALUE;
@@ -932,6 +946,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         }
         this.entityData.set(DATA_BLOCK_COUNT, this.snapshot.blockCount());
         this.refreshDimensions();
+        if (this.discardIfEmpty()) {
+            return;
+        }
         if (syncToTrackingClients && !this.level().isClientSide()) {
             PhysicalizedInteractionNetwork.sendSnapshot(this);
         }

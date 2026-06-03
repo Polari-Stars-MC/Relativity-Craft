@@ -30,6 +30,7 @@ public final class PhysicalizedVolumeSnapshot {
     public static final PhysicalizedVolumeSnapshot EMPTY = new PhysicalizedVolumeSnapshot(1, 1, 1, List.of());
     public static final int MAX_BLOCK_ENTITY_NBT_BYTES = 1024 * 1024;
     public static final int MAX_NBT_DEPTH = 512;
+    private static final int MAX_DENSE_INDEX_VOLUME = 262_144;
 
     private final int sizeX;
     private final int sizeY;
@@ -39,6 +40,7 @@ public final class PhysicalizedVolumeSnapshot {
     // computed once here instead of re-scanning the cell list on every cellAt()/makeBoundingBox()
     // call. Those scans were a primary source of per-tick lag for large volumes.
     private final Map<Long, PhysicalizedBlockSnapshot> cellIndex;
+    private final PhysicalizedBlockSnapshot[] denseCellIndex;
     private final int occupiedMinX;
     private final int occupiedMinY;
     private final int occupiedMinZ;
@@ -50,26 +52,44 @@ public final class PhysicalizedVolumeSnapshot {
         this.sizeX = Math.max(1, sizeX);
         this.sizeY = Math.max(1, sizeY);
         this.sizeZ = Math.max(1, sizeZ);
-        this.cells = List.copyOf(cells);
 
-        Map<Long, PhysicalizedBlockSnapshot> index = new HashMap<>(Math.max(16, this.cells.size() * 2));
+        long denseVolume = (long) this.sizeX * this.sizeY * this.sizeZ;
+        PhysicalizedBlockSnapshot[] denseIndex = denseVolume <= MAX_DENSE_INDEX_VOLUME
+                ? new PhysicalizedBlockSnapshot[(int) denseVolume]
+                : null;
+        Map<Long, PhysicalizedBlockSnapshot> index = new HashMap<>(Math.max(16, cells.size() * 2));
+        List<PhysicalizedBlockSnapshot> uniqueCells = new ArrayList<>(cells.size());
         int minX = Integer.MAX_VALUE;
         int minY = Integer.MAX_VALUE;
         int minZ = Integer.MAX_VALUE;
         int maxX = Integer.MIN_VALUE;
         int maxY = Integer.MIN_VALUE;
         int maxZ = Integer.MIN_VALUE;
-        for (PhysicalizedBlockSnapshot cell : this.cells) {
-            // Preserve the previous "first match wins" semantics of the old linear scan.
-            index.putIfAbsent(pack(cell.localX(), cell.localY(), cell.localZ()), cell);
-            minX = Math.min(minX, cell.localX());
-            minY = Math.min(minY, cell.localY());
-            minZ = Math.min(minZ, cell.localZ());
-            maxX = Math.max(maxX, cell.localX());
-            maxY = Math.max(maxY, cell.localY());
-            maxZ = Math.max(maxZ, cell.localZ());
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            int localX = cell.localX();
+            int localY = cell.localY();
+            int localZ = cell.localZ();
+            if (!isInside(localX, localY, localZ)) {
+                continue;
+            }
+            long key = pack(localX, localY, localZ);
+            if (index.putIfAbsent(key, cell) != null) {
+                continue;
+            }
+            uniqueCells.add(cell);
+            if (denseIndex != null) {
+                denseIndex[denseIndex(localX, localY, localZ)] = cell;
+            }
+            minX = Math.min(minX, localX);
+            minY = Math.min(minY, localY);
+            minZ = Math.min(minZ, localZ);
+            maxX = Math.max(maxX, localX);
+            maxY = Math.max(maxY, localY);
+            maxZ = Math.max(maxZ, localZ);
         }
-        this.cellIndex = index;
+        this.cells = List.copyOf(uniqueCells);
+        this.cellIndex = Collections.unmodifiableMap(index);
+        this.denseCellIndex = denseIndex;
         if (this.cells.isEmpty()) {
             // Match the legacy empty-volume behaviour: min = 0, max = size - 1.
             this.occupiedMinX = 0;
@@ -87,7 +107,6 @@ public final class PhysicalizedVolumeSnapshot {
             this.occupiedMaxZ = maxZ;
         }
     }
-
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
         List<PhysicalizedBlockSnapshot> cells = new ArrayList<>();
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
@@ -261,6 +280,12 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public PhysicalizedBlockSnapshot cellAtOrNull(int localX, int localY, int localZ) {
+        if (!isInside(localX, localY, localZ)) {
+            return null;
+        }
+        if (denseCellIndex != null) {
+            return denseCellIndex[denseIndex(localX, localY, localZ)];
+        }
         return cellIndex.get(pack(localX, localY, localZ));
     }
 
@@ -331,7 +356,7 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public List<PhysicalizedBlockSnapshot> cellsView() {
-        return Collections.unmodifiableList(cells);
+        return cells;
     }
 
     private static void validateBlockEntityNbt(CompoundTag tag, BlockPos pos) {
@@ -395,6 +420,14 @@ public final class PhysicalizedVolumeSnapshot {
             }
         }
         return max;
+    }
+
+    private boolean isInside(int localX, int localY, int localZ) {
+        return localX >= 0 && localX < sizeX && localY >= 0 && localY < sizeY && localZ >= 0 && localZ < sizeZ;
+    }
+
+    private int denseIndex(int localX, int localY, int localZ) {
+        return (localY * sizeZ + localZ) * sizeX + localX;
     }
 
     private static long pack(int x, int y, int z) {
