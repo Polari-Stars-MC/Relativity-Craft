@@ -33,10 +33,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicsWorldManager {
     private static final PhysicsWorldManager GLOBAL = new PhysicsWorldManager();
-    private static final double GRAVITY_Y = -9.81;
-    private static final double PHYSICS_TICK_SECONDS = 1.0 / 20.0;
-    private static final int SUBSTEPS_PER_SERVER_TICK = 2;
-    private static final double PHYSICS_SUBSTEP_SECONDS = PHYSICS_TICK_SECONDS / SUBSTEPS_PER_SERVER_TICK;
+
     private static final double GRAVITY_Y = -0.04 * 20.0 * 20.0;
     private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
     private static final int SUBSTEPS_PER_SERVER_TICK = 2;
@@ -849,9 +846,6 @@ public final class PhysicsWorldManager {
         }
 
         // Rapier's body translation is entity.physicsCenter(), so collider offsets use the same occupied-center origin.
-        double originX = snapshot.occupiedCenterX();
-        double originY = snapshot.occupiedCenterY();
-        double originZ = snapshot.occupiedCenterZ();
         double originX = entity.centerOfMassLocalX();
         double originY = entity.centerOfMassLocalY();
         double originZ = entity.centerOfMassLocalZ();

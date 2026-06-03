@@ -186,6 +186,54 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setSnapshotPreservingEntityCenter(snapshot, true, null);
     }
 
+    public List<AABB> minecraftCollisionBoxes() {
+        PhysicalizedVolumeSnapshot current = this.currentSnapshot();
+        if (current.blockCount() <= 0) {
+            return List.of();
+        }
+        long gameTime = this.level().getGameTime();
+        if (cachedMinecraftCollisionBoxesGameTime == gameTime
+                && cachedMinecraftCollisionBoxesSnapshot == current
+                && cachedMinecraftCollisionBoxesX == this.getX()
+                && cachedMinecraftCollisionBoxesY == this.getY()
+                && cachedMinecraftCollisionBoxesZ == this.getZ()
+                && cachedMinecraftCollisionBoxesQx == this.rotationQx()
+                && cachedMinecraftCollisionBoxesQy == this.rotationQy()
+                && cachedMinecraftCollisionBoxesQz == this.rotationQz()
+                && cachedMinecraftCollisionBoxesQw == this.rotationQw()) {
+            return cachedMinecraftCollisionBoxes;
+        }
+
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(current);
+        List<AABB> boxes = new ArrayList<>();
+        for (PhysicalizedBlockSnapshot cell : current.cells()) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            for (AABB localShapeBox : shape.toAabbs()) {
+                boxes.add(this.localBoxToWorldAabb(localShapeBox.move(localPos)));
+            }
+        }
+        cachedMinecraftCollisionBoxes = List.copyOf(boxes);
+        cachedMinecraftCollisionBoxesGameTime = gameTime;
+        cachedMinecraftCollisionBoxesSnapshot = current;
+        cachedMinecraftCollisionBoxesX = this.getX();
+        cachedMinecraftCollisionBoxesY = this.getY();
+        cachedMinecraftCollisionBoxesZ = this.getZ();
+        cachedMinecraftCollisionBoxesQx = this.rotationQx();
+        cachedMinecraftCollisionBoxesQy = this.rotationQy();
+        cachedMinecraftCollisionBoxesQz = this.rotationQz();
+        cachedMinecraftCollisionBoxesQw = this.rotationQw();
+        return cachedMinecraftCollisionBoxes;
+    }
+
     public void updateSnapshot(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin) {
         this.setSnapshotPreservingEntityCenter(snapshot, true, localOrigin);
     }

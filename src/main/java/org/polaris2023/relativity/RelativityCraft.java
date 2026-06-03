@@ -83,6 +83,7 @@ public final class RelativityCraft {
     @SubscribeEvent
     public void afterLevelTick(LevelTickEvent.Post event) {
         if (event.getLevel() instanceof ServerLevel level) {
+            WpoFiniteWaterPhysics.drainQueuedTicks(level);
             PhysicalizedVolumeManager.global().drainJobsFor(500_000L);
             BlockRemovalQueue.global().drain(level, 2_000_000L);
             PhysicsWorldManager.global().tick(level);
