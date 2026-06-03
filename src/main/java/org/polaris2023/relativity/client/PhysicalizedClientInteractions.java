@@ -671,7 +671,7 @@ public final class PhysicalizedClientInteractions {
             PhysicalizedVolumeMapping oldMapping,
             PhysicalizedVolumeSnapshot nextSnapshot
     ) {
-        return oldMapping.centeredLocalToWorld(Vec3.ZERO);
+        return entity.entityCenter();
     }
 
     private static Vec3 futureLocalOrigin(

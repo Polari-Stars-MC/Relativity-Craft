@@ -269,8 +269,7 @@ public final class PhysicalizedInteractionHandler {
             return InteractionResult.FAIL;
         }
 
-        entity.updateSnapshot(placement.snapshot(), nextOrigin);
-        entity.setEntityCenter(nextCenter);
+        entity.updateSnapshotAtEntityCenter(placement.snapshot(), nextOrigin, nextCenter);
         entity.resolveWorldCollisionAfterShapeChange();
         PhysicsWorldManager.global().rebuildBodyShape(level, entity);
 
@@ -595,7 +594,7 @@ public final class PhysicalizedInteractionHandler {
             PhysicalizedVolumeMapping oldMapping,
             PhysicalizedVolumeSnapshot nextSnapshot
     ) {
-        return oldMapping.centeredLocalToWorld(Vec3.ZERO);
+        return entity.entityCenter();
     }
 
     private static Vec3 futureLocalOrigin(

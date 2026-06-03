@@ -33,6 +33,10 @@ import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicsWorldManager {
     private static final PhysicsWorldManager GLOBAL = new PhysicsWorldManager();
+    private static final double GRAVITY_Y = -9.81;
+    private static final double PHYSICS_TICK_SECONDS = 1.0 / 20.0;
+    private static final int SUBSTEPS_PER_SERVER_TICK = 2;
+    private static final double PHYSICS_SUBSTEP_SECONDS = PHYSICS_TICK_SECONDS / SUBSTEPS_PER_SERVER_TICK;
     private static final double GRAVITY_Y = -0.04 * 20.0 * 20.0;
     private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
     private static final int SUBSTEPS_PER_SERVER_TICK = 2;
@@ -577,11 +581,14 @@ public final class PhysicsWorldManager {
             }
 
             ChunkSectionKey key = ChunkSectionKey.containing(dimensionId(level), pos.getX(), pos.getY(), pos.getZ());
-            if (requestedTerrainSections.contains(key)) {
-                cancelQueuedBuild(key);
-                priorityQueuedSections.add(key);
-                priorityTerrainJobs.addFirst(new TerrainBuildJob(key));
+            if (!requestedTerrainSections.contains(key) || priorityQueuedSections.contains(key)) {
+                return;
             }
+            if (backgroundQueuedSections.remove(key)) {
+                backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
+            }
+            priorityQueuedSections.add(key);
+            priorityTerrainJobs.addFirst(new TerrainBuildJob(key));
         }
 
         private void requestTerrainAround(ServerLevel level, AABB box, boolean refreshExisting, boolean prioritize) {
@@ -841,6 +848,10 @@ public final class PhysicsWorldManager {
             return DynamicBodyShape.EMPTY;
         }
 
+        // Rapier's body translation is entity.physicsCenter(), so collider offsets use the same occupied-center origin.
+        double originX = snapshot.occupiedCenterX();
+        double originY = snapshot.occupiedCenterY();
+        double originZ = snapshot.occupiedCenterZ();
         double originX = entity.centerOfMassLocalX();
         double originY = entity.centerOfMassLocalY();
         double originZ = entity.centerOfMassLocalZ();

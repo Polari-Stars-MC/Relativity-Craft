@@ -82,6 +82,7 @@ public final class PhysicalizedVolumeLookup {
     static List<PhysicalizedVolumeEntity> loadedVolumes(Level level, AABB queryBox, double inflate) {
         AABB searchBox = queryBox.inflate(inflate);
         List<PhysicalizedVolumeEntity> volumes = new ArrayList<>();
+        addTrackedVolumes(level, searchBox, volumes);
         if (level instanceof ServerLevel serverLevel) {
             for (PhysicalizedVolumeEntity volume : PhysicsWorldManager.global().queryVolumes(serverLevel, searchBox)) {
                 if (isUsable(volume) && !volumes.contains(volume)) {
@@ -96,6 +97,24 @@ public final class PhysicalizedVolumeLookup {
             }
         }
         return volumes;
+    }
+
+    private static void addTrackedVolumes(Level level, AABB searchBox, List<PhysicalizedVolumeEntity> volumes) {
+        ConcurrentMap<Integer, PhysicalizedVolumeEntity> tracked = TRACKED.get(levelKey(level));
+        if (tracked == null || tracked.isEmpty()) {
+            return;
+        }
+
+        for (Map.Entry<Integer, PhysicalizedVolumeEntity> entry : tracked.entrySet()) {
+            PhysicalizedVolumeEntity volume = entry.getValue();
+            if (volume.level() != level || !isUsable(volume)) {
+                tracked.remove(entry.getKey(), volume);
+                continue;
+            }
+            if (volume.getBoundingBox().inflate(QUERY_EPSILON).intersects(searchBox) && !volumes.contains(volume)) {
+                volumes.add(volume);
+            }
+        }
     }
 
     static boolean localVolumeIntersects(PhysicalizedVolumeEntity volume, PhysicalizedVolumeMapping mapping, AABB worldBox, double inflate) {

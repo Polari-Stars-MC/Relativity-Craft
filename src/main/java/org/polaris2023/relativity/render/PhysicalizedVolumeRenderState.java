@@ -38,6 +38,8 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public Map<Long, AnimationOffset> cellAnimationOffsets = Map.of();
     public List<AnimatedCell> extraAnimatedCells = List.of();
     public Set<Long> openContainerKeys = Set.of();
+    public PhysicalizedVolumeSnapshot renderProfileSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
+    public boolean hasRenderableBlockEntityCells;
     public String blockEntityCacheVolumeId = "";
     public final Map<Long, CachedBlockEntity> blockEntityCache = new HashMap<>();
     public PhysicalizedVolumeSnapshot modelMeshSnapshot = PhysicalizedVolumeSnapshot.EMPTY;

@@ -838,6 +838,7 @@ public final class PhysicalizedRedstoneMapping {
         } else {
             volume.updateSnapshot(mutation.snapshot());
         }
+        volume.resolveWorldCollisionAfterShapeChange();
         PhysicsWorldManager.global().rebuildBodyShape(level, volume);
         PhysicsWorldManager.global().wakeBodiesInAabb(level, volume.getBoundingBox().inflate(0.5));
         recomputeVirtualRedstone(level, volume);

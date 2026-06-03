@@ -141,11 +141,15 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         state.renderSnapshot = renderSnapshot;
         state.cells = renderSnapshot.cellsView();
         state.cellsByKey = renderSnapshot.cellsByKeyView();
-        state.openContainerKeys = openContainerKeys(entity, state.cells, state.cellsByKey);
-        state.blockEntityCache.keySet().removeIf(key -> {
-            PhysicalizedBlockSnapshot cell = state.cellsByKey.get(key);
-            return cell == null || !isRenderableBlockEntity(cell.state());
-        });
+        if (state.renderProfileSnapshot != renderSnapshot) {
+            state.renderProfileSnapshot = renderSnapshot;
+            state.hasRenderableBlockEntityCells = hasRenderableBlockEntityCells(state.cells);
+            state.blockEntityCache.keySet().removeIf(key -> {
+                PhysicalizedBlockSnapshot cell = state.cellsByKey.get(key);
+                return cell == null || !isRenderableBlockEntity(cell.state());
+            });
+        }
+        state.openContainerKeys = state.hasRenderableBlockEntityCells ? openContainerKeys(entity, state.cells, state.cellsByKey) : Set.of();
         PistonAnimationFrame animationFrame = updatePistonAnimations(state.volumeId, state.cellsByKey);
         state.cellAnimationOffsets = animationFrame.cellOffsets();
         state.extraAnimatedCells = animationFrame.extraCells();
@@ -233,25 +237,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         boolean hasSolidModelCells = mesh.hasLayer(ChunkSectionLayer.SOLID);
         boolean hasCutoutModelCells = mesh.hasLayer(ChunkSectionLayer.CUTOUT);
         boolean hasTranslucentModelCells = mesh.hasLayer(ChunkSectionLayer.TRANSLUCENT);
-        boolean hasBlockEntityCells = false;
-        PhysicalizedBlockSnapshot breakingCell = null;
-        for (PhysicalizedBlockSnapshot cell : state.cells) {
-            BlockState blockState = cell.state();
-            if (blockState.isAir()) {
-                continue;
-            }
-            if (shouldRenderModel(blockState)) {
-                if (state.breakProgress >= 0
-                        && cell.localX() == state.breakLocalX
-                        && cell.localY() == state.breakLocalY
-                        && cell.localZ() == state.breakLocalZ) {
-                    breakingCell = cell;
-                }
-            }
-            if (isRenderableBlockEntity(blockState)) {
-                hasBlockEntityCells = true;
-            }
-        }
+        PhysicalizedBlockSnapshot breakingCell = breakingCell(state);
         for (PhysicalizedVolumeRenderState.AnimatedCell animatedCell : state.extraAnimatedCells) {
             BlockState blockState = animatedCell.cell().state();
             if (!blockState.isAir() && shouldRenderModel(blockState)) {
@@ -260,7 +246,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                 hasTranslucentModelCells = true;
             }
         }
-        if (!hasSolidModelCells && !hasCutoutModelCells && !hasTranslucentModelCells && !hasBlockEntityCells) {
+        if (!hasSolidModelCells && !hasCutoutModelCells && !hasTranslucentModelCells && !state.hasRenderableBlockEntityCells) {
             return;
         }
 
@@ -274,7 +260,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             submitLayer(state, poseStack, submitNodeCollector, ChunkSectionLayer.TRANSLUCENT, RenderTypes.translucentMovingBlock(), centerYOffset);
         }
 
-        if (hasBlockEntityCells) {
+        if (state.hasRenderableBlockEntityCells) {
             submitBlockEntityCells(state, poseStack, submitNodeCollector, camera, rotation, centerYOffset);
         }
 
@@ -295,6 +281,27 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
 
     private static boolean isRenderableBlockEntity(BlockState blockState) {
         return blockState.getBlock() instanceof EntityBlock;
+    }
+
+    private static boolean hasRenderableBlockEntityCells(List<PhysicalizedBlockSnapshot> cells) {
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            BlockState blockState = cell.state();
+            if (!blockState.isAir() && isRenderableBlockEntity(blockState)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static PhysicalizedBlockSnapshot breakingCell(PhysicalizedVolumeRenderState state) {
+        if (state.breakProgress < 0 || state.breakLocalX < 0 || state.breakLocalY < 0 || state.breakLocalZ < 0) {
+            return null;
+        }
+        PhysicalizedBlockSnapshot cell = state.cellsByKey.get(pack(state.breakLocalX, state.breakLocalY, state.breakLocalZ));
+        if (cell == null || cell.state().isAir() || !shouldRenderModel(cell.state())) {
+            return null;
+        }
+        return cell;
     }
 
     private static boolean shouldRenderModel(BlockState blockState) {
