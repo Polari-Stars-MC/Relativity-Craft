@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import net.minecraft.world.phys.Vec3;
+
 import java.lang.foreign.MemorySegment;
 
 public final class RcRigidBodyBuilder implements AutoCloseable {
@@ -14,22 +16,22 @@ public final class RcRigidBodyBuilder implements AutoCloseable {
         return handle;
     }
 
-    public RcRigidBodyBuilder translation(RcVec3 translation) {
+    public RcRigidBodyBuilder translation(Vec3 translation) {
         RelativityCraftRapier.rigidBodyBuilderSetTranslation(handle, translation);
         return this;
     }
 
-    public RcRigidBodyBuilder rotationAxisAngle(RcVec3 axisAngle) {
+    public RcRigidBodyBuilder rotationAxisAngle(Vec3 axisAngle) {
         RelativityCraftRapier.rigidBodyBuilderSetRotation(handle, axisAngle);
         return this;
     }
 
-    public RcRigidBodyBuilder linearVelocity(RcVec3 velocity) {
+    public RcRigidBodyBuilder linearVelocity(Vec3 velocity) {
         RelativityCraftRapier.rigidBodyBuilderSetLinearVelocity(handle, velocity);
         return this;
     }
 
-    public RcRigidBodyBuilder angularVelocity(RcVec3 velocity) {
+    public RcRigidBodyBuilder angularVelocity(Vec3 velocity) {
         RelativityCraftRapier.rigidBodyBuilderSetAngularVelocity(handle, velocity);
         return this;
     }
@@ -50,7 +52,7 @@ public final class RcRigidBodyBuilder implements AutoCloseable {
     }
 
     public RcRigidBodyBuilder canSleep(boolean canSleep) {
-        RelativityCraftRapier.rigidBodyBuilderSetCanSleep(handle, RcBool.of(canSleep));
+        RelativityCraftRapier.rigidBodyBuilderSetCanSleep(handle, canSleep);
         return this;
     }
 

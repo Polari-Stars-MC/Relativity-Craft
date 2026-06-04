@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import net.minecraft.world.phys.Vec3;
+
 import java.lang.foreign.MemorySegment;
 
 public final class RcWorld implements AutoCloseable {
@@ -18,11 +20,11 @@ public final class RcWorld implements AutoCloseable {
         RelativityCraftRapier.worldStep(handle, deltaSeconds);
     }
 
-    public void setGravity(RcVec3 gravity) {
+    public void setGravity(Vec3 gravity) {
         RelativityCraftRapier.worldSetGravity(handle, gravity);
     }
 
-    public RcVec3 getGravity() {
+    public Vec3 getGravity() {
         return RelativityCraftRapier.worldGetGravity(handle);
     }
 
@@ -30,36 +32,36 @@ public final class RcWorld implements AutoCloseable {
         return RelativityCraftRapier.worldInsertRigidBody(handle, builder.handle());
     }
 
-    public RcBool removeRigidBody(long rigidBodyHandle, boolean removeAttachedColliders) {
-        return RelativityCraftRapier.worldRemoveRigidBody(handle, rigidBodyHandle, RcBool.of(removeAttachedColliders));
+    public boolean removeRigidBody(long rigidBodyHandle, boolean removeAttachedColliders) {
+        return RelativityCraftRapier.worldRemoveRigidBody(handle, rigidBodyHandle, removeAttachedColliders);
     }
 
-    public RcVec3 getRigidBodyTranslation(long rigidBodyHandle) {
+    public Vec3 getRigidBodyTranslation(long rigidBodyHandle) {
         return RelativityCraftRapier.rigidBodyGetTranslation(handle, rigidBodyHandle);
     }
 
-    public RcVec3 getRigidBodyLinearVelocity(long rigidBodyHandle) {
+    public Vec3 getRigidBodyLinearVelocity(long rigidBodyHandle) {
         return RelativityCraftRapier.rigidBodyGetLinearVelocity(handle, rigidBodyHandle);
     }
 
-    public RcBool setRigidBodyLinearVelocity(long rigidBodyHandle, RcVec3 velocity, boolean wakeUp) {
-        return RelativityCraftRapier.rigidBodySetLinearVelocity(handle, rigidBodyHandle, velocity, RcBool.of(wakeUp));
+    public boolean setRigidBodyLinearVelocity(long rigidBodyHandle, Vec3 velocity, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodySetLinearVelocity(handle, rigidBodyHandle, velocity, wakeUp);
     }
 
-    public RcBool addRigidBodyForce(long rigidBodyHandle, RcVec3 force, boolean wakeUp) {
-        return RelativityCraftRapier.rigidBodyAddForce(handle, rigidBodyHandle, force, RcBool.of(wakeUp));
+    public boolean addRigidBodyForce(long rigidBodyHandle, Vec3 force, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodyAddForce(handle, rigidBodyHandle, force, wakeUp);
     }
 
-    public RcBool applyRigidBodyImpulse(long rigidBodyHandle, RcVec3 impulse, boolean wakeUp) {
-        return RelativityCraftRapier.rigidBodyApplyImpulse(handle, rigidBodyHandle, impulse, RcBool.of(wakeUp));
+    public boolean applyRigidBodyImpulse(long rigidBodyHandle, Vec3 impulse, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodyApplyImpulse(handle, rigidBodyHandle, impulse, wakeUp);
     }
 
-    public RcBool applyRigidBodyTorqueImpulse(long rigidBodyHandle, RcVec3 torqueImpulse, boolean wakeUp) {
-        return RelativityCraftRapier.rigidBodyApplyTorqueImpulse(handle, rigidBodyHandle, torqueImpulse, RcBool.of(wakeUp));
+    public boolean applyRigidBodyTorqueImpulse(long rigidBodyHandle, Vec3 torqueImpulse, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodyApplyTorqueImpulse(handle, rigidBodyHandle, torqueImpulse, wakeUp);
     }
 
-    public RcBool enableRigidBodyCcd(long rigidBodyHandle, boolean enabled) {
-        return RelativityCraftRapier.rigidBodyEnableCcd(handle, rigidBodyHandle, RcBool.of(enabled));
+    public boolean enableRigidBodyCcd(long rigidBodyHandle, boolean enabled) {
+        return RelativityCraftRapier.rigidBodyEnableCcd(handle, rigidBodyHandle, enabled);
     }
 
     public long insertCollider(RcColliderBuilder builder) {
@@ -70,8 +72,8 @@ public final class RcWorld implements AutoCloseable {
         return RelativityCraftRapier.worldInsertColliderWithParent(handle, builder.handle(), parentHandle);
     }
 
-    public RcBool removeCollider(long colliderHandle, boolean wakeUp) {
-        return RelativityCraftRapier.worldRemoveCollider(handle, colliderHandle, RcBool.of(wakeUp));
+    public boolean removeCollider(long colliderHandle, boolean wakeUp) {
+        return RelativityCraftRapier.worldRemoveCollider(handle, colliderHandle, wakeUp);
     }
 
     @Override

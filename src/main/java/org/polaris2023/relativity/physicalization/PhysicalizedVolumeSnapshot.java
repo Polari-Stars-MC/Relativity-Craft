@@ -1,6 +1,7 @@
 package org.polaris2023.relativity.physicalization;
 
 import org.polaris2023.relativity.RelativityCraft;
+import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.component.DataComponents;
 import net.minecraft.nbt.CompoundTag;
@@ -12,12 +13,18 @@ import net.minecraft.world.Container;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.item.component.ItemContainerContents;
+import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.shapes.CollisionContext;
+import net.minecraft.world.phys.shapes.VoxelShape;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -47,6 +54,12 @@ public final class PhysicalizedVolumeSnapshot {
     private final int occupiedMaxX;
     private final int occupiedMaxY;
     private final int occupiedMaxZ;
+    private final AABB occupiedLocalBounds;
+    private final List<AABB> localCollisionBoxes;
+    private final double centerOfMassLocalX;
+    private final double centerOfMassLocalY;
+    private final double centerOfMassLocalZ;
+    private final double estimatedPhysicsMass;
 
     public PhysicalizedVolumeSnapshot(int sizeX, int sizeY, int sizeZ, List<PhysicalizedBlockSnapshot> cells) {
         this.sizeX = Math.max(1, sizeX);
@@ -106,6 +119,20 @@ public final class PhysicalizedVolumeSnapshot {
             this.occupiedMaxY = maxY;
             this.occupiedMaxZ = maxZ;
         }
+        this.occupiedLocalBounds = new AABB(
+                this.occupiedMinX,
+                this.occupiedMinY,
+                this.occupiedMinZ,
+                this.occupiedMaxX + 1.0,
+                this.occupiedMaxY + 1.0,
+                this.occupiedMaxZ + 1.0
+        );
+        MassProperties massProperties = computeMassProperties(this.cells);
+        this.centerOfMassLocalX = massProperties.centerX();
+        this.centerOfMassLocalY = massProperties.centerY();
+        this.centerOfMassLocalZ = massProperties.centerZ();
+        this.estimatedPhysicsMass = massProperties.mass();
+        this.localCollisionBoxes = buildLocalCollisionBoxes();
     }
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
         List<PhysicalizedBlockSnapshot> cells = new ArrayList<>();
@@ -271,6 +298,30 @@ public final class PhysicalizedVolumeSnapshot {
         return (occupiedMinZ() + occupiedMaxZ() + 1) * 0.5;
     }
 
+    public AABB occupiedLocalBounds() {
+        return occupiedLocalBounds;
+    }
+
+    public List<AABB> localCollisionBoxes() {
+        return localCollisionBoxes;
+    }
+
+    public double centerOfMassLocalX() {
+        return centerOfMassLocalX;
+    }
+
+    public double centerOfMassLocalY() {
+        return centerOfMassLocalY;
+    }
+
+    public double centerOfMassLocalZ() {
+        return centerOfMassLocalZ;
+    }
+
+    public double estimatedPhysicsMass() {
+        return estimatedPhysicsMass;
+    }
+
     public List<PhysicalizedBlockSnapshot> cells() {
         return cells;
     }
@@ -430,8 +481,89 @@ public final class PhysicalizedVolumeSnapshot {
         return (localY * sizeZ + localZ) * sizeX + localX;
     }
 
+    private List<AABB> buildLocalCollisionBoxes() {
+        if (this.cells.isEmpty()) {
+            return List.of();
+        }
+        SnapshotBlockGetter localLevel = new SnapshotBlockGetter(this);
+        List<AABB> boxes = new ArrayList<>();
+        for (PhysicalizedBlockSnapshot cell : this.cells) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            for (AABB localShapeBox : shape.toAabbs()) {
+                boxes.add(localShapeBox.move(localPos));
+            }
+        }
+        return List.copyOf(boxes);
+    }
+
+    private MassProperties computeMassProperties(List<PhysicalizedBlockSnapshot> cells) {
+        if (cells.isEmpty()) {
+            return new MassProperties(0.5, 0.5, 0.5, 1.0);
+        }
+
+        double totalMass = 0.0;
+        double weightedX = 0.0;
+        double weightedY = 0.0;
+        double weightedZ = 0.0;
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+            double density = Math.max(0.05, PhysicsMaterialRegistry.INSTANCE.materialFor(state).density());
+            totalMass += density;
+            weightedX += (cell.localX() + 0.5) * density;
+            weightedY += (cell.localY() + 0.5) * density;
+            weightedZ += (cell.localZ() + 0.5) * density;
+        }
+
+        if (totalMass <= 0.0) {
+            return new MassProperties(occupiedCenterX(), occupiedCenterY(), occupiedCenterZ(), Math.max(1.0, cells.size()));
+        }
+        return new MassProperties(weightedX / totalMass, weightedY / totalMass, weightedZ / totalMass, totalMass);
+    }
+
     private static long pack(int x, int y, int z) {
         return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
+    }
+
+    private record MassProperties(double centerX, double centerY, double centerZ, double mass) {
+    }
+
+    private record SnapshotBlockGetter(PhysicalizedVolumeSnapshot snapshot) implements BlockGetter {
+        @Override
+        public BlockEntity getBlockEntity(BlockPos pos) {
+            return null;
+        }
+
+        @Override
+        public BlockState getBlockState(BlockPos pos) {
+            PhysicalizedBlockSnapshot cell = snapshot.cellAtOrNull(pos.getX(), pos.getY(), pos.getZ());
+            return cell == null ? Blocks.AIR.defaultBlockState() : cell.state();
+        }
+
+        @Override
+        public FluidState getFluidState(BlockPos pos) {
+            return getBlockState(pos).getFluidState();
+        }
+
+        @Override
+        public int getHeight() {
+            return snapshot.sizeY();
+        }
+
+        @Override
+        public int getMinY() {
+            return 0;
+        }
     }
 
     public record ExpandedPlacement(PhysicalizedVolumeSnapshot snapshot, int shiftX, int shiftY, int shiftZ) {

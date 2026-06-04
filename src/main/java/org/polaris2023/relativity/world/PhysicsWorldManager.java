@@ -6,7 +6,7 @@ import org.polaris2023.relativity.fluid.FluidDomainManager;
 import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
-import org.polaris2023.relativity.nativeaccess.RcVec3;
+import net.minecraft.world.phys.Vec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
@@ -18,7 +18,6 @@ import net.minecraft.world.entity.Entity;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
@@ -219,7 +218,7 @@ public final class PhysicsWorldManager {
             AABB terrainBounds = entity.getBoundingBox();
             buildTerrainImmediately(level, terrainBounds);
 
-            long body = insertBody(entity, RcVec3.ZERO);
+            long body = insertBody(entity, Vec3.ZERO);
             if (body == 0L) {
                 return false;
             }
@@ -231,7 +230,7 @@ public final class PhysicsWorldManager {
 
         boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
             long oldBody = entity.nativeBodyHandle();
-            RcVec3 linearVelocity = oldBody == 0L ? RcVec3.ZERO : world.getBodyLinearVelocity(oldBody);
+            Vec3 linearVelocity = oldBody == 0L ? Vec3.ZERO : world.getBodyLinearVelocity(oldBody);
             if (oldBody != 0L) {
                 untrackBody(level, entity, oldBody);
                 world.removeBody(oldBody);
@@ -276,7 +275,7 @@ public final class PhysicsWorldManager {
             world.removeBody(body);
         }
 
-        private long insertBody(PhysicalizedVolumeEntity entity, RcVec3 linearVelocity) {
+        private long insertBody(PhysicalizedVolumeEntity entity, Vec3 linearVelocity) {
             DynamicBodyShape shape = dynamicBodyShape(entity);
             List<RapierNativeWorld.BoxCollider> colliders = shape.colliders();
             if (colliders.isEmpty()) {
@@ -398,7 +397,7 @@ public final class PhysicsWorldManager {
                 return;
             }
 
-            RcVec3 velocity = world.getBodyLinearVelocity(body);
+            Vec3 velocity = world.getBodyLinearVelocity(body);
             double gravityCompensation = -GRAVITY_Y * PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK;
             double upwardSpeed = Math.max(0.0, -velocity.y()) + gravityCompensation + contact.penetration() / WORLD_CONTACT_BIAS_SECONDS;
             upwardSpeed = Math.min(upwardSpeed, WORLD_CONTACT_MAX_UPWARD_SPEED);

@@ -1,5 +1,10 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import org.joml.Quaterniond;
+
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -23,7 +28,7 @@ public final class RapierNativeWorld implements AutoCloseable {
     private final Set<Long> allBodies = new LinkedHashSet<>();
 
     public RapierNativeWorld(double gravityX, double gravityY, double gravityZ) {
-        this.world = RelativityCraftRapier.createWorld(new RcVec3(gravityX, gravityY, gravityZ));
+        this.world = RelativityCraftRapier.createWorld(new Vec3(gravityX, gravityY, gravityZ));
     }
 
     public long addDynamicBox(double x, double y, double z, double hx, double hy, double hz, double density, double friction, double restitution) {
@@ -51,7 +56,7 @@ public final class RapierNativeWorld implements AutoCloseable {
             double qy,
             double qz,
             double qw,
-            RcVec3 linearVelocity,
+            Vec3 linearVelocity,
             List<BoxCollider> boxes,
             double density,
             double friction,
@@ -83,7 +88,7 @@ public final class RapierNativeWorld implements AutoCloseable {
         long handle = RelativityCraftRapier.worldInsertDynamicCuboids(
                 world.handle(),
                 vec3(x, y, z),
-                new RcQuat(qx, qy, qz, qw),
+                new Quaterniond(qx, qy, qz, qw),
                 linearVelocity,
                 cuboids,
                 cuboidCount,
@@ -169,27 +174,27 @@ public final class RapierNativeWorld implements AutoCloseable {
             bodyHandle,
             vec3(x, y, z),
             RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle),
-            RcBool.TRUE
-        ).value();
+            true
+        );
     }
 
     public boolean setBodyLinearVelocity(long bodyHandle, double x, double y, double z) {
-        return world.setRigidBodyLinearVelocity(bodyHandle, vec3(x, y, z), true).value();
+        return world.setRigidBodyLinearVelocity(bodyHandle, vec3(x, y, z), true);
     }
 
     public boolean addBodyForce(long bodyHandle, double x, double y, double z) {
-        return world.addRigidBodyForce(bodyHandle, vec3(x, y, z), true).value();
+        return world.addRigidBodyForce(bodyHandle, vec3(x, y, z), true);
     }
 
     public boolean applyBodyImpulse(long bodyHandle, double x, double y, double z) {
-        return world.applyRigidBodyImpulse(bodyHandle, vec3(x, y, z), true).value();
+        return world.applyRigidBodyImpulse(bodyHandle, vec3(x, y, z), true);
     }
 
     public boolean applyBodyTorqueImpulse(long bodyHandle, double x, double y, double z) {
-        return world.applyRigidBodyTorqueImpulse(bodyHandle, vec3(x, y, z), true).value();
+        return world.applyRigidBodyTorqueImpulse(bodyHandle, vec3(x, y, z), true);
     }
 
-    public RcVec3 getBodyLinearVelocity(long bodyHandle) {
+    public Vec3 getBodyLinearVelocity(long bodyHandle) {
         return world.getRigidBodyLinearVelocity(bodyHandle);
     }
 
@@ -207,16 +212,16 @@ public final class RapierNativeWorld implements AutoCloseable {
         double[] snapshot = new double[liveBodies.size() * SNAPSHOT_STRIDE];
         int index = 0;
         for (long bodyHandle : liveBodies) {
-            RcVec3 translation = world.getRigidBodyTranslation(bodyHandle);
-            RcQuat rotation = RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle);
+            Vec3 translation = world.getRigidBodyTranslation(bodyHandle);
+            Quaterniond rotation = RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle);
             snapshot[index++] = bodyHandle;
             snapshot[index++] = translation.x();
             snapshot[index++] = translation.y();
             snapshot[index++] = translation.z();
-            snapshot[index++] = rotation.i();
-            snapshot[index++] = rotation.j();
-            snapshot[index++] = rotation.k();
-            snapshot[index++] = rotation.w();
+            snapshot[index++] = rotation.x;
+            snapshot[index++] = rotation.y;
+            snapshot[index++] = rotation.z;
+            snapshot[index++] = rotation.w;
         }
         return snapshot;
     }
@@ -226,22 +231,22 @@ public final class RapierNativeWorld implements AutoCloseable {
     }
 
     public boolean forceSleep(long bodyHandle) {
-        return RelativityCraftRapier.rigidBodySleep(world.handle(), bodyHandle).value();
+        return RelativityCraftRapier.rigidBodySleep(world.handle(), bodyHandle);
     }
 
     public boolean wakeUp(long bodyHandle) {
-        return RelativityCraftRapier.rigidBodyWakeUp(world.handle(), bodyHandle, RcBool.TRUE).value();
+        return RelativityCraftRapier.rigidBodyWakeUp(world.handle(), bodyHandle, true);
     }
 
     public boolean areSleeping(long firstBody, long secondBody) {
-        return RelativityCraftRapier.rigidBodyIsSleeping(world.handle(), firstBody).value()
-            && RelativityCraftRapier.rigidBodyIsSleeping(world.handle(), secondBody).value();
+        return RelativityCraftRapier.rigidBodyIsSleeping(world.handle(), firstBody)
+            && RelativityCraftRapier.rigidBodyIsSleeping(world.handle(), secondBody);
     }
 
     public long[] queryAabb(double minX, double minY, double minZ, double maxX, double maxY, double maxZ) {
         return RelativityCraftRapier.queryIntersectAabbRigidBodies(
             world.handle(),
-            new RcAabb(vec3(minX, minY, minZ), vec3(maxX, maxY, maxZ))
+            new AABB(minX, minY, minZ, maxX, maxY, maxZ)
         );
     }
 
@@ -252,8 +257,8 @@ public final class RapierNativeWorld implements AutoCloseable {
         world.close();
     }
 
-    private static RcVec3 vec3(double x, double y, double z) {
-        return new RcVec3(x, y, z);
+    private static Vec3 vec3(double x, double y, double z) {
+        return new Vec3(x, y, z);
     }
 
     private void enableCcd(long bodyHandle) {
