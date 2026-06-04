@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import net.minecraft.world.phys.Vec3;
+
 import java.lang.foreign.MemorySegment;
 
 public final class RcColliderBuilder implements AutoCloseable {
@@ -14,7 +16,7 @@ public final class RcColliderBuilder implements AutoCloseable {
         return handle;
     }
 
-    public RcColliderBuilder translation(RcVec3 translation) {
+    public RcColliderBuilder translation(Vec3 translation) {
         RelativityCraftRapier.colliderBuilderSetTranslation(handle, translation);
         return this;
     }

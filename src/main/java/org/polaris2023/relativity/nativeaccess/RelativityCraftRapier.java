@@ -1,5 +1,8 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import net.minecraft.world.phys.AABB;
+import net.minecraft.world.phys.Vec3;
+
 import overrungl.internal.RuntimeHelper;
 
 import java.lang.foreign.Arena;
@@ -23,7 +26,7 @@ public final class RelativityCraftRapier {
         ValueLayout.JAVA_DOUBLE.withName("x"),
         ValueLayout.JAVA_DOUBLE.withName("y"),
         ValueLayout.JAVA_DOUBLE.withName("z")
-    ).withName("RcVec3");
+    ).withName("Vec3");
     static final GroupLayout RC_QUAT = MemoryLayout.structLayout(
         ValueLayout.JAVA_DOUBLE.withName("i"),
         ValueLayout.JAVA_DOUBLE.withName("j"),
@@ -270,7 +273,7 @@ public final class RelativityCraftRapier {
         // Triggers static initialization and native lookup.
     }
 
-    public static RcWorld createWorld(RcVec3 gravity) {
+    public static RcWorld createWorld(Vec3 gravity) {
         try {
             MemorySegment handle = (MemorySegment) RC_WORLD_CREATE.invokeExact(encodeVec3(Arena.ofAuto(), gravity));
             return new RcWorld(handle);
@@ -288,7 +291,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    public static RcColliderBuilder createColliderBuilder(RcShapeType shapeType, RcVec3 shapeData) {
+    public static RcColliderBuilder createColliderBuilder(RcShapeType shapeType, Vec3 shapeData) {
         try {
             MemorySegment handle = (MemorySegment) RC_COLLIDER_BUILDER_CREATE.invokeExact(
                 shapeType.nativeValue(),
@@ -316,7 +319,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void worldSetGravity(MemorySegment world, RcVec3 gravity) {
+    static void worldSetGravity(MemorySegment world, Vec3 gravity) {
         try {
             RC_WORLD_SET_GRAVITY.invokeExact(world, encodeVec3(Arena.ofAuto(), gravity));
         } catch (Throwable t) {
@@ -324,7 +327,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcVec3 worldGetGravity(MemorySegment world) {
+    static Vec3 worldGetGravity(MemorySegment world) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(RC_VEC3);
             RC_WORLD_GET_GRAVITY.invokeExact(world, out);
@@ -375,7 +378,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetTranslation(MemorySegment builder, RcVec3 translation) {
+    static void rigidBodyBuilderSetTranslation(MemorySegment builder, Vec3 translation) {
         try {
             RC_RIGID_BODY_BUILDER_SET_TRANSLATION.invokeExact(builder, encodeVec3(Arena.ofAuto(), translation));
         } catch (Throwable t) {
@@ -383,7 +386,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetRotation(MemorySegment builder, RcVec3 axisAngle) {
+    static void rigidBodyBuilderSetRotation(MemorySegment builder, Vec3 axisAngle) {
         try {
             RC_RIGID_BODY_BUILDER_SET_ROTATION.invokeExact(builder, encodeVec3(Arena.ofAuto(), axisAngle));
         } catch (Throwable t) {
@@ -391,7 +394,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetLinearVelocity(MemorySegment builder, RcVec3 velocity) {
+    static void rigidBodyBuilderSetLinearVelocity(MemorySegment builder, Vec3 velocity) {
         try {
             RC_RIGID_BODY_BUILDER_SET_LINVEL.invokeExact(builder, encodeVec3(Arena.ofAuto(), velocity));
         } catch (Throwable t) {
@@ -399,7 +402,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetAngularVelocity(MemorySegment builder, RcVec3 velocity) {
+    static void rigidBodyBuilderSetAngularVelocity(MemorySegment builder, Vec3 velocity) {
         try {
             RC_RIGID_BODY_BUILDER_SET_ANGVEL.invokeExact(builder, encodeVec3(Arena.ofAuto(), velocity));
         } catch (Throwable t) {
@@ -431,7 +434,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void rigidBodyBuilderSetCanSleep(MemorySegment builder, RcBool canSleep) {
+    static void rigidBodyBuilderSetCanSleep(MemorySegment builder, boolean canSleep) {
         try {
             RC_RIGID_BODY_BUILDER_SET_CAN_SLEEP.invokeExact(builder, encodeBool(Arena.ofAuto(), canSleep));
         } catch (Throwable t) {
@@ -447,19 +450,19 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool worldRemoveRigidBody(MemorySegment world, long handle, RcBool removeAttachedColliders) {
+    static boolean worldRemoveRigidBody(MemorySegment world, long handle, boolean removeAttachedColliders) {
         try {
-            return RcBool.of((byte) RC_WORLD_REMOVE_RIGID_BODY.invokeExact(
-                world,
-                handle,
-                encodeBool(Arena.ofAuto(), removeAttachedColliders)
-            ) != 0);
+            return (byte) RC_WORLD_REMOVE_RIGID_BODY.invokeExact(
+                    world,
+                    handle,
+                    encodeBool(Arena.ofAuto(), removeAttachedColliders)
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_remove_rigid_body", t);
         }
     }
 
-    static RcVec3 rigidBodyGetTranslation(MemorySegment world, long handle) {
+    static Vec3 rigidBodyGetTranslation(MemorySegment world, long handle) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(RC_VEC3);
             RC_RIGID_BODY_GET_TRANSLATION.invokeExact(world, handle, out);
@@ -469,7 +472,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcVec3 rigidBodyGetLinearVelocity(MemorySegment world, long handle) {
+    static Vec3 rigidBodyGetLinearVelocity(MemorySegment world, long handle) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(RC_VEC3);
             RC_RIGID_BODY_GET_LINVEL.invokeExact(world, handle, out);
@@ -489,47 +492,47 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool rigidBodySetPose(MemorySegment world, long handle, RcVec3 translation, RcQuat rotation, RcBool wakeUp) {
+    static boolean rigidBodySetPose(MemorySegment world, long handle, Vec3 translation, RcQuat rotation, boolean wakeUp) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_SET_POSE.invokeExact(
+            return (byte) RC_RIGID_BODY_SET_POSE.invokeExact(
                 world,
                 handle,
                 encodeVec3(Arena.ofAuto(), translation),
                 encodeQuat(Arena.ofAuto(), rotation),
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ) != 0);
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_set_pose", t);
         }
     }
 
-    static RcBool rigidBodySetLinearVelocity(MemorySegment world, long handle, RcVec3 velocity, RcBool wakeUp) {
+    static boolean rigidBodySetLinearVelocity(MemorySegment world, long handle, Vec3 velocity, boolean wakeUp) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_SET_LINVEL.invokeExact(
-                world,
-                handle,
-                encodeVec3(Arena.ofAuto(), velocity),
-                encodeBool(Arena.ofAuto(), wakeUp)
-            ) != 0);
+            return (byte) RC_RIGID_BODY_SET_LINVEL.invokeExact(
+                    world,
+                    handle,
+                    encodeVec3(Arena.ofAuto(), velocity),
+                    encodeBool(Arena.ofAuto(), wakeUp)
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_set_linvel", t);
         }
     }
 
-    static RcBool rigidBodyAddForce(MemorySegment world, long handle, RcVec3 force, RcBool wakeUp) {
+    static boolean rigidBodyAddForce(MemorySegment world, long handle, Vec3 force, boolean wakeUp) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_ADD_FORCE.invokeExact(
+            return (byte) RC_RIGID_BODY_ADD_FORCE.invokeExact(
                 world,
                 handle,
                 encodeVec3(Arena.ofAuto(), force),
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ) != 0);
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_add_force", t);
         }
     }
 
-    static RcBool rigidBodyApplyImpulse(MemorySegment world, long handle, RcVec3 impulse, RcBool wakeUp) {
+    static boolean rigidBodyApplyImpulse(MemorySegment world, long handle, Vec3 impulse, boolean wakeUp) {
         try (Arena arena = Arena.ofConfined()) {
             Object result;
             try {
@@ -552,7 +555,7 @@ public final class RelativityCraftRapier {
                 return decodeBool(segment);
             }
             if (result instanceof Byte value) {
-                return RcBool.of(value != 0);
+                return value != 0;
             }
             throw new IllegalStateException("Unexpected rc_rigid_body_apply_impulse return type: " + result);
         } catch (Throwable t) {
@@ -560,7 +563,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool rigidBodyApplyTorqueImpulse(MemorySegment world, long handle, RcVec3 torqueImpulse, RcBool wakeUp) {
+    static boolean rigidBodyApplyTorqueImpulse(MemorySegment world, long handle, Vec3 torqueImpulse, boolean wakeUp) {
         try (Arena arena = Arena.ofConfined()) {
             Object result;
             try {
@@ -583,7 +586,7 @@ public final class RelativityCraftRapier {
                 return decodeBool(segment);
             }
             if (result instanceof Byte value) {
-                return RcBool.of(value != 0);
+                return value != 0;
             }
             throw new IllegalStateException("Unexpected rc_rigid_body_apply_torque_impulse return type: " + result);
         } catch (Throwable t) {
@@ -591,7 +594,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool rigidBodyEnableCcd(MemorySegment world, long handle, RcBool enabled) {
+    static boolean rigidBodyEnableCcd(MemorySegment world, long handle, boolean enabled) {
         try (Arena arena = Arena.ofConfined()) {
             Object result;
             try {
@@ -603,7 +606,7 @@ public final class RelativityCraftRapier {
                 return decodeBool(segment);
             }
             if (result instanceof Byte value) {
-                return RcBool.of(value != 0);
+                return value != 0;
             }
             throw new IllegalStateException("Unexpected rc_rigid_body_enable_ccd return type: " + result);
         } catch (Throwable t) {
@@ -611,29 +614,29 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool rigidBodySleep(MemorySegment world, long handle) {
+    static boolean rigidBodySleep(MemorySegment world, long handle) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_SLEEP.invokeExact(world, handle) != 0);
+            return (byte) RC_RIGID_BODY_SLEEP.invokeExact(world, handle) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_sleep", t);
         }
     }
 
-    static RcBool rigidBodyWakeUp(MemorySegment world, long handle, RcBool strong) {
+    static boolean rigidBodyWakeUp(MemorySegment world, long handle, boolean strong) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_WAKE_UP.invokeExact(
+            return (byte) RC_RIGID_BODY_WAKE_UP.invokeExact(
                 world,
                 handle,
                 encodeBool(Arena.ofAuto(), strong)
-            ) != 0);
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_wake_up", t);
         }
     }
 
-    static RcBool rigidBodyIsSleeping(MemorySegment world, long handle) {
+    static boolean rigidBodyIsSleeping(MemorySegment world, long handle) {
         try {
-            return RcBool.of((byte) RC_RIGID_BODY_IS_SLEEPING.invokeExact(world, handle) != 0);
+            return (byte) RC_RIGID_BODY_IS_SLEEPING.invokeExact(world, handle) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_is_sleeping", t);
         }
@@ -647,7 +650,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static void colliderBuilderSetTranslation(MemorySegment builder, RcVec3 translation) {
+    static void colliderBuilderSetTranslation(MemorySegment builder, Vec3 translation) {
         try {
             RC_COLLIDER_BUILDER_SET_TRANSLATION.invokeExact(builder, encodeVec3(Arena.ofAuto(), translation));
         } catch (Throwable t) {
@@ -711,13 +714,13 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcBool worldRemoveCollider(MemorySegment world, long handle, RcBool wakeUp) {
+    static boolean worldRemoveCollider(MemorySegment world, long handle, boolean wakeUp) {
         try {
-            return RcBool.of((byte) RC_WORLD_REMOVE_COLLIDER.invokeExact(
+            return (byte) RC_WORLD_REMOVE_COLLIDER.invokeExact(
                 world,
                 handle,
                 encodeBool(Arena.ofAuto(), wakeUp)
-            ) != 0);
+            ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_remove_collider", t);
         }
@@ -725,9 +728,9 @@ public final class RelativityCraftRapier {
 
     static long worldInsertDynamicCuboids(
         MemorySegment world,
-        RcVec3 translation,
+        Vec3 translation,
         RcQuat rotation,
-        RcVec3 linearVelocity,
+        Vec3 linearVelocity,
         double[] cuboids,
         int cuboidCount,
         double density,
@@ -784,7 +787,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static long[] queryIntersectAabbRigidBodies(MemorySegment world, RcAabb aabb) {
+    static long[] queryIntersectAabbRigidBodies(MemorySegment world, AABB aabb) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment encodedAabb = encodeAabb(arena, aabb);
             int count = (int) RC_QUERY_INTERSECT_AABB_RIGID_BODY_COUNT.invokeExact(world, encodedAabb);
@@ -803,7 +806,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static MemorySegment encodeVec3(Arena arena, RcVec3 vec3) {
+    static MemorySegment encodeVec3(Arena arena, Vec3 vec3) {
         MemorySegment segment = arena.allocate(RC_VEC3);
         segment.set(ValueLayout.JAVA_DOUBLE, 0, vec3.x());
         segment.set(ValueLayout.JAVA_DOUBLE, 8, vec3.y());
@@ -820,10 +823,14 @@ public final class RelativityCraftRapier {
         return segment;
     }
 
-    static MemorySegment encodeAabb(Arena arena, RcAabb aabb) {
+    static MemorySegment encodeAabb(Arena arena, AABB aabb) {
         MemorySegment segment = arena.allocate(RC_AABB);
-        encodeVec3(aabb.mins(), segment.asSlice(0, RC_VEC3.byteSize()));
-        encodeVec3(aabb.maxs(), segment.asSlice(RC_VEC3.byteSize(), RC_VEC3.byteSize()));
+        segment.set(ValueLayout.JAVA_DOUBLE, 0, aabb.minX);
+        segment.set(ValueLayout.JAVA_DOUBLE, 8, aabb.minY);
+        segment.set(ValueLayout.JAVA_DOUBLE, 16, aabb.minZ);
+        segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize(), aabb.maxX);
+        segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize() + 8, aabb.maxY);
+        segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize() + 16, aabb.maxZ);
         return segment;
     }
 
@@ -834,14 +841,14 @@ public final class RelativityCraftRapier {
         return segment;
     }
 
-    private static void encodeVec3(RcVec3 vec3, MemorySegment segment) {
+    private static void encodeVec3(Vec3 vec3, MemorySegment segment) {
         segment.set(ValueLayout.JAVA_DOUBLE, 0, vec3.x());
         segment.set(ValueLayout.JAVA_DOUBLE, 8, vec3.y());
         segment.set(ValueLayout.JAVA_DOUBLE, 16, vec3.z());
     }
 
-    static RcVec3 decodeVec3(MemorySegment segment) {
-        return new RcVec3(
+    static Vec3 decodeVec3(MemorySegment segment) {
+        return new Vec3(
                 segment.get(ValueLayout.JAVA_DOUBLE, 0),
                 segment.get(ValueLayout.JAVA_DOUBLE, 8),
                 segment.get(ValueLayout.JAVA_DOUBLE, 16)
@@ -857,14 +864,14 @@ public final class RelativityCraftRapier {
         );
     }
 
-    static MemorySegment encodeBool(Arena arena, RcBool value) {
+    static MemorySegment encodeBool(Arena arena, boolean value) {
         MemorySegment segment = arena.allocate(RC_BOOL);
-        segment.set(ValueLayout.JAVA_BYTE, 0, (byte) (value.value() ? 1 : 0));
+        segment.set(ValueLayout.JAVA_BYTE, 0, (byte) (value ? 1 : 0));
         return segment;
     }
 
-    static RcBool decodeBool(MemorySegment segment) {
-        return RcBool.of(segment.get(ValueLayout.JAVA_BYTE, 0) != 0);
+    static boolean decodeBool(MemorySegment segment) {
+        return segment.get(ValueLayout.JAVA_BYTE, 0) != 0;
     }
 
     private static MethodHandle downcall(String symbol, FunctionDescriptor descriptor) {
