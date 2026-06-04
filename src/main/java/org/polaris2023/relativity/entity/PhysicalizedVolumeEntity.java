@@ -236,19 +236,19 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public float rotationQx() {
-        return this.rotation.x;
+        return this.rotation == null ? 0.0F : this.rotation.x;
     }
 
     public float rotationQy() {
-        return this.rotation.y;
+        return this.rotation == null ? 0.0F : this.rotation.y;
     }
 
     public float rotationQz() {
-        return this.rotation.z;
+        return this.rotation == null ? 0.0F : this.rotation.z;
     }
 
     public float rotationQw() {
-        return this.rotation.w;
+        return this.rotation == null ? 1.0F : this.rotation.w;
     }
 
     public double localOriginX() {
