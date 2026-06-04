@@ -10,6 +10,7 @@ import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.physicalization.BlockRemovalQueue;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
+import org.polaris2023.relativity.registry.ModAttachments;
 import org.polaris2023.relativity.registry.ModCreativeTabs;
 import org.polaris2023.relativity.registry.ModEntityTypes;
 import org.polaris2023.relativity.registry.ModItems;
@@ -47,6 +48,7 @@ public final class RelativityCraft {
     private static final boolean RAPIER_AVAILABLE = loadRapier();
 
     public RelativityCraft(IEventBus modBus) {
+        ModAttachments.register(modBus);
         ModEntityTypes.register(modBus);
         ModItems.register(modBus);
         ModCreativeTabs.register(modBus);

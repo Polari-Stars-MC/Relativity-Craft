@@ -1,18 +1,16 @@
 package org.polaris2023.relativity.entity;
 
+import org.joml.Quaternionf;
+
 import org.polaris2023.relativity.physicalization.BlockBox;
-import org.polaris2023.relativity.material.PhysicsMaterialRegistry;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
-import org.polaris2023.relativity.interaction.PhysicalizedSnapshotBlockGetter;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeLookup;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
+import org.polaris2023.relativity.registry.ModAttachments;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
-import net.minecraft.core.BlockPos;
 import net.minecraft.network.RegistryFriendlyByteBuf;
-import net.minecraft.network.syncher.EntityDataAccessor;
-import net.minecraft.network.syncher.EntityDataSerializers;
 import net.minecraft.network.syncher.SynchedEntityData;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.damagesource.DamageSource;
@@ -26,73 +24,33 @@ import net.minecraft.world.InteractionHand;
 import net.minecraft.world.InteractionResult;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.level.Level;
-import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.storage.ValueInput;
 import net.minecraft.world.level.storage.ValueOutput;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
-import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 import net.neoforged.neoforge.entity.IEntityWithComplexSpawn;
 
-import java.util.ArrayList;
-import java.util.HashMap;
+import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
 import java.util.List;
-import java.util.Map;
 import java.util.UUID;
 
 public final class PhysicalizedVolumeEntity extends Entity implements IEntityWithComplexSpawn {
-    private static final EntityDataAccessor<String> DATA_VOLUME_ID = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.STRING
-    );
-    private static final EntityDataAccessor<Integer> DATA_SIZE_X = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.INT
-    );
-    private static final EntityDataAccessor<Integer> DATA_SIZE_Y = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.INT
-    );
-    private static final EntityDataAccessor<Integer> DATA_SIZE_Z = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.INT
-    );
-    private static final EntityDataAccessor<Integer> DATA_BLOCK_COUNT = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.INT
-    );
-    private static final EntityDataAccessor<Float> DATA_LOCAL_ORIGIN_X = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_LOCAL_ORIGIN_Y = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_LOCAL_ORIGIN_Z = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_QX = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_QY = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_QZ = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-    private static final EntityDataAccessor<Float> DATA_QW = SynchedEntityData.defineId(
-            PhysicalizedVolumeEntity.class,
-            EntityDataSerializers.FLOAT
-    );
-
     private long nativeBodyHandle;
+    private String volumeId = "";
+    private int sizeX = 1;
+    private int sizeY = 1;
+    private int sizeZ = 1;
+    private int blockCount;
+    private float localOriginX = 0.5F;
+    private float localOriginY = 0.5F;
+    private float localOriginZ = 0.5F;
     private PhysicalizedVolumeSnapshot snapshot = PhysicalizedVolumeSnapshot.EMPTY;
+    private final Quaternionf rotation = new Quaternionf();
+    private float syncedRotationQx = 0.0F;
+    private float syncedRotationQy = 0.0F;
+    private float syncedRotationQz = 0.0F;
+    private float syncedRotationQw = 1.0F;
     private float qxOld = 0.0F;
     private float qyOld = 0.0F;
     private float qzOld = 0.0F;
@@ -115,7 +73,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private float cachedMinecraftCollisionBoxesQz;
     private float cachedMinecraftCollisionBoxesQw = 1.0F;
     private PhysicalizedVolumeSnapshot cachedMinecraftCollisionBoxesSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
-    private final Map<Long, Integer> virtualContainerOpenCounts = new HashMap<>();
+    private final Long2IntOpenHashMap virtualContainerOpenCounts = new Long2IntOpenHashMap();
+    private int attachedDataBatchDepth;
+    private boolean attachedDataDirty;
     private static final long CLIENT_VISUAL_INTERPOLATION_NANOS = 50_000_000L;
     private static final double CLIENT_VISUAL_POSITION_EPSILON = 1.0E-5;
     private static final float CLIENT_VISUAL_ROTATION_EPSILON = 1.0E-5F;
@@ -143,39 +103,49 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public void configure(UUID volumeId, BlockBox sourceBox, int blockCount) {
-        this.entityData.set(DATA_VOLUME_ID, volumeId.toString());
-        this.setSizes(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
-        this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
-        this.entityData.set(DATA_BLOCK_COUNT, blockCount);
-        this.refreshDimensions();
+        this.beginAttachedDataBatch();
+        try {
+            this.setVolumeId(volumeId.toString());
+            this.setSizes(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
+            this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
+            this.setBlockCount(blockCount);
+            this.refreshDimensions();
+        } finally {
+            this.endAttachedDataBatch();
+        }
     }
 
     public void configure(UUID volumeId, BlockBox sourceBox, PhysicalizedVolumeSnapshot snapshot) {
-        this.entityData.set(DATA_VOLUME_ID, volumeId.toString());
-        this.setSnapshot(snapshot, false, centerOf(snapshot));
-        this.setSizes(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
-        this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
-        this.refreshDimensions();
+        this.beginAttachedDataBatch();
+        try {
+            this.setVolumeId(volumeId.toString());
+            this.setSnapshot(snapshot, false, centerOf(snapshot));
+            this.setSizes(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
+            this.setLocalOriginToCenter(sourceBox.sizeX(), sourceBox.sizeY(), sourceBox.sizeZ());
+            this.refreshDimensions();
+        } finally {
+            this.endAttachedDataBatch();
+        }
     }
 
     public String volumeIdString() {
-        return this.entityData.get(DATA_VOLUME_ID);
+        return this.volumeId;
     }
 
     public int sizeX() {
-        return positive(this.entityData.get(DATA_SIZE_X));
+        return this.sizeX;
     }
 
     public int sizeY() {
-        return positive(this.entityData.get(DATA_SIZE_Y));
+        return this.sizeY;
     }
 
     public int sizeZ() {
-        return positive(this.entityData.get(DATA_SIZE_Z));
+        return this.sizeZ;
     }
 
     public int blockCount() {
-        return Math.max(0, this.entityData.get(DATA_BLOCK_COUNT));
+        return this.blockCount;
     }
 
     public PhysicalizedVolumeSnapshot snapshot() {
@@ -204,24 +174,26 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return cachedMinecraftCollisionBoxes;
         }
 
-        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(current);
-        List<AABB> boxes = new ArrayList<>();
-        for (PhysicalizedBlockSnapshot cell : current.cells()) {
-            BlockState state = cell.state();
-            if (state.isAir()) {
-                continue;
-            }
-
-            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
-            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
-            if (shape.isEmpty()) {
-                continue;
-            }
-            for (AABB localShapeBox : shape.toAabbs()) {
-                boxes.add(this.localBoxToWorldAabb(localShapeBox.move(localPos)));
-            }
+        List<AABB> localBoxes = current.localCollisionBoxes();
+        if (localBoxes.isEmpty()) {
+            cachedMinecraftCollisionBoxes = List.of();
+            cachedMinecraftCollisionBoxesGameTime = gameTime;
+            cachedMinecraftCollisionBoxesSnapshot = current;
+            cachedMinecraftCollisionBoxesX = this.getX();
+            cachedMinecraftCollisionBoxesY = this.getY();
+            cachedMinecraftCollisionBoxesZ = this.getZ();
+            cachedMinecraftCollisionBoxesQx = this.rotationQx();
+            cachedMinecraftCollisionBoxesQy = this.rotationQy();
+            cachedMinecraftCollisionBoxesQz = this.rotationQz();
+            cachedMinecraftCollisionBoxesQw = this.rotationQw();
+            return cachedMinecraftCollisionBoxes;
         }
-        cachedMinecraftCollisionBoxes = List.copyOf(boxes);
+
+        AABB[] boxes = new AABB[localBoxes.size()];
+        for (int i = 0; i < localBoxes.size(); i++) {
+            boxes[i] = this.localBoxToWorldAabb(localBoxes.get(i));
+        }
+        cachedMinecraftCollisionBoxes = List.of(boxes);
         cachedMinecraftCollisionBoxesGameTime = gameTime;
         cachedMinecraftCollisionBoxesSnapshot = current;
         cachedMinecraftCollisionBoxesX = this.getX();
@@ -264,31 +236,31 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public float rotationQx() {
-        return this.entityData.get(DATA_QX);
+        return this.rotation.x;
     }
 
     public float rotationQy() {
-        return this.entityData.get(DATA_QY);
+        return this.rotation.y;
     }
 
     public float rotationQz() {
-        return this.entityData.get(DATA_QZ);
+        return this.rotation.z;
     }
 
     public float rotationQw() {
-        return this.entityData.get(DATA_QW);
+        return this.rotation.w;
     }
 
     public double localOriginX() {
-        return this.entityData.get(DATA_LOCAL_ORIGIN_X);
+        return this.localOriginX;
     }
 
     public double localOriginY() {
-        return this.entityData.get(DATA_LOCAL_ORIGIN_Y);
+        return this.localOriginY;
     }
 
     public double localOriginZ() {
-        return this.entityData.get(DATA_LOCAL_ORIGIN_Z);
+        return this.localOriginZ;
     }
 
     public double centerOfMassLocalX() {
@@ -480,40 +452,6 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     protected void defineSynchedData(SynchedEntityData.Builder entityData) {
-        entityData.define(DATA_VOLUME_ID, "");
-        entityData.define(DATA_SIZE_X, 1);
-        entityData.define(DATA_SIZE_Y, 1);
-        entityData.define(DATA_SIZE_Z, 1);
-        entityData.define(DATA_BLOCK_COUNT, 0);
-        entityData.define(DATA_LOCAL_ORIGIN_X, 0.5F);
-        entityData.define(DATA_LOCAL_ORIGIN_Y, 0.5F);
-        entityData.define(DATA_LOCAL_ORIGIN_Z, 0.5F);
-        entityData.define(DATA_QX, 0.0F);
-        entityData.define(DATA_QY, 0.0F);
-        entityData.define(DATA_QZ, 0.0F);
-        entityData.define(DATA_QW, 1.0F);
-    }
-
-    @Override
-    public void onSyncedDataUpdated(EntityDataAccessor<?> accessor) {
-        super.onSyncedDataUpdated(accessor);
-        if (DATA_SIZE_X.equals(accessor) || DATA_SIZE_Y.equals(accessor) || DATA_SIZE_Z.equals(accessor)
-                || DATA_LOCAL_ORIGIN_X.equals(accessor) || DATA_LOCAL_ORIGIN_Y.equals(accessor) || DATA_LOCAL_ORIGIN_Z.equals(accessor)) {
-            this.refreshDimensions();
-        }
-    }
-
-    @Override
-    public void onSyncedDataUpdated(List<SynchedEntityData.DataValue<?>> updatedItems) {
-        super.onSyncedDataUpdated(updatedItems);
-        for (SynchedEntityData.DataValue<?> value : updatedItems) {
-            int accessorId = value.id();
-            if (DATA_SIZE_X.id() == accessorId || DATA_SIZE_Y.id() == accessorId || DATA_SIZE_Z.id() == accessorId
-                    || DATA_LOCAL_ORIGIN_X.id() == accessorId || DATA_LOCAL_ORIGIN_Y.id() == accessorId || DATA_LOCAL_ORIGIN_Z.id() == accessorId) {
-                this.refreshDimensions();
-                return;
-            }
-        }
     }
 
     @Override
@@ -609,17 +547,8 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     private LocalBounds occupiedLocalBounds() {
         PhysicalizedVolumeSnapshot current = this.currentSnapshot();
-        if (current.blockCount() <= 0) {
-            return new LocalBounds(0.0, 0.0, 0.0, 1.0, 1.0, 1.0);
-        }
-        return new LocalBounds(
-                current.occupiedMinX(),
-                current.occupiedMinY(),
-                current.occupiedMinZ(),
-                current.occupiedMaxX() + 1.0,
-                current.occupiedMaxY() + 1.0,
-                current.occupiedMaxZ() + 1.0
-        );
+        AABB bounds = current.blockCount() <= 0 ? new AABB(0.0, 0.0, 0.0, 1.0, 1.0, 1.0) : current.occupiedLocalBounds();
+        return new LocalBounds(bounds.minX, bounds.minY, bounds.minZ, bounds.maxX, bounds.maxY, bounds.maxZ);
     }
 
     private void includeLocalCorner(
@@ -683,7 +612,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public boolean isVirtualContainerOpen(PhysicalizedBlockSnapshot cell) {
-        return this.virtualContainerOpenCounts.getOrDefault(packLocal(cell.localX(), cell.localY(), cell.localZ()), 0) > 0;
+        return this.virtualContainerOpenCounts.get(packLocal(cell.localX(), cell.localY(), cell.localZ())) > 0;
     }
 
     @Override
@@ -783,32 +712,37 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     protected void readAdditionalSaveData(ValueInput input) {
-        this.entityData.set(DATA_VOLUME_ID, input.getStringOr("VolumeId", ""));
-        this.setSizes(
-                input.getIntOr("SizeX", 1),
-                input.getIntOr("SizeY", 1),
-                input.getIntOr("SizeZ", 1)
-        );
-        this.setLocalOriginToCenter(this.sizeX(), this.sizeY(), this.sizeZ());
-        this.entityData.set(DATA_BLOCK_COUNT, Math.max(0, input.getIntOr("BlockCount", 0)));
-        this.setPhysicsRotation(
-                input.getFloatOr("Qx", 0.0F),
-                input.getFloatOr("Qy", 0.0F),
-                input.getFloatOr("Qz", 0.0F),
-                input.getFloatOr("Qw", 1.0F)
-        );
-        this.updatePreviousPhysicsRotation();
-        this.snapshot = PhysicalizedVolumeSnapshot.read(input);
-        if (this.snapshot.blockCount() > 0) {
-            this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
-            this.entityData.set(DATA_BLOCK_COUNT, this.snapshot.blockCount());
+        this.beginAttachedDataBatch();
+        try {
+            this.setVolumeId(input.getStringOr("VolumeId", ""));
+            this.setSizes(
+                    input.getIntOr("SizeX", 1),
+                    input.getIntOr("SizeY", 1),
+                    input.getIntOr("SizeZ", 1)
+            );
+            this.setLocalOriginToCenter(this.sizeX(), this.sizeY(), this.sizeZ());
+            this.setBlockCount(input.getIntOr("BlockCount", 0));
+            this.setPhysicsRotation(
+                    input.getFloatOr("Qx", 0.0F),
+                    input.getFloatOr("Qy", 0.0F),
+                    input.getFloatOr("Qz", 0.0F),
+                    input.getFloatOr("Qw", 1.0F)
+            );
+            this.updatePreviousPhysicsRotation();
+            this.snapshot = PhysicalizedVolumeSnapshot.read(input);
+            if (this.snapshot.blockCount() > 0) {
+                this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
+                this.setBlockCount(this.snapshot.blockCount());
+            }
+            this.setLocalOrigin(
+                    input.getFloatOr("LocalOriginX", (float) centerX(this.snapshot)),
+                    input.getFloatOr("LocalOriginY", (float) centerY(this.snapshot)),
+                    input.getFloatOr("LocalOriginZ", (float) centerZ(this.snapshot))
+            );
+            this.refreshDimensions();
+        } finally {
+            this.endAttachedDataBatch();
         }
-        this.setLocalOrigin(
-                input.getFloatOr("LocalOriginX", (float) centerX(this.snapshot)),
-                input.getFloatOr("LocalOriginY", (float) centerY(this.snapshot)),
-                input.getFloatOr("LocalOriginZ", (float) centerZ(this.snapshot))
-        );
-        this.refreshDimensions();
     }
 
     @Override
@@ -861,9 +795,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private void setSizes(int sizeX, int sizeY, int sizeZ) {
-        this.entityData.set(DATA_SIZE_X, positive(sizeX));
-        this.entityData.set(DATA_SIZE_Y, positive(sizeY));
-        this.entityData.set(DATA_SIZE_Z, positive(sizeZ));
+        this.sizeX = positive(sizeX);
+        this.sizeY = positive(sizeY);
+        this.sizeZ = positive(sizeZ);
+        this.syncAttachedData();
     }
 
     private void setLocalOriginToCenter(int sizeX, int sizeY, int sizeZ) {
@@ -871,9 +806,92 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private void setLocalOrigin(double x, double y, double z) {
-        this.entityData.set(DATA_LOCAL_ORIGIN_X, (float) x);
-        this.entityData.set(DATA_LOCAL_ORIGIN_Y, (float) y);
-        this.entityData.set(DATA_LOCAL_ORIGIN_Z, (float) z);
+        this.localOriginX = (float) x;
+        this.localOriginY = (float) y;
+        this.localOriginZ = (float) z;
+        this.syncAttachedData();
+    }
+
+    private void setVolumeId(String volumeId) {
+        this.volumeId = volumeId == null ? "" : volumeId;
+        this.syncAttachedData();
+    }
+
+    private void setBlockCount(int blockCount) {
+        this.blockCount = Math.max(0, blockCount);
+        this.syncAttachedData();
+    }
+
+    public void applyAttachedData(AttachedData data) {
+        AttachedData current = data == null ? AttachedData.DEFAULT : data;
+        this.volumeId = current.volumeId();
+        this.sizeX = positive(current.sizeX());
+        this.sizeY = positive(current.sizeY());
+        this.sizeZ = positive(current.sizeZ());
+        this.blockCount = Math.max(0, current.blockCount());
+        this.localOriginX = current.localOriginX();
+        this.localOriginY = current.localOriginY();
+        this.localOriginZ = current.localOriginZ();
+        this.syncedRotationQx = current.qx();
+        this.syncedRotationQy = current.qy();
+        this.syncedRotationQz = current.qz();
+        this.syncedRotationQw = current.qw();
+        this.rotation.set(current.qx(), current.qy(), current.qz(), current.qw()).normalize();
+        this.refreshDimensions();
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
+    }
+
+    private void syncRotationData(float qx, float qy, float qz, float qw) {
+        if (syncedRotationQx == qx && syncedRotationQy == qy && syncedRotationQz == qz && syncedRotationQw == qw) {
+            return;
+        }
+        syncedRotationQx = qx;
+        syncedRotationQy = qy;
+        syncedRotationQz = qz;
+        syncedRotationQw = qw;
+        this.syncAttachedData();
+    }
+
+    private void syncAttachedData() {
+        if (this.attachedDataBatchDepth > 0) {
+            this.attachedDataDirty = true;
+            return;
+        }
+        AttachedData data = this.attachedData();
+        if (data.equals(this.getExistingDataOrNull(ModAttachments.PHYSICALIZED_VOLUME_DATA))) {
+            return;
+        }
+        this.setData(ModAttachments.PHYSICALIZED_VOLUME_DATA, data);
+    }
+
+    private void beginAttachedDataBatch() {
+        this.attachedDataBatchDepth++;
+    }
+
+    private void endAttachedDataBatch() {
+        this.attachedDataBatchDepth--;
+        if (this.attachedDataBatchDepth > 0 || !this.attachedDataDirty) {
+            return;
+        }
+        this.attachedDataDirty = false;
+        this.syncAttachedData();
+    }
+
+    private AttachedData attachedData() {
+        return new AttachedData(
+                this.volumeId,
+                this.sizeX,
+                this.sizeY,
+                this.sizeZ,
+                this.blockCount,
+                this.localOriginX,
+                this.localOriginY,
+                this.localOriginZ,
+                this.rotationQx(),
+                this.rotationQy(),
+                this.rotationQz(),
+                this.rotationQw()
+        );
     }
 
     private void setPhysicsRotation(float qx, float qy, float qz, float qw) {
@@ -890,10 +908,8 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             qz *= invLength;
             qw *= invLength;
         }
-        this.entityData.set(DATA_QX, qx);
-        this.entityData.set(DATA_QY, qy);
-        this.entityData.set(DATA_QZ, qz);
-        this.entityData.set(DATA_QW, qw);
+        this.rotation.set(qx, qy, qz, qw);
+        this.syncRotationData(qx, qy, qz, qw);
     }
 
     private Vec3 entityCenterForPhysicsCenter(Vec3 physicsCenter) {
@@ -935,22 +951,27 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private void setSnapshot(PhysicalizedVolumeSnapshot snapshot, boolean syncToTrackingClients, Vec3 localOrigin) {
-        this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
-        this.cachedMinecraftCollisionBoxesGameTime = Long.MIN_VALUE;
-        this.cachedMinecraftCollisionBoxes = List.of();
-        this.cachedMinecraftCollisionBoxesSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
-        this.recomputeCenterOfMass();
-        this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
-        if (localOrigin != null) {
-            this.setLocalOrigin(localOrigin.x, localOrigin.y, localOrigin.z);
-        }
-        this.entityData.set(DATA_BLOCK_COUNT, this.snapshot.blockCount());
-        this.refreshDimensions();
-        if (this.discardIfEmpty()) {
-            return;
-        }
-        if (syncToTrackingClients && !this.level().isClientSide()) {
-            PhysicalizedInteractionNetwork.sendSnapshot(this);
+        this.beginAttachedDataBatch();
+        try {
+            this.snapshot = snapshot == null ? PhysicalizedVolumeSnapshot.EMPTY : snapshot;
+            this.cachedMinecraftCollisionBoxesGameTime = Long.MIN_VALUE;
+            this.cachedMinecraftCollisionBoxes = List.of();
+            this.cachedMinecraftCollisionBoxesSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
+            this.recomputeCenterOfMass();
+            this.setSizes(this.snapshot.sizeX(), this.snapshot.sizeY(), this.snapshot.sizeZ());
+            if (localOrigin != null) {
+                this.setLocalOrigin(localOrigin.x, localOrigin.y, localOrigin.z);
+            }
+            this.setBlockCount(this.snapshot.blockCount());
+            this.refreshDimensions();
+            if (this.discardIfEmpty()) {
+                return;
+            }
+            if (syncToTrackingClients && !this.level().isClientSide()) {
+                PhysicalizedInteractionNetwork.sendSnapshot(this);
+            }
+        } finally {
+            this.endAttachedDataBatch();
         }
     }
 
@@ -1016,40 +1037,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private void recomputeCenterOfMass() {
-        if (snapshot.blockCount() <= 0) {
-            centerOfMassLocalX = 0.5;
-            centerOfMassLocalY = 0.5;
-            centerOfMassLocalZ = 0.5;
-            estimatedPhysicsMass = 1.0;
-            return;
-        }
-
-        double totalMass = 0.0;
-        double weightedX = 0.0;
-        double weightedY = 0.0;
-        double weightedZ = 0.0;
-        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
-            if (cell.state().isAir()) {
-                continue;
-            }
-            double density = Math.max(0.05, PhysicsMaterialRegistry.INSTANCE.materialFor(cell.state()).density());
-            totalMass += density;
-            weightedX += (cell.localX() + 0.5) * density;
-            weightedY += (cell.localY() + 0.5) * density;
-            weightedZ += (cell.localZ() + 0.5) * density;
-        }
-
-        if (totalMass <= 0.0) {
-            centerOfMassLocalX = snapshot.occupiedCenterX();
-            centerOfMassLocalY = snapshot.occupiedCenterY();
-            centerOfMassLocalZ = snapshot.occupiedCenterZ();
-            estimatedPhysicsMass = Math.max(1.0, snapshot.blockCount());
-            return;
-        }
-        centerOfMassLocalX = weightedX / totalMass;
-        centerOfMassLocalY = weightedY / totalMass;
-        centerOfMassLocalZ = weightedZ / totalMass;
-        estimatedPhysicsMass = totalMass;
+        centerOfMassLocalX = snapshot.centerOfMassLocalX();
+        centerOfMassLocalY = snapshot.centerOfMassLocalY();
+        centerOfMassLocalZ = snapshot.centerOfMassLocalZ();
+        estimatedPhysicsMass = snapshot.estimatedPhysicsMass();
     }
 
     private boolean clientVisualTargetChanged(Vec3 targetPosition, float qx, float qy, float qz, float qw) {
@@ -1122,6 +1113,55 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public record ClientVisualPose(Vec3 position, float qx, float qy, float qz, float qw) {
+    }
+
+    public record AttachedData(
+            String volumeId,
+            int sizeX,
+            int sizeY,
+            int sizeZ,
+            int blockCount,
+            float localOriginX,
+            float localOriginY,
+            float localOriginZ,
+            float qx,
+            float qy,
+            float qz,
+            float qw
+    ) {
+        public static final AttachedData DEFAULT = new AttachedData("", 1, 1, 1, 0, 0.5F, 0.5F, 0.5F, 0.0F, 0.0F, 0.0F, 1.0F);
+
+        public void write(RegistryFriendlyByteBuf buffer) {
+            buffer.writeUtf(volumeId);
+            buffer.writeVarInt(sizeX);
+            buffer.writeVarInt(sizeY);
+            buffer.writeVarInt(sizeZ);
+            buffer.writeVarInt(blockCount);
+            buffer.writeFloat(localOriginX);
+            buffer.writeFloat(localOriginY);
+            buffer.writeFloat(localOriginZ);
+            buffer.writeFloat(qx);
+            buffer.writeFloat(qy);
+            buffer.writeFloat(qz);
+            buffer.writeFloat(qw);
+        }
+
+        public static AttachedData read(RegistryFriendlyByteBuf buffer) {
+            return new AttachedData(
+                    buffer.readUtf(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readVarInt(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat(),
+                    buffer.readFloat()
+            );
+        }
     }
 
     public record WorldCollisionContact(double pointX, double pointY, double pointZ, double penetration, double supportArea) {
