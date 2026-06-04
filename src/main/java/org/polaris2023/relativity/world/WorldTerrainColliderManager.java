@@ -3,16 +3,15 @@ package org.polaris2023.relativity.world;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
 
-import java.util.List;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 
 public final class WorldTerrainColliderManager {
     private final RapierNativeWorld world;
-    private final Map<ChunkSectionKey, List<Long>> terrainBodies = new ConcurrentHashMap<>();
+    private final Object2LongOpenHashMap<ChunkSectionKey> terrainBodies = new Object2LongOpenHashMap<>();
 
     public WorldTerrainColliderManager(RapierNativeWorld world) {
         this.world = world;
+        terrainBodies.defaultReturnValue(0L);
     }
 
     public void replaceSectionMesh(ChunkSectionKey key, double[] vertices, int[] indices) {
@@ -23,17 +22,15 @@ public final class WorldTerrainColliderManager {
 
         long handle = world.addStaticTriMesh(vertices, indices, 0.75, 0.05);
         if (handle != 0L) {
-            terrainBodies.put(key, List.of(handle));
+            terrainBodies.put(key, handle);
         }
     }
 
     public void removeSection(ChunkSectionKey key) {
-        List<Long> existing = terrainBodies.remove(key);
-        if (existing == null) {
+        long handle = terrainBodies.removeLong(key);
+        if (handle == 0L) {
             return;
         }
-        for (long handle : existing) {
-            world.removeBody(handle);
-        }
+        world.removeBody(handle);
     }
 }

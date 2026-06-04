@@ -39,19 +39,26 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
+import it.unimi.dsi.fastutil.objects.Object2FloatOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicalizedInteractionHandler {
-    private static final Map<BreakKey, Float> BREAK_PROGRESS = new ConcurrentHashMap<>();
-    private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new ConcurrentHashMap<>();
-    private static final Map<UUID, BreakAttempt> LAST_BREAK_ATTEMPT = new ConcurrentHashMap<>();
-    private static final Map<UUID, Long> LAST_CREATIVE_BREAK_TICK = new ConcurrentHashMap<>();
-    private static final Map<UUID, CreativePlacementStamp> RECENT_CREATIVE_PLACEMENTS = new ConcurrentHashMap<>();
+    private static final Object2FloatOpenHashMap<BreakKey> BREAK_PROGRESS = new Object2FloatOpenHashMap<>();
+    private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new Object2ObjectOpenHashMap<>();
+    private static final Map<UUID, BreakAttempt> LAST_BREAK_ATTEMPT = new Object2ObjectOpenHashMap<>();
+    private static final Object2LongOpenHashMap<UUID> LAST_CREATIVE_BREAK_TICK = new Object2LongOpenHashMap<>();
+    private static final Map<UUID, CreativePlacementStamp> RECENT_CREATIVE_PLACEMENTS = new Object2ObjectOpenHashMap<>();
+
+    static {
+        BREAK_PROGRESS.defaultReturnValue(0.0F);
+        LAST_CREATIVE_BREAK_TICK.defaultReturnValue(Long.MIN_VALUE);
+    }
 
     private PhysicalizedInteractionHandler() {
     }
@@ -109,7 +116,7 @@ public final class PhysicalizedInteractionHandler {
 
         boolean creative = player.gameMode.isCreative();
         long gameTime = level.getGameTime();
-        if (creative && LAST_CREATIVE_BREAK_TICK.getOrDefault(player.getUUID(), Long.MIN_VALUE) == gameTime) {
+        if (creative && LAST_CREATIVE_BREAK_TICK.getLong(player.getUUID()) == gameTime) {
             return true;
         }
 
@@ -128,7 +135,7 @@ public final class PhysicalizedInteractionHandler {
             state.attack(level, hit.visualBlockPos(), player);
         }
 
-        float progress = creative ? 1.0F : BREAK_PROGRESS.getOrDefault(key, 0.0F)
+        float progress = creative ? 1.0F : BREAK_PROGRESS.getFloat(key)
                 + state.getDestroyProgress(player, level, hit.visualBlockPos());
 
         if (progress < 1.0F) {
@@ -140,7 +147,7 @@ public final class PhysicalizedInteractionHandler {
         }
 
         BREAK_PROGRESS.remove(key);
-        ACTIVE_BREAKS.remove(player.getUUID(), key);
+        removeActiveBreak(player.getUUID(), key);
         level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), -1);
         PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, -1);
         destroyPhysicalizedCell(level, player, hit);
@@ -164,7 +171,7 @@ public final class PhysicalizedInteractionHandler {
 
         BreakKey key = new BreakKey(player.getUUID(), target.getId(), cell.localX(), cell.localY(), cell.localZ());
         if (!player.gameMode.isCreative()) {
-            float progress = BREAK_PROGRESS.getOrDefault(key, 0.0F)
+            float progress = BREAK_PROGRESS.getFloat(key)
                     + state.getDestroyProgress(player, level, hit.visualBlockPos());
             if (progress < 1.0F) {
                 BREAK_PROGRESS.put(key, progress);
@@ -176,7 +183,7 @@ public final class PhysicalizedInteractionHandler {
         }
 
         BREAK_PROGRESS.remove(key);
-        ACTIVE_BREAKS.remove(player.getUUID(), key);
+        removeActiveBreak(player.getUUID(), key);
         LAST_BREAK_ATTEMPT.remove(player.getUUID());
         level.destroyBlockProgress(player.getId(), hit.visualBlockPos(), -1);
         PhysicalizedInteractionNetwork.sendBreakOverlay(target, cell, -1);
@@ -640,14 +647,19 @@ public final class PhysicalizedInteractionHandler {
             return false;
         }
 
-        return level.getEntities(volume, queryBox, candidate ->
+        for (var candidate : level.getEntities(volume, queryBox, candidate ->
                 candidate != volume
                         && !(candidate instanceof PhysicalizedVolumeEntity)
                         && candidate.isAlive()
                         && !candidate.noPhysics
                         && EntitySelector.NO_SPECTATORS.test(candidate)
                         && candidate.canBeCollidedWith(volume)
-        ).stream().anyMatch(candidate -> intersectsAny(candidate.getBoundingBox(), placementBoxes));
+        )) {
+            if (intersectsAny(candidate.getBoundingBox(), placementBoxes)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public static boolean wouldPhysicalizedPlacementCollideWithWorld(
@@ -764,6 +776,13 @@ public final class PhysicalizedInteractionHandler {
         if (level.getEntity(key.entityId()) instanceof PhysicalizedVolumeEntity volume) {
             volume.snapshot().cellAt(key.localX(), key.localY(), key.localZ())
                     .ifPresent(cell -> PhysicalizedInteractionNetwork.sendBreakOverlay(volume, cell, -1));
+        }
+    }
+
+    private static void removeActiveBreak(UUID playerId, BreakKey key) {
+        BreakKey current = ACTIVE_BREAKS.get(playerId);
+        if (key.equals(current)) {
+            ACTIVE_BREAKS.remove(playerId);
         }
     }
 

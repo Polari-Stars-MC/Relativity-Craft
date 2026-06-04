@@ -1,12 +1,12 @@
 package org.polaris2023.relativity.physicalization;
 
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class ChunkOccupancyIndex {
-    private final Map<ChunkSectionKey, SectionOccupancy> sections = new ConcurrentHashMap<>();
+    private final Map<ChunkSectionKey, SectionOccupancy> sections = new Object2ObjectOpenHashMap<>();
     public void setBlock(String dimensionId, int x, int y, int z, boolean occupied, int materialId) {
         ChunkSectionKey key = ChunkSectionKey.containing(dimensionId, x, y, z);
         SectionOccupancy occupancy = sections.computeIfAbsent(key, ignored -> new SectionOccupancy());

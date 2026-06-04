@@ -44,32 +44,39 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
+import it.unimi.dsi.fastutil.objects.Object2IntOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.ConcurrentHashMap;
+import java.util.function.Consumer;
 
 public final class PhysicalizedRedstoneMapping {
     private static final PhysicalizedRedstoneMapping GLOBAL = new PhysicalizedRedstoneMapping();
+    private static final Direction[] DIRECTIONS = Direction.values();
     private static final double VIRTUAL_CELL_QUERY_EPSILON = 0.125;
     private static final AABB PRESSURE_PLATE_TOUCH_AABB = new AABB(1.0 / 16.0, 0.0, 1.0 / 16.0, 15.0 / 16.0, 4.0 / 16.0, 15.0 / 16.0);
     private static final int REDSTONE_RECOMPUTE_LIMIT = 16;
     private static final long MOVING_REDSTONE_RECOMPUTE_INTERVAL_TICKS = 4L;
     private static final int MAX_PISTON_PUSH = 12;
 
-    private final Map<CellKey, RedstoneAttachment> attachments = new ConcurrentHashMap<>();
-    private final Map<String, Integer> volumePower = new ConcurrentHashMap<>();
-    private final Map<CellKey, Set<BlockPos>> lastVirtualSignalNeighborhoods = new ConcurrentHashMap<>();
-    private final Map<CellKey, Long> virtualButtonReleases = new ConcurrentHashMap<>();
-    private final Map<CellKey, Long> virtualObserverReleases = new ConcurrentHashMap<>();
-    private final Map<CellKey, Integer> lastObservedStates = new ConcurrentHashMap<>();
-    private final Map<String, VirtualFeatureProfile> virtualProfiles = new ConcurrentHashMap<>();
-    private final Map<String, RedstonePose> lastRedstonePoses = new ConcurrentHashMap<>();
+    private final Map<CellKey, RedstoneAttachment> attachments = new Object2ObjectOpenHashMap<>();
+    private final Object2IntOpenHashMap<String> volumePower = new Object2IntOpenHashMap<>();
+    private final Map<CellKey, Set<BlockPos>> lastVirtualSignalNeighborhoods = new Object2ObjectOpenHashMap<>();
+    private final Object2LongOpenHashMap<CellKey> virtualButtonReleases = new Object2LongOpenHashMap<>();
+    private final Object2LongOpenHashMap<CellKey> virtualObserverReleases = new Object2LongOpenHashMap<>();
+    private final Object2IntOpenHashMap<CellKey> lastObservedStates = new Object2IntOpenHashMap<>();
+    private final Map<String, VirtualFeatureProfile> virtualProfiles = new Object2ObjectOpenHashMap<>();
+    private final Map<String, RedstonePose> lastRedstonePoses = new Object2ObjectOpenHashMap<>();
 
     private PhysicalizedRedstoneMapping() {
+        volumePower.defaultReturnValue(0);
+        lastObservedStates.defaultReturnValue(Integer.MIN_VALUE);
     }
 
     public static PhysicalizedRedstoneMapping global() {
@@ -169,7 +176,7 @@ public final class PhysicalizedRedstoneMapping {
             notifyVirtualCellNeighborhoodIfMoved(level, entity, cell);
             notifyProjectedVirtualNeighborhood(level, mapping, cell, cell.state());
         });
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             entity.snapshot().cellAt(localX + direction.getStepX(), localY + direction.getStepY(), localZ + direction.getStepZ())
                     .ifPresent(cell -> notifyProjectedVirtualNeighborhood(level, mapping, cell, cell.state()));
         }
@@ -179,12 +186,15 @@ public final class PhysicalizedRedstoneMapping {
         releaseVirtualButtons(level);
         releaseVirtualObservers(level);
         tickVirtualBlocks(level);
-        for (Map.Entry<CellKey, RedstoneAttachment> entry : attachments.entrySet()) {
+        Iterator<Map.Entry<CellKey, RedstoneAttachment>> iterator = attachments.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<CellKey, RedstoneAttachment> entry = iterator.next();
+            CellKey key = entry.getKey();
             RedstoneAttachment attachment = entry.getValue();
             Entity entity = level.getEntity(attachment.entityId());
             if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) {
-                attachments.remove(entry.getKey());
-                lastVirtualSignalNeighborhoods.remove(entry.getKey());
+                iterator.remove();
+                lastVirtualSignalNeighborhoods.remove(key);
                 continue;
             }
 
@@ -195,24 +205,24 @@ public final class PhysicalizedRedstoneMapping {
                     level.destroyBlock(pos, true);
                     PhysicsWorldManager.global().markBlockNeighborhoodChanged(level, pos);
                 }
-                attachments.remove(entry.getKey());
-                lastVirtualSignalNeighborhoods.remove(entry.getKey());
+                iterator.remove();
+                lastVirtualSignalNeighborhoods.remove(key);
                 continue;
             }
 
             BlockState currentState = level.getBlockState(attachment.worldPos());
             if (currentState.isAir()) {
-                attachments.remove(entry.getKey());
-                lastVirtualSignalNeighborhoods.remove(entry.getKey());
+                iterator.remove();
+                lastVirtualSignalNeighborhoods.remove(key);
                 continue;
             }
 
             int signal = strongestSignal(level, attachment.worldPos(), currentState);
             if (currentState != attachment.state() || signal != attachment.signal()) {
-                attachments.put(entry.getKey(), new RedstoneAttachment(attachment.entityId(), attachment.worldPos(), currentState, signal));
+                entry.setValue(new RedstoneAttachment(attachment.entityId(), attachment.worldPos(), currentState, signal));
                 notifyRedstoneNeighborhood(level, attachment.worldPos(), currentState);
             }
-            volume.snapshot().cellAt(entry.getKey().localX(), entry.getKey().localY(), entry.getKey().localZ())
+            volume.snapshot().cellAt(key.localX(), key.localY(), key.localZ())
                     .ifPresent(cell -> notifyVirtualCellNeighborhoodIfMoved(level, volume, cell));
         }
         recomputeVolumePower();
@@ -236,13 +246,15 @@ public final class PhysicalizedRedstoneMapping {
 
     private void releaseVirtualButtons(ServerLevel level) {
         long gameTime = level.getGameTime();
-        for (Map.Entry<CellKey, Long> entry : virtualButtonReleases.entrySet()) {
+        Iterator<Map.Entry<CellKey, Long>> iterator = virtualButtonReleases.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<CellKey, Long> entry = iterator.next();
             if (entry.getValue() > gameTime) {
                 continue;
             }
 
             CellKey key = entry.getKey();
-            virtualButtonReleases.remove(key);
+            iterator.remove();
             PhysicalizedVolumeEntity volume = findVolume(level, key);
             if (volume == null) {
                 continue;
@@ -261,13 +273,15 @@ public final class PhysicalizedRedstoneMapping {
 
     private void releaseVirtualObservers(ServerLevel level) {
         long gameTime = level.getGameTime();
-        for (Map.Entry<CellKey, Long> entry : virtualObserverReleases.entrySet()) {
+        Iterator<Map.Entry<CellKey, Long>> iterator = virtualObserverReleases.entrySet().iterator();
+        while (iterator.hasNext()) {
+            Map.Entry<CellKey, Long> entry = iterator.next();
             if (entry.getValue() > gameTime) {
                 continue;
             }
 
             CellKey key = entry.getKey();
-            virtualObserverReleases.remove(key);
+            iterator.remove();
             PhysicalizedVolumeEntity volume = findVolume(level, key);
             if (volume == null) {
                 continue;
@@ -379,8 +393,12 @@ public final class PhysicalizedRedstoneMapping {
             BlockPos observedPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ()).relative(facing);
             int observedState = observedStateId(level, mapping, states, observedPos);
             CellKey key = CellKey.of(volume, cell);
-            Integer previous = lastObservedStates.putIfAbsent(key, observedState);
-            if (previous == null || previous == observedState || state.getValue(BlockStateProperties.POWERED)) {
+            if (!lastObservedStates.containsKey(key)) {
+                lastObservedStates.put(key, observedState);
+                continue;
+            }
+            int previous = lastObservedStates.getInt(key);
+            if (previous == observedState || state.getValue(BlockStateProperties.POWERED)) {
                 continue;
             }
 
@@ -704,7 +722,7 @@ public final class PhysicalizedRedstoneMapping {
             BlockPos pistonPos,
             Direction pushDirection
     ) {
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             if (direction != pushDirection && signalAt(states, localLevel, pistonPos.relative(direction), direction) > 0) {
                 return true;
             }
@@ -719,7 +737,7 @@ public final class PhysicalizedRedstoneMapping {
         }
 
         BlockPos above = pistonPos.above();
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             if (direction != Direction.DOWN && signalAt(states, localLevel, above.relative(direction), direction) > 0) {
                 return true;
             }
@@ -847,7 +865,7 @@ public final class PhysicalizedRedstoneMapping {
 
     private static int strongestSignal(ServerLevel level, BlockPos pos, BlockState state) {
         int signal = 0;
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             signal = Math.max(signal, state.getSignal(level, pos, direction));
             signal = Math.max(signal, state.getDirectSignal(level, pos, direction));
         }
@@ -856,7 +874,7 @@ public final class PhysicalizedRedstoneMapping {
 
     private static void notifyRedstoneNeighborhood(ServerLevel level, BlockPos pos, BlockState state) {
         level.updateNeighborsAt(pos, state.getBlock());
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             level.updateNeighborsAt(pos.relative(direction), state.getBlock());
         }
     }
@@ -877,7 +895,7 @@ public final class PhysicalizedRedstoneMapping {
         VirtualCell virtualCell = new VirtualCell(entity, cell, mapping);
         signal = Math.max(signal, strongestProjectedVirtualSignal(level, virtualCell, false));
         signal = Math.max(signal, strongestProjectedVirtualSignal(level, virtualCell, true));
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             BlockPos neighborPos = localPos.relative(direction);
             BlockState neighborState = stateAt(states, neighborPos);
             if (neighborState.isAir() || neighborState.is(Blocks.REDSTONE_WIRE)) {
@@ -1108,19 +1126,36 @@ public final class PhysicalizedRedstoneMapping {
             return null;
         }
 
-        AABB queryBox = new AABB(pos).inflate(VIRTUAL_CELL_QUERY_EPSILON);
-        List<PhysicalizedVolumeEntity> candidates = candidatesAt(worldLevel, queryBox);
-        VirtualCell best = null;
-        double bestDistance = Double.POSITIVE_INFINITY;
+        VirtualCellSearch search = new VirtualCellSearch(pos, new AABB(pos).inflate(VIRTUAL_CELL_QUERY_EPSILON));
+        forEachCandidateAt(worldLevel, search.queryBox(), search::visit);
+        return search.best();
+    }
 
-        for (PhysicalizedVolumeEntity entity : candidates) {
-            if (entity.isRemoved()) {
-                continue;
+    private static final class VirtualCellSearch {
+        private final BlockPos pos;
+        private final AABB queryBox;
+        private VirtualCell best;
+        private double bestDistance = Double.POSITIVE_INFINITY;
+
+        private VirtualCellSearch(BlockPos pos, AABB queryBox) {
+            this.pos = pos;
+            this.queryBox = queryBox;
+        }
+
+        private AABB queryBox() {
+            return queryBox;
+        }
+
+        private void visit(PhysicalizedVolumeEntity entity) {
+            if (bestDistance == 0.0) {
+                return;
             }
             PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
             PhysicalizedBlockSnapshot mappedCell = mapping.cellAtWorldBlock(pos).orElse(null);
             if (mappedCell != null && !mappedCell.state().isAir()) {
-                return new VirtualCell(entity, mappedCell, mapping);
+                best = new VirtualCell(entity, mappedCell, mapping);
+                bestDistance = 0.0;
+                return;
             }
 
             PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
@@ -1132,7 +1167,7 @@ public final class PhysicalizedRedstoneMapping {
             int maxY = Math.min(snapshot.occupiedMaxY(), Mth.floor(localQuery.maxY));
             int maxZ = Math.min(snapshot.occupiedMaxZ(), Mth.floor(localQuery.maxZ));
             if (minX > maxX || minY > maxY || minZ > maxZ) {
-                continue;
+                return;
             }
 
             for (int y = minY; y <= maxY; y++) {
@@ -1143,7 +1178,9 @@ public final class PhysicalizedRedstoneMapping {
                             continue;
                         }
                         if (mapping.visualBlockPos(cell).equals(pos)) {
-                            return new VirtualCell(entity, cell, mapping);
+                            best = new VirtualCell(entity, cell, mapping);
+                            bestDistance = 0.0;
+                            return;
                         }
 
                         AABB worldCellBox = mapping.worldAabbOfLocal(new AABB(
@@ -1167,25 +1204,26 @@ public final class PhysicalizedRedstoneMapping {
                 }
             }
         }
-        return best;
+
+        private VirtualCell best() {
+            return best;
+        }
     }
 
-    private static List<PhysicalizedVolumeEntity> candidatesAt(Level level, AABB queryBox) {
-        List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
-        if (level instanceof ServerLevel serverLevel) {
-            candidates.addAll(PhysicsWorldManager.global().queryVolumes(serverLevel, queryBox));
+    private static void forEachCandidateAt(Level level, AABB queryBox, Consumer<PhysicalizedVolumeEntity> visitor) {
+        it.unimi.dsi.fastutil.ints.IntSet visited = new it.unimi.dsi.fastutil.ints.IntOpenHashSet();
+        PhysicalizedVolumeLookup.forEachLoadedVolume(level, queryBox, 2.0, entity -> visitCandidate(entity, visited, visitor));
+    }
+
+    private static void visitCandidate(PhysicalizedVolumeEntity entity, it.unimi.dsi.fastutil.ints.IntSet visited, Consumer<PhysicalizedVolumeEntity> visitor) {
+        if (!entity.isRemoved() && entity.snapshot().blockCount() > 0 && visited.add(entity.getId())) {
+            visitor.accept(entity);
         }
-        for (PhysicalizedVolumeEntity entity : level.getEntitiesOfClass(PhysicalizedVolumeEntity.class, queryBox.inflate(2.0))) {
-            if (!candidates.contains(entity)) {
-                candidates.add(entity);
-            }
-        }
-        return candidates;
     }
 
     private static int strongestAdjacentLocalSignal(VirtualCell virtualCell, BlockPos localPos, boolean direct) {
         int signal = 0;
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             BlockPos neighborPos = localPos.relative(direction);
             PhysicalizedBlockSnapshot neighbor = virtualCell.entity()
                     .snapshot()
@@ -1202,7 +1240,7 @@ public final class PhysicalizedRedstoneMapping {
 
     private static int strongestProjectedVirtualSignal(BlockGetter level, VirtualCell virtualCell, boolean direct) {
         int signal = 0;
-        for (Direction localDirection : Direction.values()) {
+        for (Direction localDirection : DIRECTIONS) {
             BlockPos neighborPos = projectedNeighborBlockPos(virtualCell.mapping(), virtualCell.cell(), localDirection);
             VirtualCell neighbor = GLOBAL.virtualCellAt(level, neighborPos);
             if (neighbor == null || neighbor.entity() == virtualCell.entity()) {
@@ -1229,7 +1267,7 @@ public final class PhysicalizedRedstoneMapping {
             boolean direct
     ) {
         int signal = 0;
-        for (Direction localDirection : Direction.values()) {
+        for (Direction localDirection : DIRECTIONS) {
             BlockPos neighbor = projectedNeighborBlockPos(mapping, cell, localDirection);
             BlockState state = level.getBlockState(neighbor);
             if (state.isAir()) {
@@ -1259,15 +1297,16 @@ public final class PhysicalizedRedstoneMapping {
         if (signal <= 0) {
             return;
         }
-        volumePower.merge(volumeId, Math.min(15, signal), Math::max);
+        volumePower.put(volumeId, Math.max(volumePower.getInt(volumeId), Math.min(15, signal)));
     }
 
     private void recomputeVolumePower() {
-        Map<String, Integer> next = new HashMap<>();
+        Object2IntOpenHashMap<String> next = new Object2IntOpenHashMap<>();
         for (Map.Entry<CellKey, RedstoneAttachment> entry : attachments.entrySet()) {
             int signal = Math.min(15, Math.max(0, entry.getValue().signal()));
             if (signal > 0) {
-                next.merge(entry.getKey().volumeId(), signal, Math::max);
+                String volumeId = entry.getKey().volumeId();
+                next.put(volumeId, Math.max(next.getInt(volumeId), signal));
             }
         }
         volumePower.clear();
@@ -1339,7 +1378,7 @@ public final class PhysicalizedRedstoneMapping {
     private static Set<BlockPos> projectedNeighborhood(PhysicalizedVolumeMapping mapping, PhysicalizedBlockSnapshot cell) {
         Set<BlockPos> positions = new HashSet<>();
         positions.add(mapping.visualBlockPos(cell).immutable());
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             positions.add(projectedNeighborBlockPos(mapping, cell, direction).immutable());
         }
         return positions;

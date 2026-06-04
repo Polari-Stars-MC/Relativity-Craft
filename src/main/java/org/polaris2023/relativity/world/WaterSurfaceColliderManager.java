@@ -8,11 +8,12 @@ import net.minecraft.tags.FluidTags;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.AABB;
 
-import java.util.ArrayDeque;
-import java.util.ArrayList;
-import java.util.HashMap;
-import java.util.List;
-import java.util.Map;
+import it.unimi.dsi.fastutil.longs.Long2ObjectMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
+import it.unimi.dsi.fastutil.longs.LongArrayList;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 
 public final class WaterSurfaceColliderManager {
     private static final int TILE_SIZE = 4;
@@ -22,16 +23,16 @@ public final class WaterSurfaceColliderManager {
     private static final double WATER_SHELL_HALF_HEIGHT = 0.16;
 
     private final RapierNativeWorld world;
-    private final Map<WaterChunkKey, SurfaceBody> bodies = new HashMap<>();
-    private final Map<WaterChunkKey, SurfaceRequest> queuedRequests = new HashMap<>();
-    private final ArrayDeque<WaterChunkKey> queue = new ArrayDeque<>();
+    private final Long2ObjectOpenHashMap<SurfaceBody> bodies = new Long2ObjectOpenHashMap<>();
+    private final Long2ObjectOpenHashMap<SurfaceRequest> queuedRequests = new Long2ObjectOpenHashMap<>();
+    private final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
+    private final LongSet queuedChunks = new LongOpenHashSet();
 
     public WaterSurfaceColliderManager(RapierNativeWorld world) {
         this.world = world;
     }
 
     public void requestAround(ServerLevel level, AABB box, long gameTime) {
-        String dimensionId = level.dimension().identifier().toString();
         AABB expanded = box.inflate(4.0, 1.5, 4.0);
         int minChunkX = Mth.floor(expanded.minX) >> 4;
         int maxChunkX = Mth.floor(expanded.maxX) >> 4;
@@ -42,7 +43,7 @@ public final class WaterSurfaceColliderManager {
 
         for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
             for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
-                WaterChunkKey key = new WaterChunkKey(dimensionId, chunkX, chunkZ);
+                long key = chunkKey(chunkX, chunkZ);
                 SurfaceBody current = bodies.get(key);
                 if (current != null) {
                     current.lastRequestedGameTime = gameTime;
@@ -51,8 +52,8 @@ public final class WaterSurfaceColliderManager {
                     }
                 }
                 SurfaceRequest request = new SurfaceRequest(key, minY, maxY, gameTime);
-                if (!queuedRequests.containsKey(key)) {
-                    queue.addLast(key);
+                if (queuedChunks.add(key)) {
+                    queue.enqueue(key);
                 }
                 queuedRequests.put(key, request);
             }
@@ -62,10 +63,11 @@ public final class WaterSurfaceColliderManager {
     public void drain(ServerLevel level, FluidDomainManager fluids, long gameTime) {
         int rebuilt = 0;
         while (rebuilt < MAX_REBUILDS_PER_TICK) {
-            WaterChunkKey key = queue.pollFirst();
-            if (key == null) {
+            if (queue.isEmpty()) {
                 break;
             }
+            long key = queue.dequeueLong();
+            queuedChunks.remove(key);
             SurfaceRequest request = queuedRequests.remove(key);
             if (request == null) {
                 continue;
@@ -77,44 +79,44 @@ public final class WaterSurfaceColliderManager {
     }
 
     public void removeChunk(String dimensionId, int chunkX, int chunkZ) {
-        WaterChunkKey key = new WaterChunkKey(dimensionId, chunkX, chunkZ);
+        long key = chunkKey(chunkX, chunkZ);
         queuedRequests.remove(key);
-        queue.removeIf(key::equals);
         remove(key);
     }
 
     private void replaceChunk(ServerLevel level, FluidDomainManager fluids, SurfaceRequest request, long gameTime) {
         remove(request.key());
-        List<Long> handles = buildChunk(level, fluids, request, gameTime);
+        LongArrayList handles = buildChunk(level, fluids, request);
         SurfaceBody body = new SurfaceBody(handles, gameTime, gameTime);
         bodies.put(request.key(), body);
     }
 
-    private List<Long> buildChunk(ServerLevel level, FluidDomainManager fluids, SurfaceRequest request, long gameTime) {
-        int baseX = request.key().chunkX() << 4;
-        int baseZ = request.key().chunkZ() << 4;
+    private LongArrayList buildChunk(ServerLevel level, FluidDomainManager fluids, SurfaceRequest request) {
+        int baseX = chunkX(request.key()) << 4;
+        int baseZ = chunkZ(request.key()) << 4;
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         BlockPos.MutableBlockPos above = new BlockPos.MutableBlockPos();
-        List<Long> handles = new ArrayList<>(16);
+        LongArrayList handles = new LongArrayList(16);
 
         for (int localZ = 0; localZ < 16; localZ += TILE_SIZE) {
             for (int localX = 0; localX < 16; localX += TILE_SIZE) {
                 int centerX = baseX + localX + TILE_SIZE / 2;
                 int centerZ = baseZ + localZ + TILE_SIZE / 2;
-                FluidDomainManager.SurfaceSample surface = null;
+                double surfaceY = Double.NaN;
                 for (int y = request.maxY(); y >= request.minY(); y--) {
                     pos.set(centerX, y, centerZ);
-                    if (!level.getFluidState(pos).is(FluidTags.WATER)) {
+                    double candidateSurfaceY = fluids.surfaceHeightAt(level, pos);
+                    if (Double.isNaN(candidateSurfaceY)) {
                         continue;
                     }
                     above.set(centerX, y + 1, centerZ);
                     if (level.getFluidState(above).is(FluidTags.WATER)) {
                         continue;
                     }
-                    surface = fluids.surfaceSampleAt(level, pos, gameTime);
+                    surfaceY = candidateSurfaceY;
                     break;
                 }
-                if (surface == null) {
+                if (Double.isNaN(surfaceY)) {
                     continue;
                 }
 
@@ -122,7 +124,7 @@ public final class WaterSurfaceColliderManager {
                 double halfZ = Math.min(TILE_SIZE, 16 - localZ) * 0.5;
                 long handle = world.addStaticTerrainBox(
                         centerX,
-                        surface.surfaceY() - WATER_SHELL_HALF_HEIGHT + 0.02,
+                        surfaceY - WATER_SHELL_HALF_HEIGHT + 0.02,
                         centerZ,
                         halfX,
                         WATER_SHELL_HALF_HEIGHT,
@@ -139,45 +141,57 @@ public final class WaterSurfaceColliderManager {
     }
 
     private void removeStale(long gameTime) {
-        List<WaterChunkKey> stale = new ArrayList<>();
-        for (Map.Entry<WaterChunkKey, SurfaceBody> entry : bodies.entrySet()) {
+        var iterator = bodies.long2ObjectEntrySet().iterator();
+        while (iterator.hasNext()) {
+            Long2ObjectMap.Entry<SurfaceBody> entry = iterator.next();
             if (gameTime - entry.getValue().lastRequestedGameTime > STALE_AFTER_TICKS) {
-                stale.add(entry.getKey());
+                removeHandles(entry.getValue());
+                iterator.remove();
             }
-        }
-        for (WaterChunkKey key : stale) {
-            remove(key);
         }
     }
 
-    private void remove(WaterChunkKey key) {
+    private void remove(long key) {
         SurfaceBody existing = bodies.remove(key);
         if (existing == null) {
             return;
         }
-        for (long handle : existing.handles()) {
+        removeHandles(existing);
+    }
+
+    private void removeHandles(SurfaceBody body) {
+        for (long handle : body.handles()) {
             world.removeBody(handle);
         }
     }
 
-    private record WaterChunkKey(String dimensionId, int chunkX, int chunkZ) {
+    private static long chunkKey(int chunkX, int chunkZ) {
+        return ((long) chunkX << 32) ^ (chunkZ & 0xFFFFFFFFL);
     }
 
-    private record SurfaceRequest(WaterChunkKey key, int minY, int maxY, long gameTime) {
+    private static int chunkX(long key) {
+        return (int) (key >> 32);
+    }
+
+    private static int chunkZ(long key) {
+        return (int) key;
+    }
+
+    private record SurfaceRequest(long key, int minY, int maxY, long gameTime) {
     }
 
     private static final class SurfaceBody {
-        private final List<Long> handles;
+        private final LongArrayList handles;
         private final long builtGameTime;
         private long lastRequestedGameTime;
 
-        private SurfaceBody(List<Long> handles, long builtGameTime, long lastRequestedGameTime) {
+        private SurfaceBody(LongArrayList handles, long builtGameTime, long lastRequestedGameTime) {
             this.handles = handles;
             this.builtGameTime = builtGameTime;
             this.lastRequestedGameTime = lastRequestedGameTime;
         }
 
-        private List<Long> handles() {
+        private LongArrayList handles() {
             return handles;
         }
     }

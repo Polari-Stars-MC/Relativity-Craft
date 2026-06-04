@@ -54,15 +54,18 @@ import org.joml.Quaternionf;
 import org.joml.Vector3f;
 import org.jspecify.annotations.Nullable;
 
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
 
 public final class PhysicalizedVolumeRenderer extends EntityRenderer<PhysicalizedVolumeEntity, PhysicalizedVolumeRenderState> {
+    private static final Direction[] DIRECTIONS = Direction.values();
+
     private static final long PISTON_ANIMATION_NANOS = 100_000_000L;
     private static final Map<String, AnimationTracker> ANIMATION_TRACKERS = new HashMap<>();
 
@@ -169,7 +172,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         for (PhysicalizedBlockSnapshot cell : cells) {
             if (entity.isVirtualContainerOpen(cell)) {
                 if (keys == null) {
-                    keys = new HashSet<>();
+                    keys = new LongOpenHashSet();
                 }
                 keys.add(pack(cell.localX(), cell.localY(), cell.localZ()));
                 addConnectedChestKey(keys, cellsByKey, cell);
@@ -684,7 +687,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
 
     private static final class AnimationTracker {
         private Map<Long, PhysicalizedBlockSnapshot> previousCells = Map.of();
-        private final Map<Long, CellAnimation> currentCellAnimations = new HashMap<>();
+        private final Map<Long, CellAnimation> currentCellAnimations = new Long2ObjectOpenHashMap<>();
         private final List<RemovedCellAnimation> removedCellAnimations = new ArrayList<>();
 
         PistonAnimationFrame update(Map<Long, PhysicalizedBlockSnapshot> currentCells, long nowNanos) {
@@ -703,7 +706,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                 Map<Long, PhysicalizedBlockSnapshot> current,
                 long nowNanos
         ) {
-            Set<Long> consumedPrevious = new HashSet<>();
+            Set<Long> consumedPrevious = new LongOpenHashSet();
             for (PhysicalizedBlockSnapshot cell : current.values()) {
                 long key = pack(cell.localX(), cell.localY(), cell.localZ());
                 PhysicalizedBlockSnapshot previousAtSamePosition = previous.get(key);
@@ -722,7 +725,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                     continue;
                 }
 
-                for (Direction direction : Direction.values()) {
+                for (Direction direction : DIRECTIONS) {
                     int previousX = cell.localX() - direction.getStepX();
                     int previousY = cell.localY() - direction.getStepY();
                     int previousZ = cell.localZ() - direction.getStepZ();
@@ -771,7 +774,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         }
 
         private Map<Long, PhysicalizedVolumeRenderState.AnimationOffset> currentOffsets(long nowNanos) {
-            Map<Long, PhysicalizedVolumeRenderState.AnimationOffset> offsets = new HashMap<>();
+            Map<Long, PhysicalizedVolumeRenderState.AnimationOffset> offsets = new Long2ObjectOpenHashMap<>();
             currentCellAnimations.entrySet().removeIf(entry -> {
                 float progress = animationProgress(entry.getValue().startNanos(), nowNanos);
                 if (progress >= 1.0F) {

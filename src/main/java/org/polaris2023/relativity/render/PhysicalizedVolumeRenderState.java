@@ -10,7 +10,7 @@ import net.minecraft.client.renderer.entity.state.EntityRenderState;
 import net.minecraft.client.resources.model.geometry.BakedQuad;
 import net.minecraft.world.level.block.entity.BlockEntity;
 
-import java.util.HashMap;
+import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -41,7 +41,7 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public PhysicalizedVolumeSnapshot renderProfileSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
     public boolean hasRenderableBlockEntityCells;
     public String blockEntityCacheVolumeId = "";
-    public final Map<Long, CachedBlockEntity> blockEntityCache = new HashMap<>();
+    public final Map<Long, CachedBlockEntity> blockEntityCache = new Long2ObjectOpenHashMap<>();
     public PhysicalizedVolumeSnapshot modelMeshSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
     public boolean modelMeshAmbientOcclusion;
     public boolean modelMeshCutoutLeaves;
@@ -73,7 +73,12 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
         }
 
         public boolean isEmpty() {
-            return layers.values().stream().allMatch(List::isEmpty);
+            for (List<CachedQuad> quads : layers.values()) {
+                if (!quads.isEmpty()) {
+                    return false;
+                }
+            }
+            return true;
         }
     }
 

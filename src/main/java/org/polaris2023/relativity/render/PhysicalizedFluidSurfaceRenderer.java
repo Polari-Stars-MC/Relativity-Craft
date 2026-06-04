@@ -31,13 +31,13 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.EventBusSubscriber;
 import net.neoforged.neoforge.client.event.SubmitCustomGeometryEvent;
 
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import java.util.ArrayList;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
-import java.util.Set;
 
 public final class PhysicalizedFluidSurfaceRenderer {
     private static final SpriteId WATER_STILL = new SpriteId(
@@ -212,8 +212,8 @@ public final class PhysicalizedFluidSurfaceRenderer {
         List<FlowFace> flowFaces = new ArrayList<>();
         List<FlowBridge> flowBridges = new ArrayList<>();
         List<FlowRibbon> flowRibbons = new ArrayList<>();
-        Set<Long> flowSurfaceColumns = new HashSet<>();
-        Set<Long> flowingColumns = new HashSet<>();
+        LongSet flowSurfaceColumns = new LongOpenHashSet();
+        LongSet flowingColumns = new LongOpenHashSet();
         double minSurfaceY = Double.POSITIVE_INFINITY;
         double maxSurfaceY = Double.NEGATIVE_INFINITY;
 
@@ -549,7 +549,7 @@ public final class PhysicalizedFluidSurfaceRenderer {
         }
     }
 
-    private static List<SurfaceTile> filterSurfaceTiles(List<SurfaceTile> tiles, Set<Long> flowSurfaceColumns) {
+    private static List<SurfaceTile> filterSurfaceTiles(List<SurfaceTile> tiles, LongSet flowSurfaceColumns) {
         if (flowSurfaceColumns.isEmpty() || tiles.isEmpty()) {
             return tiles;
         }
@@ -565,7 +565,7 @@ public final class PhysicalizedFluidSurfaceRenderer {
         return filtered;
     }
 
-    private static void addNonFlowSurfaceTiles(List<SurfaceTile> tiles, SurfaceTile tile, Set<Long> flowSurfaceColumns) {
+    private static void addNonFlowSurfaceTiles(List<SurfaceTile> tiles, SurfaceTile tile, LongSet flowSurfaceColumns) {
         int minX = Mth.floor(tile.x());
         int minZ = Mth.floor(tile.z());
         int size = Math.max(1, (int) Math.ceil(tile.size()));
@@ -582,7 +582,7 @@ public final class PhysicalizedFluidSurfaceRenderer {
         }
     }
 
-    private static boolean surfaceTileTouchesFlow(SurfaceTile tile, Set<Long> flowSurfaceColumns) {
+    private static boolean surfaceTileTouchesFlow(SurfaceTile tile, LongSet flowSurfaceColumns) {
         int minX = Mth.floor(tile.x());
         int minZ = Mth.floor(tile.z());
         int size = Math.max(1, (int) Math.ceil(tile.size()));
@@ -596,11 +596,11 @@ public final class PhysicalizedFluidSurfaceRenderer {
         return false;
     }
 
-    private static void markFlowSurfaceColumn(Set<Long> flowSurfaceColumns, int x, int z) {
+    private static void markFlowSurfaceColumn(LongSet flowSurfaceColumns, int x, int z) {
         flowSurfaceColumns.add(packFlowColumn(x, z));
     }
 
-    private static float[] buildFlowInfluenceGrid(Set<Long> flowSurfaceColumns, int baseX, int baseZ) {
+    private static float[] buildFlowInfluenceGrid(LongSet flowSurfaceColumns, int baseX, int baseZ) {
         float[] influence = new float[SURFACE_GRID_CELLS];
         if (flowSurfaceColumns.isEmpty()) {
             return influence;

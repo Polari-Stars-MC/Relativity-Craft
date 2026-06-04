@@ -3,13 +3,13 @@ package org.polaris2023.relativity.material;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.world.level.block.state.BlockState;
 
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class PhysicsMaterialRegistry {
     public static final PhysicsMaterialRegistry INSTANCE = new PhysicsMaterialRegistry();
 
-    private final Map<String, PhysicsMaterial> materials = new ConcurrentHashMap<>();
+    private final Map<String, PhysicsMaterial> materials = new Object2ObjectOpenHashMap<>();
 
     public PhysicsMaterialRegistry() {
         registerDefaults();

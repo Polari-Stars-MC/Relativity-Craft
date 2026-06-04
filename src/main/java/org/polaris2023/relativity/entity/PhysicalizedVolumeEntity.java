@@ -1054,7 +1054,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private ClientVisualPose clientCurrentVisualPose(long now) {
-        float alpha = (float) Math.min(1.0, Math.max(0.0, (double) (now - this.clientVisualStartNanos) / CLIENT_VISUAL_INTERPOLATION_NANOS));
+        float alpha = (float) Math.clamp((double) (now - this.clientVisualStartNanos) / CLIENT_VISUAL_INTERPOLATION_NANOS, 0.0, 1.0);
         Vec3 position = new Vec3(
                 lerp(alpha, this.clientVisualStartX, this.clientVisualTargetX),
                 lerp(alpha, this.clientVisualStartY, this.clientVisualTargetY),
@@ -1233,7 +1233,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         if (player.getItemInHand(hand).getItem() instanceof BlockItem) {
             return InteractionResult.SUCCESS;
         }
-        if (!player.isSecondaryUseActive() && this.snapshot().cells().stream().anyMatch(cell -> cell.hasBlockEntityNbt())) {
+        if (!player.isSecondaryUseActive() && this.snapshot().hasBlockEntityNbt()) {
             return InteractionResult.SUCCESS;
         }
         return InteractionResult.PASS;

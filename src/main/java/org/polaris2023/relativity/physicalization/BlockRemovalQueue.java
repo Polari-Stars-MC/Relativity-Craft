@@ -5,9 +5,10 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 
-import java.util.Queue;
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import java.util.ArrayDeque;
+import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
 
 public final class BlockRemovalQueue {
     private static final BlockRemovalQueue GLOBAL = new BlockRemovalQueue();
@@ -15,7 +16,7 @@ public final class BlockRemovalQueue {
             | Block.UPDATE_SUPPRESS_DROPS
             | Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
 
-    private final Queue<BlockRemovalJob> jobs = new ConcurrentLinkedQueue<>();
+    private final Map<String, ArrayDeque<BlockRemovalJob>> jobsByDimension = new Object2ObjectOpenHashMap<>();
 
     private BlockRemovalQueue() {
     }
@@ -25,55 +26,59 @@ public final class BlockRemovalQueue {
     }
 
     public void enqueue(String dimensionId, BlockBox box) {
-        jobs.add(new BlockRemovalJob(dimensionId, box, null));
+        enqueue(dimensionId, box, null);
     }
 
     public void enqueue(String dimensionId, BlockBox box, UUID virtualAirMaskId) {
-        jobs.add(new BlockRemovalJob(dimensionId, box, virtualAirMaskId));
+        jobsByDimension.computeIfAbsent(dimensionId, ignored -> new ArrayDeque<>())
+                .add(new BlockRemovalJob(box, virtualAirMaskId));
     }
 
     public int drain(ServerLevel level, long budgetNanos) {
         long deadline = System.nanoTime() + budgetNanos;
         String dimensionId = level.dimension().identifier().toString();
+        ArrayDeque<BlockRemovalJob> jobs = jobsByDimension.get(dimensionId);
+        if (jobs == null) {
+            return 0;
+        }
+
         int completed = 0;
 
-        for (BlockRemovalJob job : jobs) {
-            if (System.nanoTime() >= deadline) {
+        while (System.nanoTime() < deadline) {
+            BlockRemovalJob job = jobs.peek();
+            if (job == null) {
+                jobsByDimension.remove(dimensionId);
                 break;
             }
-            if (!job.dimensionId().equals(dimensionId)) {
-                continue;
-            }
             if (job.step(level, deadline)) {
-                jobs.remove(job);
+                jobs.remove();
                 completed++;
+            } else {
+                break;
             }
+        }
+        if (jobs.isEmpty()) {
+            jobsByDimension.remove(dimensionId);
         }
         return completed;
     }
 
     private static final class BlockRemovalJob {
-        private final String dimensionId;
         private final BlockBox box;
         private final UUID virtualAirMaskId;
+        private final BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         private final long sizeXZ;
         private final long volume;
         private long cursor;
 
-        BlockRemovalJob(String dimensionId, BlockBox box, UUID virtualAirMaskId) {
-            this.dimensionId = dimensionId;
+        BlockRemovalJob(BlockBox box, UUID virtualAirMaskId) {
             this.box = box;
             this.virtualAirMaskId = virtualAirMaskId;
             this.sizeXZ = (long) box.sizeX() * box.sizeZ();
             this.volume = box.volume();
         }
 
-        String dimensionId() {
-            return dimensionId;
-        }
-
         boolean step(ServerLevel level, long deadlineNanos) {
-            BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
             while (cursor < volume && System.nanoTime() < deadlineNanos) {
                 long index = cursor++;
                 int x = box.minX() + (int) (index % box.sizeX());
