@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import org.joml.Quaterniond;
+
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -86,7 +88,7 @@ public final class RapierNativeWorld implements AutoCloseable {
         long handle = RelativityCraftRapier.worldInsertDynamicCuboids(
                 world.handle(),
                 vec3(x, y, z),
-                new RcQuat(qx, qy, qz, qw),
+                new Quaterniond(qx, qy, qz, qw),
                 linearVelocity,
                 cuboids,
                 cuboidCount,
@@ -211,15 +213,15 @@ public final class RapierNativeWorld implements AutoCloseable {
         int index = 0;
         for (long bodyHandle : liveBodies) {
             Vec3 translation = world.getRigidBodyTranslation(bodyHandle);
-            RcQuat rotation = RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle);
+            Quaterniond rotation = RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle);
             snapshot[index++] = bodyHandle;
             snapshot[index++] = translation.x();
             snapshot[index++] = translation.y();
             snapshot[index++] = translation.z();
-            snapshot[index++] = rotation.i();
-            snapshot[index++] = rotation.j();
-            snapshot[index++] = rotation.k();
-            snapshot[index++] = rotation.w();
+            snapshot[index++] = rotation.x;
+            snapshot[index++] = rotation.y;
+            snapshot[index++] = rotation.z;
+            snapshot[index++] = rotation.w;
         }
         return snapshot;
     }

@@ -1,5 +1,7 @@
 package org.polaris2023.relativity.nativeaccess;
 
+import org.joml.Quaterniond;
+
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
@@ -482,7 +484,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static RcQuat rigidBodyGetRotation(MemorySegment world, long handle) {
+    static Quaterniond rigidBodyGetRotation(MemorySegment world, long handle) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(RC_QUAT);
             RC_RIGID_BODY_GET_ROTATION.invokeExact(world, handle, out);
@@ -492,7 +494,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static boolean rigidBodySetPose(MemorySegment world, long handle, Vec3 translation, RcQuat rotation, boolean wakeUp) {
+    static boolean rigidBodySetPose(MemorySegment world, long handle, Vec3 translation, Quaterniond rotation, boolean wakeUp) {
         try {
             return (byte) RC_RIGID_BODY_SET_POSE.invokeExact(
                 world,
@@ -729,7 +731,7 @@ public final class RelativityCraftRapier {
     static long worldInsertDynamicCuboids(
         MemorySegment world,
         Vec3 translation,
-        RcQuat rotation,
+        Quaterniond rotation,
         Vec3 linearVelocity,
         double[] cuboids,
         int cuboidCount,
@@ -814,12 +816,12 @@ public final class RelativityCraftRapier {
         return segment;
     }
 
-    static MemorySegment encodeQuat(Arena arena, RcQuat quat) {
+    static MemorySegment encodeQuat(Arena arena, Quaterniond quat) {
         MemorySegment segment = arena.allocate(RC_QUAT);
-        segment.set(ValueLayout.JAVA_DOUBLE, 0, quat.i());
-        segment.set(ValueLayout.JAVA_DOUBLE, 8, quat.j());
-        segment.set(ValueLayout.JAVA_DOUBLE, 16, quat.k());
-        segment.set(ValueLayout.JAVA_DOUBLE, 24, quat.w());
+        segment.set(ValueLayout.JAVA_DOUBLE, 0, quat.x);
+        segment.set(ValueLayout.JAVA_DOUBLE, 8, quat.y);
+        segment.set(ValueLayout.JAVA_DOUBLE, 16, quat.z);
+        segment.set(ValueLayout.JAVA_DOUBLE, 24, quat.w);
         return segment;
     }
 
@@ -855,8 +857,8 @@ public final class RelativityCraftRapier {
         );
     }
 
-    static RcQuat decodeQuat(MemorySegment segment) {
-        return new RcQuat(
+    static Quaterniond decodeQuat(MemorySegment segment) {
+        return new Quaterniond(
                 segment.get(ValueLayout.JAVA_DOUBLE, 0),
                 segment.get(ValueLayout.JAVA_DOUBLE, 8),
                 segment.get(ValueLayout.JAVA_DOUBLE, 16),
