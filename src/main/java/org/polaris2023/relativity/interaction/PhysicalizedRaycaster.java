@@ -16,11 +16,11 @@ import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
-import java.util.ArrayList;
-import java.util.List;
 import java.util.Optional;
 
 public final class PhysicalizedRaycaster {
+    private static final Direction[] DIRECTIONS = Direction.values();
+
     private static final double DEFAULT_REACH = 4.5;
     private static final double QUERY_EPSILON = 1.0E-4;
     private static final double RAY_EPSILON = 1.0E-7;
@@ -60,18 +60,21 @@ public final class PhysicalizedRaycaster {
         }
         Vec3 end = origin.add(normalizedDirection.scale(maxDistance));
         AABB swept = new AABB(origin, end).inflate(QUERY_EPSILON);
-        List<PhysicalizedVolumeEntity> candidates = candidates(level, swept, maxDistance);
-
-        PhysicalizedHit best = null;
-        for (PhysicalizedVolumeEntity entity : candidates) {
+        AABB broadPhase = swept.inflate(QUERY_EPSILON);
+        PhysicalizedHit[] best = {null};
+        PhysicalizedVolumeLookup.forEachLoadedVolume(level, broadPhase, 0.25, entity -> {
+            PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
+            if (!PhysicalizedVolumeLookup.localVolumeIntersects(entity, mapping, broadPhase, 1.0 + QUERY_EPSILON)) {
+                return;
+            }
             Optional<PhysicalizedHit> hit = useInterpolatedPose
                     ? raycastEntity(entity, origin, normalizedDirection, maxDistance, partialTicks)
                     : raycastEntity(entity, origin, normalizedDirection, maxDistance);
-            if (hit.isPresent() && (best == null || hit.get().distance() < best.distance())) {
-                best = hit.get();
+            if (hit.isPresent() && (best[0] == null || hit.get().distance() < best[0].distance())) {
+                best[0] = hit.get();
             }
-        }
-        return Optional.ofNullable(best);
+        });
+        return Optional.ofNullable(best[0]);
     }
 
     public static Optional<PhysicalizedHit> raycastSegment(Level level, Vec3 from, Vec3 to) {
@@ -219,7 +222,7 @@ public final class PhysicalizedRaycaster {
         Direction best = clippedFace;
         double bestDistance = distanceToCellFace(cell, localLocation, clippedFace);
         double bestOpposition = rayOpposition(localDirection, clippedFace);
-        for (Direction face : Direction.values()) {
+        for (Direction face : DIRECTIONS) {
             double distance = distanceToCellFace(cell, localLocation, face);
             if (distance > FACE_EPSILON) {
                 continue;
@@ -249,18 +252,6 @@ public final class PhysicalizedRaycaster {
         return -(localDirection.x * face.getStepX()
                 + localDirection.y * face.getStepY()
                 + localDirection.z * face.getStepZ());
-    }
-
-    private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB swept, double maxDistance) {
-        List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
-        AABB broadPhase = swept.inflate(QUERY_EPSILON);
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, broadPhase, 0.25)) {
-            PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
-            if (PhysicalizedVolumeLookup.localVolumeIntersects(entity, mapping, broadPhase, 1.0 + QUERY_EPSILON)) {
-                candidates.add(entity);
-            }
-        }
-        return candidates;
     }
 
     public static BlockPos visualBlockPos(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell) {

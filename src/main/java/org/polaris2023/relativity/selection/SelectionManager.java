@@ -3,14 +3,14 @@ package org.polaris2023.relativity.selection;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import net.minecraft.core.BlockPos;
 
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class SelectionManager {
     private static final SelectionManager GLOBAL = new SelectionManager();
 
-    private final Map<UUID, SelectionState> selections = new ConcurrentHashMap<>();
+    private final Map<UUID, SelectionState> selections = new Object2ObjectOpenHashMap<>();
 
     public static SelectionManager global() {
         return GLOBAL;

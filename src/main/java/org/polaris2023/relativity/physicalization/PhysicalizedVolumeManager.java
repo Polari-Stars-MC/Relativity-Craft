@@ -1,18 +1,16 @@
 package org.polaris2023.relativity.physicalization;
 
+import java.util.ArrayDeque;
 import java.util.List;
-import java.util.Queue;
 import java.util.UUID;
-import java.util.concurrent.ConcurrentLinkedQueue;
-import java.util.concurrent.atomic.AtomicLong;
 
 public final class PhysicalizedVolumeManager {
     private static final PhysicalizedVolumeManager GLOBAL = new PhysicalizedVolumeManager(new ChunkOccupancyIndex(), new VirtualAirMask());
 
     private final ChunkOccupancyIndex occupancyIndex;
     private final VirtualAirMask virtualAirMask;
-    private final Queue<PhysicalizationJob> jobs = new ConcurrentLinkedQueue<>();
-    private final AtomicLong nextHandleId = new AtomicLong(1L);
+    private final ArrayDeque<PhysicalizationJob> jobs = new ArrayDeque<>();
+    private long nextHandleId = 1L;
 
     public PhysicalizedVolumeManager(ChunkOccupancyIndex occupancyIndex, VirtualAirMask virtualAirMask) {
         this.occupancyIndex = occupancyIndex;
@@ -33,8 +31,11 @@ public final class PhysicalizedVolumeManager {
 
     public PhysicalizedVolumeHandle submit(String dimensionId, BlockBox box, long submittedNanos) {
         List<ChunkOccupancyIndex.SectionPlan> plans = occupancyIndex.plan(dimensionId, box);
-        int estimatedBlocks = plans.stream().mapToInt(ChunkOccupancyIndex.SectionPlan::nonAirCount).sum();
-        PhysicalizedVolumeHandle handle = new PhysicalizedVolumeHandle(new UUID(0L, nextHandleId.getAndIncrement()), dimensionId, box, submittedNanos, plans, estimatedBlocks);
+        int estimatedBlocks = 0;
+        for (ChunkOccupancyIndex.SectionPlan plan : plans) {
+            estimatedBlocks += plan.nonAirCount();
+        }
+        PhysicalizedVolumeHandle handle = new PhysicalizedVolumeHandle(new UUID(0L, nextHandleId++), dimensionId, box, submittedNanos, plans, estimatedBlocks);
         virtualAirMask.add(handle);
         handle.status(PhysicalizedVolumeHandle.Status.AGGREGATE_READY);
         jobs.add(new PhysicalizationJob(handle));
@@ -50,7 +51,7 @@ public final class PhysicalizedVolumeManager {
                 break;
             }
             if (job.step(deadline)) {
-                jobs.poll();
+                jobs.remove();
                 completed++;
             } else {
                 break;

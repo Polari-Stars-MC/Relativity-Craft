@@ -35,11 +35,11 @@ import net.neoforged.neoforge.common.util.BlockSnapshot;
 import net.neoforged.neoforge.event.level.BlockEvent;
 import net.neoforged.neoforge.event.level.PistonEvent;
 
-import java.util.ArrayDeque;
+import it.unimi.dsi.fastutil.longs.Long2ByteOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongArrayFIFOQueue;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import java.util.HashMap;
-import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 
 public final class WpoFiniteWaterPhysics {
     private static final int MAX_LEVEL = 8;
@@ -50,6 +50,7 @@ public final class WpoFiniteWaterPhysics {
     private static final long MAX_FLUID_STEP_NANOS = 1_000_000L;
     private static final int MAX_PENDING_FLUID_CELLS = 4_096;
     private static final int FAST_FLUID_PENDING_THRESHOLD = 512;
+    private static final Direction[] DIRECTIONS = Direction.values();
     private static final Direction[] HORIZONTAL_DIRECTIONS = {
             Direction.NORTH,
             Direction.SOUTH,
@@ -94,7 +95,7 @@ public final class WpoFiniteWaterPhysics {
                     && !queue.pending.isEmpty()
                     && !isBlockUpdateBudgetExhausted(level)
                     && System.nanoTime() < deadline) {
-                long packed = queue.pending.removeFirst();
+                long packed = queue.pending.dequeueLong();
                 queue.queued.remove(packed);
                 simulateCell(level, BlockPos.of(packed));
                 processed[0]++;
@@ -190,7 +191,7 @@ public final class WpoFiniteWaterPhysics {
             return;
         }
         enqueue(level, pos);
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             enqueue(level, pos.relative(direction));
         }
     }
@@ -474,7 +475,7 @@ public final class WpoFiniteWaterPhysics {
         if (canTouch(level, pos) && level.getFluidState(pos).is(FluidTags.WATER)) {
             return true;
         }
-        for (Direction direction : Direction.values()) {
+        for (Direction direction : DIRECTIONS) {
             BlockPos neighbor = pos.relative(direction);
             if (canTouch(level, neighbor) && level.getFluidState(neighbor).is(FluidTags.WATER)) {
                 return true;
@@ -498,7 +499,7 @@ public final class WpoFiniteWaterPhysics {
         }
         long packed = pos.asLong();
         if (queue.queued.add(packed)) {
-            queue.pending.addLast(packed);
+            queue.pending.enqueue(packed);
         }
     }
 
@@ -512,11 +513,12 @@ public final class WpoFiniteWaterPhysics {
     }
 
     private static Direction rememberedHorizontalDirection(ServerLevel level, BlockPos pos) {
-        Byte ordinal = queue(level).horizontalMomentum.get(pos.asLong());
-        if (ordinal == null) {
+        Long2ByteOpenHashMap horizontalMomentum = queue(level).horizontalMomentum;
+        byte ordinal = horizontalMomentum.get(pos.asLong());
+        if (ordinal == Byte.MIN_VALUE) {
             return null;
         }
-        Direction direction = Direction.values()[ordinal];
+        Direction direction = DIRECTIONS[ordinal];
         return direction.getAxis().isHorizontal() ? direction : null;
     }
 
@@ -579,13 +581,17 @@ public final class WpoFiniteWaterPhysics {
     }
 
     private static final class FluidQueue {
-        private final ArrayDeque<Long> pending = new ArrayDeque<>();
-        private final Set<Long> queued = new HashSet<>();
-        private final Map<Long, Byte> horizontalMomentum = new HashMap<>();
+        private final LongArrayFIFOQueue pending = new LongArrayFIFOQueue();
+        private final LongOpenHashSet queued = new LongOpenHashSet();
+        private final Long2ByteOpenHashMap horizontalMomentum = new Long2ByteOpenHashMap();
+
+        private FluidQueue() {
+            horizontalMomentum.defaultReturnValue(Byte.MIN_VALUE);
+        }
     }
 
     private static final class TickState {
-        private final Set<Long> marked = new HashSet<>();
+        private final LongOpenHashSet marked = new LongOpenHashSet();
         private long gameTime;
         private int blockUpdates;
 

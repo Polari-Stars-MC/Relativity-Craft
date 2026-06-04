@@ -38,10 +38,11 @@ public final class PhysicalizedCollisionShapes {
         }
 
         List<VoxelShape> shapes = new ArrayList<>();
-        List<PhysicalizedVolumeEntity> volumes = candidates(level, queryBox);
-        for (PhysicalizedVolumeEntity volume : volumes) {
-            collectVolumeShapes(volume, source, queryBox, shapes);
-        }
+        PhysicalizedVolumeLookup.forEachLoadedVolume(level, queryBox, 2.0, volume -> {
+            if (volume.getBoundingBox().inflate(QUERY_EPSILON).intersects(queryBox)) {
+                collectVolumeShapes(volume, source, queryBox, shapes);
+            }
+        });
         shapes.addAll(SimulatedWaterEntityPhysics.waterSurfaceCollisions(getter, source, queryBox));
         return shapes.isEmpty() ? List.of() : shapes;
     }
@@ -146,23 +147,25 @@ public final class PhysicalizedCollisionShapes {
     }
 
     private static Vec3 penetrationCorrection(PhysicalizedVolumeEntity volume, Entity entity, AABB entityBox) {
-        List<AABB> boxes = new ArrayList<>();
-        collectVolumeBoxes(volume, entity, entityBox.inflate(PUSH_OUT_EPSILON), 0.0, boxes::add);
-        Vec3 best = null;
-        double bestDistance = Double.POSITIVE_INFINITY;
-        for (AABB obstacle : boxes) {
+        BestCorrection best = new BestCorrection();
+        collectVolumeBoxes(volume, entity, entityBox.inflate(PUSH_OUT_EPSILON), 0.0, obstacle -> {
             if (!obstacle.intersects(entityBox)) {
-                continue;
+                return;
             }
 
             Vec3 correction = correctionFor(entityBox, obstacle);
             double distance = Math.abs(correction.x) + Math.abs(correction.y) + Math.abs(correction.z);
-            if (distance < bestDistance) {
-                best = correction;
-                bestDistance = distance;
+            if (distance < best.distance) {
+                best.correction = correction;
+                best.distance = distance;
             }
-        }
-        return best;
+        });
+        return best.correction;
+    }
+
+    private static final class BestCorrection {
+        private Vec3 correction;
+        private double distance = Double.POSITIVE_INFINITY;
     }
 
     private static Vec3 correctionFor(AABB entityBox, AABB obstacle) {
@@ -206,13 +209,4 @@ public final class PhysicalizedCollisionShapes {
         return CollisionContext.withPosition(source, mapping.worldToLocal(source.position()).y);
     }
 
-    private static List<PhysicalizedVolumeEntity> candidates(Level level, AABB queryBox) {
-        List<PhysicalizedVolumeEntity> candidates = new ArrayList<>();
-        for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(level, queryBox, 2.0)) {
-            if (entity.getBoundingBox().inflate(QUERY_EPSILON).intersects(queryBox)) {
-                candidates.add(entity);
-            }
-        }
-        return candidates;
-    }
 }

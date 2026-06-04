@@ -9,11 +9,11 @@ import net.minecraft.tags.FluidTags;
 import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.Vec3;
 
+import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
 
 public final class FluidDomainManager {
-    private static final Map<String, FluidDomainManager> LEVEL_MANAGERS = new ConcurrentHashMap<>();
+    private static final Map<String, FluidDomainManager> LEVEL_MANAGERS = new Object2ObjectOpenHashMap<>();
 
     public static FluidDomainManager forLevel(ServerLevel level) {
         return LEVEL_MANAGERS.computeIfAbsent(level.dimension().identifier().toString(), ignored -> new FluidDomainManager());
@@ -48,6 +48,18 @@ public final class FluidDomainManager {
         double surfaceY = pos.getY() + fluid.getHeight(level, pos);
         Vec3 flow = fluid.getFlow(level, pos);
         return new SurfaceSample(surfaceY, flow, (float) Math.max(0.0, surfaceY - pos.getY()));
+    }
+
+    public double surfaceHeightAt(ServerLevel level, BlockPos pos) {
+        if (pos.getY() < level.getMinY() || pos.getY() >= level.getMaxY()) {
+            return Double.NaN;
+        }
+
+        FluidState fluid = level.getFluidState(pos);
+        if (!fluid.is(FluidTags.WATER)) {
+            return Double.NaN;
+        }
+        return pos.getY() + fluid.getHeight(level, pos);
     }
 
     public void disturbAt(ServerLevel level, Vec3 worldCenter, long gameTime, Vec3 velocity, double displacedVolume) {

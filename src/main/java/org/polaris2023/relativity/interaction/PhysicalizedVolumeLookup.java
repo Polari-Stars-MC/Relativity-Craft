@@ -16,6 +16,7 @@ import net.minecraft.world.phys.AABB;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.function.Consumer;
 
 public final class PhysicalizedVolumeLookup {
     private static final double QUERY_EPSILON = 1.0E-5;
@@ -85,10 +86,12 @@ public final class PhysicalizedVolumeLookup {
         AABB searchBox = queryBox.inflate(inflate);
         List<PhysicalizedVolumeEntity> volumes = new ArrayList<>();
         IntSet addedIds = new IntOpenHashSet();
-        addTrackedVolumes(level, searchBox, volumes, addedIds);
+        boolean hasTrackedVolumes = hasTrackedVolumes(level);
+        addTrackedVolumes(level, searchBox, addedIds, volumes::add);
         if (level instanceof ServerLevel serverLevel) {
-            for (PhysicalizedVolumeEntity volume : PhysicsWorldManager.global().queryVolumes(serverLevel, searchBox)) {
-                addIfUsableAndNew(volume, volumes, addedIds);
+            PhysicsWorldManager.global().forEachVolume(serverLevel, searchBox, volume -> addIfUsableAndNew(volume, volumes, addedIds));
+            if (hasTrackedVolumes || !volumes.isEmpty()) {
+                return volumes;
             }
         }
 
@@ -98,7 +101,24 @@ public final class PhysicalizedVolumeLookup {
         return volumes;
     }
 
-    private static void addTrackedVolumes(Level level, AABB searchBox, List<PhysicalizedVolumeEntity> volumes, IntSet addedIds) {
+    static void forEachLoadedVolume(Level level, AABB queryBox, double inflate, Consumer<PhysicalizedVolumeEntity> visitor) {
+        AABB searchBox = queryBox.inflate(inflate);
+        IntSet addedIds = new IntOpenHashSet();
+        boolean hasTrackedVolumes = hasTrackedVolumes(level);
+        addTrackedVolumes(level, searchBox, addedIds, visitor);
+        if (level instanceof ServerLevel serverLevel) {
+            PhysicsWorldManager.global().forEachVolume(serverLevel, searchBox, volume -> addIfUsableAndNew(volume, addedIds, visitor));
+            if (hasTrackedVolumes || !addedIds.isEmpty()) {
+                return;
+            }
+        }
+
+        for (PhysicalizedVolumeEntity volume : level.getEntitiesOfClass(PhysicalizedVolumeEntity.class, searchBox)) {
+            addIfUsableAndNew(volume, addedIds, visitor);
+        }
+    }
+
+    private static void addTrackedVolumes(Level level, AABB searchBox, IntSet addedIds, Consumer<PhysicalizedVolumeEntity> visitor) {
         Int2ObjectOpenHashMap<PhysicalizedVolumeEntity> tracked = TRACKED.get(levelKey(level));
         if (tracked == null || tracked.isEmpty()) {
             return;
@@ -113,7 +133,7 @@ public final class PhysicalizedVolumeLookup {
                 continue;
             }
             if (volume.getBoundingBox().inflate(QUERY_EPSILON).intersects(searchBox)) {
-                addIfUsableAndNew(volume, volumes, addedIds);
+                addIfUsableAndNew(volume, addedIds, visitor);
             }
         }
     }
@@ -129,13 +149,22 @@ public final class PhysicalizedVolumeLookup {
     }
 
     private static void addIfUsableAndNew(PhysicalizedVolumeEntity volume, List<PhysicalizedVolumeEntity> volumes, IntSet addedIds) {
+        addIfUsableAndNew(volume, addedIds, volumes::add);
+    }
+
+    private static void addIfUsableAndNew(PhysicalizedVolumeEntity volume, IntSet addedIds, Consumer<PhysicalizedVolumeEntity> visitor) {
         if (isUsable(volume) && addedIds.add(volume.getId())) {
-            volumes.add(volume);
+            visitor.accept(volume);
         }
     }
 
     private static Int2ObjectOpenHashMap<PhysicalizedVolumeEntity> trackedVolumes(Level level) {
         return TRACKED.computeIfAbsent(levelKey(level), ignored -> new Int2ObjectOpenHashMap<>());
+    }
+
+    private static boolean hasTrackedVolumes(Level level) {
+        Int2ObjectOpenHashMap<PhysicalizedVolumeEntity> tracked = TRACKED.get(levelKey(level));
+        return tracked != null && !tracked.isEmpty();
     }
 
     private static boolean isUsable(PhysicalizedVolumeEntity volume) {

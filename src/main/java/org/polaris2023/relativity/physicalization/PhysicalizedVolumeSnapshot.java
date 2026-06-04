@@ -26,6 +26,8 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.CollisionContext;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import it.unimi.dsi.fastutil.longs.LongSet;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
@@ -56,6 +58,8 @@ public final class PhysicalizedVolumeSnapshot {
     private final int occupiedMaxZ;
     private final AABB occupiedLocalBounds;
     private final List<AABB> localCollisionBoxes;
+    private final List<AABB> physicsCollisionBoxes;
+    private final boolean hasBlockEntityNbt;
     private final double centerOfMassLocalX;
     private final double centerOfMassLocalY;
     private final double centerOfMassLocalZ;
@@ -78,6 +82,7 @@ public final class PhysicalizedVolumeSnapshot {
         int maxX = Integer.MIN_VALUE;
         int maxY = Integer.MIN_VALUE;
         int maxZ = Integer.MIN_VALUE;
+        boolean hasNbt = false;
         for (PhysicalizedBlockSnapshot cell : cells) {
             int localX = cell.localX();
             int localY = cell.localY();
@@ -90,6 +95,9 @@ public final class PhysicalizedVolumeSnapshot {
                 continue;
             }
             uniqueCells.add(cell);
+            if (cell.hasBlockEntityNbt()) {
+                hasNbt = true;
+            }
             if (denseIndex != null) {
                 denseIndex[denseIndex(localX, localY, localZ)] = cell;
             }
@@ -103,6 +111,7 @@ public final class PhysicalizedVolumeSnapshot {
         this.cells = List.copyOf(uniqueCells);
         this.cellIndex = Collections.unmodifiableMap(index);
         this.denseCellIndex = denseIndex;
+        this.hasBlockEntityNbt = hasNbt;
         if (this.cells.isEmpty()) {
             // Match the legacy empty-volume behaviour: min = 0, max = size - 1.
             this.occupiedMinX = 0;
@@ -132,7 +141,9 @@ public final class PhysicalizedVolumeSnapshot {
         this.centerOfMassLocalY = massProperties.centerY();
         this.centerOfMassLocalZ = massProperties.centerZ();
         this.estimatedPhysicsMass = massProperties.mass();
-        this.localCollisionBoxes = buildLocalCollisionBoxes();
+        CollisionBoxes collisionBoxes = buildCollisionBoxes();
+        this.localCollisionBoxes = collisionBoxes.localBoxes();
+        this.physicsCollisionBoxes = collisionBoxes.physicsBoxes();
     }
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
         List<PhysicalizedBlockSnapshot> cells = new ArrayList<>();
@@ -304,6 +315,14 @@ public final class PhysicalizedVolumeSnapshot {
 
     public List<AABB> localCollisionBoxes() {
         return localCollisionBoxes;
+    }
+
+    public List<AABB> physicsCollisionBoxes() {
+        return physicsCollisionBoxes;
+    }
+
+    public boolean hasBlockEntityNbt() {
+        return hasBlockEntityNbt;
     }
 
     public double centerOfMassLocalX() {
@@ -481,12 +500,14 @@ public final class PhysicalizedVolumeSnapshot {
         return (localY * sizeZ + localZ) * sizeX + localX;
     }
 
-    private List<AABB> buildLocalCollisionBoxes() {
+    private CollisionBoxes buildCollisionBoxes() {
         if (this.cells.isEmpty()) {
-            return List.of();
+            return CollisionBoxes.EMPTY;
         }
         SnapshotBlockGetter localLevel = new SnapshotBlockGetter(this);
-        List<AABB> boxes = new ArrayList<>();
+        List<AABB> localBoxes = new ArrayList<>();
+        List<AABB> physicsBoxes = new ArrayList<>();
+        LongSet fullBlocks = new LongOpenHashSet();
         for (PhysicalizedBlockSnapshot cell : this.cells) {
             BlockState state = cell.state();
             if (state.isAir()) {
@@ -497,11 +518,90 @@ public final class PhysicalizedVolumeSnapshot {
             if (shape.isEmpty()) {
                 continue;
             }
-            for (AABB localShapeBox : shape.toAabbs()) {
-                boxes.add(localShapeBox.move(localPos));
+            List<AABB> shapeBoxes = shape.toAabbs();
+            boolean fullBlock = isFullBlockBoxes(shapeBoxes);
+            for (AABB localShapeBox : shapeBoxes) {
+                AABB movedBox = localShapeBox.move(localPos);
+                localBoxes.add(movedBox);
+                if (!fullBlock) {
+                    physicsBoxes.add(movedBox);
+                }
+            }
+            if (fullBlock) {
+                fullBlocks.add(pack(cell.localX(), cell.localY(), cell.localZ()));
             }
         }
-        return List.copyOf(boxes);
+        mergeFullBlocks(fullBlocks, physicsBoxes);
+        return new CollisionBoxes(List.copyOf(localBoxes), List.copyOf(physicsBoxes));
+    }
+
+    private static void mergeFullBlocks(LongSet remaining, List<AABB> output) {
+        while (!remaining.isEmpty()) {
+            long first = remaining.iterator().nextLong();
+            int x0 = unpackX(first);
+            int y0 = unpackY(first);
+            int z0 = unpackZ(first);
+
+            int x1 = x0;
+            while (remaining.contains(pack(x1 + 1, y0, z0))) {
+                x1++;
+            }
+
+            int z1 = z0;
+            while (hasFullLayer(remaining, x0, x1, y0, z1 + 1)) {
+                z1++;
+            }
+
+            int y1 = y0;
+            while (hasFullVolumeLayer(remaining, x0, x1, y1 + 1, z0, z1)) {
+                y1++;
+            }
+
+            for (int y = y0; y <= y1; y++) {
+                for (int z = z0; z <= z1; z++) {
+                    for (int x = x0; x <= x1; x++) {
+                        remaining.remove(pack(x, y, z));
+                    }
+                }
+            }
+            output.add(new AABB(x0, y0, z0, x1 + 1.0, y1 + 1.0, z1 + 1.0));
+        }
+    }
+
+    private static boolean hasFullLayer(LongSet remaining, int x0, int x1, int y, int z) {
+        for (int x = x0; x <= x1; x++) {
+            if (!remaining.contains(pack(x, y, z))) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean hasFullVolumeLayer(LongSet remaining, int x0, int x1, int y, int z0, int z1) {
+        for (int z = z0; z <= z1; z++) {
+            if (!hasFullLayer(remaining, x0, x1, y, z)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private static boolean isFullBlockBoxes(List<AABB> boxes) {
+        if (boxes.size() != 1) {
+            return false;
+        }
+
+        AABB box = boxes.get(0);
+        return nearly(box.minX, 0.0)
+                && nearly(box.minY, 0.0)
+                && nearly(box.minZ, 0.0)
+                && nearly(box.maxX, 1.0)
+                && nearly(box.maxY, 1.0)
+                && nearly(box.maxZ, 1.0);
+    }
+
+    private static boolean nearly(double first, double second) {
+        return Math.abs(first - second) < 1.0E-7;
     }
 
     private MassProperties computeMassProperties(List<PhysicalizedBlockSnapshot> cells) {
@@ -535,7 +635,23 @@ public final class PhysicalizedVolumeSnapshot {
         return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
     }
 
+    private static int unpackX(long packed) {
+        return (int) (packed & 0x1FFFFFL);
+    }
+
+    private static int unpackY(long packed) {
+        return (int) ((packed >>> 21) & 0x1FFFFFL);
+    }
+
+    private static int unpackZ(long packed) {
+        return (int) ((packed >>> 42) & 0x1FFFFFL);
+    }
+
     private record MassProperties(double centerX, double centerY, double centerZ, double mass) {
+    }
+
+    private record CollisionBoxes(List<AABB> localBoxes, List<AABB> physicsBoxes) {
+        private static final CollisionBoxes EMPTY = new CollisionBoxes(List.of(), List.of());
     }
 
     private record SnapshotBlockGetter(PhysicalizedVolumeSnapshot snapshot) implements BlockGetter {
