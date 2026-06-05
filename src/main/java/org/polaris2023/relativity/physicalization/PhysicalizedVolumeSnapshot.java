@@ -410,6 +410,45 @@ public final class PhysicalizedVolumeSnapshot {
         return new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next);
     }
 
+    public PhysicalizedVolumeSnapshot withCellsUpdated(List<PhysicalizedBlockSnapshot> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return this;
+        }
+
+        Map<Long, PhysicalizedBlockSnapshot> replacements = new HashMap<>(updates.size() * 2);
+        for (PhysicalizedBlockSnapshot update : updates) {
+            if (isInside(update.localX(), update.localY(), update.localZ())) {
+                replacements.put(pack(update.localX(), update.localY(), update.localZ()), update);
+            }
+        }
+        if (replacements.isEmpty()) {
+            return this;
+        }
+
+        boolean changed = false;
+        List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size() + replacements.size());
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            long key = pack(cell.localX(), cell.localY(), cell.localZ());
+            PhysicalizedBlockSnapshot replacement = replacements.remove(key);
+            if (replacement == null) {
+                next.add(cell);
+                continue;
+            }
+
+            changed = true;
+            if (!replacement.state().isAir()) {
+                next.add(replacement);
+            }
+        }
+        for (PhysicalizedBlockSnapshot replacement : replacements.values()) {
+            if (!replacement.state().isAir()) {
+                next.add(replacement);
+                changed = true;
+            }
+        }
+        return changed ? new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next) : this;
+    }
+
     public PhysicalizedVolumeSnapshot withCellState(PhysicalizedBlockSnapshot target, BlockState state, CompoundTag nbt) {
         long targetKey = pack(target.localX(), target.localY(), target.localZ());
         List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size());

@@ -158,6 +158,13 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.setSnapshotPreservingEntityCenter(snapshot, true, null);
     }
 
+    public void updateSnapshotCells(PhysicalizedVolumeSnapshot snapshot, List<PhysicalizedBlockSnapshot> updates) {
+        this.setSnapshotPreservingEntityCenter(snapshot, false, null);
+        if (!this.level().isClientSide()) {
+            PhysicalizedInteractionNetwork.sendCellUpdates(this, updates);
+        }
+    }
+
     public List<AABB> minecraftCollisionBoxes() {
         PhysicalizedVolumeSnapshot current = this.currentSnapshot();
         if (current.blockCount() <= 0) {

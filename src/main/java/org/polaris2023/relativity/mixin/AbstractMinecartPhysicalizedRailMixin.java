@@ -19,6 +19,21 @@ public abstract class AbstractMinecartPhysicalizedRailMixin {
         PhysicalizedMinecartRailMapping.carryMinecartWithPhysicalizedRail((AbstractMinecart) (Object) this);
     }
 
+    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/vehicle/minecart/MinecartBehavior;tick()V"))
+    private void relativityCraft$beginMappedMinecartTick(CallbackInfo ci) {
+        PhysicalizedMinecartRailMapping.beginMappedMinecartTick((AbstractMinecart) (Object) this);
+    }
+
+    @Inject(method = "tick", at = @At(value = "INVOKE", target = "Lnet/minecraft/world/entity/vehicle/minecart/AbstractMinecart;updateFluidInteraction()Z"))
+    private void relativityCraft$finishMappedMinecartTick(CallbackInfo ci) {
+        PhysicalizedMinecartRailMapping.finishMappedMinecartTick((AbstractMinecart) (Object) this);
+    }
+
+    @Inject(method = "tick", at = @At("TAIL"))
+    private void relativityCraft$cancelMappedMinecartTick(CallbackInfo ci) {
+        PhysicalizedMinecartRailMapping.cancelMappedMinecartTick((AbstractMinecart) (Object) this);
+    }
+
     @Redirect(
             method = "createMinecart",
             at = @At(value = "INVOKE", target = "Lnet/minecraft/world/level/Level;getBlockState(Lnet/minecraft/core/BlockPos;)Lnet/minecraft/world/level/block/state/BlockState;")

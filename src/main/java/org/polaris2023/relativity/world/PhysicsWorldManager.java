@@ -3,6 +3,7 @@ package org.polaris2023.relativity.world;
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.fluid.FluidDomainManager;
+import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import net.minecraft.world.phys.Vec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
@@ -160,6 +161,22 @@ public final class PhysicsWorldManager {
 
         LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
         return state.rebuildBodyShape(level, entity, wakeUp);
+    }
+
+    public void resetBodyMotion(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (entity.isRemoved() || !(entity.level() instanceof ServerLevel entityLevel) || entityLevel != level) {
+            return;
+        }
+        entity.setDeltaMovement(Vec3.ZERO);
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return;
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        if (state != null) {
+            state.resetBodyMotion(entity);
+        }
     }
 
     public boolean isBodyActive(ServerLevel level, PhysicalizedVolumeEntity entity) {
@@ -371,6 +388,14 @@ public final class PhysicsWorldManager {
                     volume.rotationQw()
             );
             zeroBodyMotion(body);
+        }
+
+        void resetBodyMotion(PhysicalizedVolumeEntity volume) {
+            long body = volume.nativeBodyHandle();
+            if (body == 0L || bodyByEntityId.get(volume.getId()) != body) {
+                return;
+            }
+            anchorBodyToEntity(body, volume);
         }
 
         private void trackBody(PhysicalizedVolumeEntity entity, long body) {
@@ -830,6 +855,9 @@ public final class PhysicsWorldManager {
                 return null;
             }
             if (PhysicalizedVolumeManager.global().virtualAirMask().isVirtuallyAir(dimensionId, pos.getX(), pos.getY(), pos.getZ())) {
+                return null;
+            }
+            if (PhysicalizedRedstoneMapping.global().isLogicBodyBlockPos(level, pos)) {
                 return null;
             }
 

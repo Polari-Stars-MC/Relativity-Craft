@@ -28,6 +28,8 @@ import net.neoforged.neoforge.network.PacketDistributor;
 import net.neoforged.neoforge.network.event.RegisterPayloadHandlersEvent;
 import net.neoforged.neoforge.network.handling.IPayloadContext;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Optional;
 
 public final class PhysicalizedInteractionNetwork {
@@ -37,6 +39,7 @@ public final class PhysicalizedInteractionNetwork {
     public static void registerPayloads(RegisterPayloadHandlersEvent event) {
         event.registrar("1")
                 .playToClient(SnapshotPayload.TYPE, SnapshotPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleSnapshot)
+                .playToClient(CellUpdatesPayload.TYPE, CellUpdatesPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleCellUpdates)
                 .playToClient(BreakOverlayPayload.TYPE, BreakOverlayPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakOverlay)
                 .playToClient(ContainerOpenPayload.TYPE, ContainerOpenPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleContainerOpen)
                 .playToServer(UseCommandPayload.TYPE, UseCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleUseCommand)
@@ -62,6 +65,16 @@ public final class PhysicalizedInteractionNetwork {
                         entity.rotationQz(),
                         entity.rotationQw()
                 )
+        );
+    }
+
+    public static void sendCellUpdates(PhysicalizedVolumeEntity entity, List<PhysicalizedBlockSnapshot> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return;
+        }
+        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                entity,
+                new CellUpdatesPayload(entity.getId(), List.copyOf(updates))
         );
     }
 
@@ -91,6 +104,13 @@ public final class PhysicalizedInteractionNetwork {
                     payload.qz(),
                     payload.qw()
             );
+        }
+    }
+
+    private static void handleCellUpdates(CellUpdatesPayload payload, IPayloadContext context) {
+        Entity entity = context.player().level().getEntity(payload.entityId());
+        if (entity instanceof PhysicalizedVolumeEntity volume) {
+            volume.receiveSnapshot(volume.snapshot().withCellsUpdated(payload.updates()));
         }
     }
 
@@ -358,6 +378,49 @@ public final class PhysicalizedInteractionNetwork {
             buffer.writeFloat(qy);
             buffer.writeFloat(qz);
             buffer.writeFloat(qw);
+        }
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    public record CellUpdatesPayload(int entityId, List<PhysicalizedBlockSnapshot> updates) implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<CellUpdatesPayload> TYPE = new CustomPacketPayload.Type<>(
+                Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_cell_updates")
+        );
+        public static final StreamCodec<RegistryFriendlyByteBuf, CellUpdatesPayload> STREAM_CODEC = StreamCodec.of(
+                (buffer, payload) -> payload.write(buffer),
+                CellUpdatesPayload::read
+        );
+
+        private static CellUpdatesPayload read(RegistryFriendlyByteBuf buffer) {
+            int entityId = buffer.readVarInt();
+            int count = buffer.readVarInt();
+            List<PhysicalizedBlockSnapshot> updates = new ArrayList<>(Math.min(count, 256));
+            for (int i = 0; i < count; i++) {
+                updates.add(new PhysicalizedBlockSnapshot(
+                        buffer.readVarInt(),
+                        buffer.readVarInt(),
+                        buffer.readVarInt(),
+                        buffer.readVarInt(),
+                        buffer.readNbt()
+                ));
+            }
+            return new CellUpdatesPayload(entityId, updates);
+        }
+
+        private void write(RegistryFriendlyByteBuf buffer) {
+            buffer.writeVarInt(entityId);
+            buffer.writeVarInt(updates.size());
+            for (PhysicalizedBlockSnapshot update : updates) {
+                buffer.writeVarInt(update.localX());
+                buffer.writeVarInt(update.localY());
+                buffer.writeVarInt(update.localZ());
+                buffer.writeVarInt(update.stateId());
+                buffer.writeNbt(update.blockEntityNbt());
+            }
         }
 
         @Override

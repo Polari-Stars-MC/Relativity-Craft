@@ -104,6 +104,20 @@ public final class PhysicalizedRedstoneMapping {
         lastRedstonePoses.remove(entity.volumeIdString());
     }
 
+    public void removeBody(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        PhysicalizedLogicBodyRedstone.global().removeBody(level, entity);
+        virtualProfiles.remove(entity.volumeIdString());
+        lastRedstonePoses.remove(entity.volumeIdString());
+    }
+
+    public boolean isLogicBodyLevel(Level level) {
+        return PhysicalizedLogicBodyRedstone.global().isLogicBodyLevel(level);
+    }
+
+    public boolean isLogicBodyBlockPos(Level level, BlockPos pos) {
+        return PhysicalizedLogicBodyRedstone.global().isLogicBodyPos(level, pos);
+    }
+
     public void scheduleButtonRelease(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, long releaseGameTime) {
         virtualButtonReleases.put(CellKey.of(entity, cell), releaseGameTime);
     }
@@ -124,6 +138,12 @@ public final class PhysicalizedRedstoneMapping {
     }
 
     public int virtualSignal(BlockGetter level, BlockPos pos, Direction direction, boolean direct) {
+        if (level instanceof Level worldLevel) {
+            int logicBodySignal = PhysicalizedLogicBodyRedstone.global()
+                    .projectedSignal(((BlockGetter) level).getBlockState(pos), worldLevel, pos, direction, direct);
+            return logicBodySignal;
+        }
+
         VirtualCell virtualCell = virtualCellAt(level, pos);
         if (virtualCell == null) {
             return 0;
@@ -142,6 +162,12 @@ public final class PhysicalizedRedstoneMapping {
     }
 
     public int virtualControlInputSignal(BlockGetter level, BlockPos pos, Direction direction, boolean onlyDiodes) {
+        if (level instanceof Level worldLevel) {
+            int logicBodySignal = PhysicalizedLogicBodyRedstone.global()
+                    .projectedControlInputSignal(worldLevel, pos, direction, onlyDiodes);
+            return logicBodySignal;
+        }
+
         VirtualCell virtualCell = virtualCellAt(level, pos);
         if (virtualCell == null) {
             return 0;
@@ -165,8 +191,13 @@ public final class PhysicalizedRedstoneMapping {
     }
 
     public void notifyCellChanged(ServerLevel level, PhysicalizedVolumeEntity entity, int localX, int localY, int localZ) {
+        if (PhysicalizedLogicBodyRedstone.global().isApplyingLogicBody()) {
+            return;
+        }
+        PhysicalizedLogicBodyRedstone.global().ensureBody(level, entity);
+        PhysicalizedLogicBodyRedstone.global().notifyCellChanged(level, entity, localX, localY, localZ);
         virtualProfiles.remove(entity.volumeIdString());
-        recomputeVirtualRedstone(level, entity);
+        PhysicalizedLogicBodyRedstone.global().syncBodyToEntity(level, entity);
         PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(entity);
         entity.snapshot().cellAt(localX, localY, localZ).ifPresent(cell -> {
             notifyVirtualCellNeighborhoodIfMoved(level, entity, cell);
@@ -179,9 +210,10 @@ public final class PhysicalizedRedstoneMapping {
     }
 
     public void tick(ServerLevel level) {
-        releaseVirtualButtons(level);
-        releaseVirtualObservers(level);
-        tickVirtualBlocks(level);
+        if (isLogicBodyLevel(level)) {
+            return;
+        }
+        PhysicalizedLogicBodyRedstone.global().tick(level);
         Iterator<Map.Entry<CellKey, RedstoneAttachment>> iterator = attachments.entrySet().iterator();
         while (iterator.hasNext()) {
             Map.Entry<CellKey, RedstoneAttachment> entry = iterator.next();
@@ -221,7 +253,6 @@ public final class PhysicalizedRedstoneMapping {
             volume.snapshot().cellAt(key.localX(), key.localY(), key.localZ())
                     .ifPresent(cell -> notifyVirtualCellNeighborhoodIfMoved(level, volume, cell));
         }
-        notifyMovingVirtualSignalSources(level);
     }
 
     private void tickVirtualBlocks(ServerLevel level) {
@@ -229,12 +260,6 @@ public final class PhysicalizedRedstoneMapping {
             VirtualFeatureProfile profile = profileFor(volume);
             if (profile.hasContactTriggers()) {
                 tickContactTriggeredBlocks(level, volume, profile);
-            }
-            if (profile.hasObservers()) {
-                tickVirtualObservers(level, volume, profile);
-            }
-            if (profile.hasPistons()) {
-                tickVirtualPistons(level, volume, profile);
             }
         }
     }
@@ -1071,7 +1096,8 @@ public final class PhysicalizedRedstoneMapping {
             volume.updateSnapshot(mutation.snapshot());
         }
         PhysicsWorldManager.global().rebuildBodyShape(level, volume, false);
-        recomputeVirtualRedstone(level, volume);
+        PhysicalizedLogicBodyRedstone.global().ensureBody(level, volume);
+        PhysicalizedLogicBodyRedstone.global().syncBodyToEntity(level, volume);
         notifyAllVirtualNeighborhoods(level, volume);
     }
 
@@ -1565,7 +1591,7 @@ public final class PhysicalizedRedstoneMapping {
             }
             VirtualFeatureProfile profile = profileFor(volume);
             if (profile.hasRedstoneCircuit() && shouldRecomputeMovingRedstone(level, volume, profile)) {
-                recomputeVirtualRedstone(level, volume);
+                PhysicalizedLogicBodyRedstone.global().refreshMovedBody(level, volume);
             }
             if (!profile.hasMovingSignalSources()) {
                 continue;
@@ -1773,7 +1799,7 @@ public final class PhysicalizedRedstoneMapping {
         return new SnapshotMutation(new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, nextCells), shiftX, shiftY, shiftZ);
     }
 
-    private static void notifyAllVirtualNeighborhoods(ServerLevel level, PhysicalizedVolumeEntity volume) {
+    static void notifyAllVirtualNeighborhoods(ServerLevel level, PhysicalizedVolumeEntity volume) {
         PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
         for (PhysicalizedBlockSnapshot cell : volume.snapshot().cells()) {
             notifyProjectedVirtualNeighborhood(level, mapping, cell, cell.state());

@@ -338,6 +338,9 @@ public final class PhysicalizedClientInteractions {
     }
 
     private static PlacementPredictionResult predictCreativePlacement(Minecraft minecraft, PhysicalizedHit hit, InteractionHand hand) {
+        if (disablePlacementVisualPrediction()) {
+            return PlacementPredictionResult.NOT_ATTEMPTED;
+        }
         if (minecraft.player == null || minecraft.level == null || !minecraft.player.getAbilities().instabuild || hit.entity().isRemoved()) {
             return PlacementPredictionResult.NOT_ATTEMPTED;
         }
