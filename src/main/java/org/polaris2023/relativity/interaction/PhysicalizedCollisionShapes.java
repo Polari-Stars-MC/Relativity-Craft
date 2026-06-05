@@ -24,6 +24,7 @@ import java.util.function.Consumer;
 
 public final class PhysicalizedCollisionShapes {
     private static final double QUERY_EPSILON = 1.0E-5;
+    private static final double ROTATED_BOX_SAMPLE_STEP = 0.25;
     private static final double PUSH_OUT_EPSILON = 1.0E-3;
     private static final int MAX_PUSH_OUT_ITERATIONS = 2;
     private static final int PUSH_SCAN_INTERVAL_TICKS = 20;
@@ -111,10 +112,12 @@ public final class PhysicalizedCollisionShapes {
                     }
 
                     for (AABB localPart : localShape.toAabbs()) {
-                        AABB worldPart = mapping.worldAabbOfLocal(localPart.move(localPos)).inflate(inflate);
-                        if (worldPart.intersects(queryBox)) {
-                            output.accept(worldPart);
-                        }
+                        mapping.forEachWorldAabbOfLocal(localPart.move(localPos), ROTATED_BOX_SAMPLE_STEP, worldPart -> {
+                            AABB inflatedPart = worldPart.inflate(inflate);
+                            if (inflatedPart.intersects(queryBox)) {
+                                output.accept(inflatedPart);
+                            }
+                        });
                     }
                 }
             }

@@ -17,7 +17,6 @@ import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.shapes.VoxelShape;
 
-import it.unimi.dsi.fastutil.ints.Int2LongMap;
 import it.unimi.dsi.fastutil.ints.Int2LongOpenHashMap;
 import it.unimi.dsi.fastutil.longs.Long2IntMap;
 import it.unimi.dsi.fastutil.longs.Long2IntOpenHashMap;
@@ -46,13 +45,6 @@ public final class PhysicsWorldManager {
     private static final double PISTON_PUSH_VELOCITY = 2.0;
     private static final long PRIORITY_TERRAIN_BUILD_BUDGET_NANOS = 3_000_000L;
     private static final long BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS = 1_500_000L;
-    private static final double WORLD_CONTACT_BIAS_SECONDS = 0.12;
-    private static final double WORLD_CONTACT_MAX_UPWARD_SPEED = 6.0;
-    private static final double WORLD_CONTACT_TORQUE_SCALE = 0.55;
-    private static final double WORLD_CONTACT_MAX_TORQUE_IMPULSE = 32.0;
-    private static final double WORLD_CONTACT_DEEP_PENETRATION = 0.35;
-    private static final double WORLD_CONTACT_MAX_POSITION_RECOVERY = 0.08;
-    private static final int WORLD_CONTACT_SCAN_INTERVAL_TICKS = 2;
 
     private final Map<String, LevelPhysicsState> levels = new Object2ObjectOpenHashMap<>();
     private boolean warnedNativeUnavailable;
@@ -149,11 +141,15 @@ public final class PhysicsWorldManager {
 
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null) {
-            state.wakeBodiesInAabb(box);
+            state.wakeBodiesInAabb(level, box);
         }
     }
 
     public boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        return rebuildBodyShape(level, entity, true);
+    }
+
+    public boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity, boolean wakeUp) {
         if (entity.isRemoved() || !(entity.level() instanceof ServerLevel entityLevel) || entityLevel != level) {
             return false;
         }
@@ -163,7 +159,17 @@ public final class PhysicsWorldManager {
         }
 
         LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
-        return state.rebuildBodyShape(level, entity);
+        return state.rebuildBodyShape(level, entity, wakeUp);
+    }
+
+    public boolean isBodyActive(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return false;
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        return state != null && state.isBodyActive(entity);
     }
 
     public void unloadChunk(ServerLevel level, int chunkX, int chunkZ) {
@@ -247,13 +253,26 @@ public final class PhysicsWorldManager {
             }
 
             trackBody(entity, body);
+            zeroBodyMotion(body);
             requestTerrainAroundBody(level, body, terrainBounds, false, false);
             return true;
         }
 
-        boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        boolean isBodyActive(PhysicalizedVolumeEntity entity) {
+            long body = entity.nativeBodyHandle();
+            if (body == 0L) {
+                return false;
+            }
+            return bodyByEntityId.get(entity.getId()) == body
+                    && entityIdByBody.get(body) == entity.getId()
+                    && mappingByBody.containsKey(body);
+        }
+
+        boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity, boolean wakeUp) {
             long oldBody = entity.nativeBodyHandle();
-            Vec3 linearVelocity = oldBody == 0L ? Vec3.ZERO : world.getBodyLinearVelocity(oldBody);
+            Vec3 linearVelocity = oldBody == 0L || !wakeUp ? Vec3.ZERO : world.getBodyLinearVelocity(oldBody);
+            Vec3 angularVelocity = oldBody == 0L || !wakeUp ? Vec3.ZERO : world.getBodyAngularVelocity(oldBody);
+            boolean wasSleeping = oldBody != 0L && world.isBodySleeping(oldBody);
             if (oldBody != 0L) {
                 untrackBody(level, entity, oldBody);
                 world.removeBody(oldBody);
@@ -278,8 +297,15 @@ public final class PhysicsWorldManager {
             }
 
             trackBody(entity, nextBody);
+            world.setBodyLinearVelocity(nextBody, linearVelocity, wakeUp);
+            world.setBodyAngularVelocity(nextBody, angularVelocity, wakeUp);
+            if (!wakeUp || wasSleeping) {
+                zeroBodyMotion(nextBody);
+            }
             requestTerrainAroundBody(level, nextBody, terrainBounds, false, false);
-            world.wakeUp(nextBody);
+            if (wakeUp) {
+                world.wakeUp(nextBody);
+            }
             return true;
         }
 
@@ -319,6 +345,32 @@ public final class PhysicsWorldManager {
                     0.75,
                     0.05
             );
+        }
+
+        private void zeroBodyMotion(long body) {
+            if (body == 0L) {
+                return;
+            }
+            world.setBodyLinearVelocity(body, Vec3.ZERO, false);
+            world.setBodyAngularVelocity(body, Vec3.ZERO, false);
+        }
+
+        private void anchorBodyToEntity(long body, PhysicalizedVolumeEntity volume) {
+            if (body == 0L || volume == null || volume.isRemoved()) {
+                return;
+            }
+            Vec3 physicsCenter = volume.physicsCenter();
+            world.setBodyPose(
+                    body,
+                    physicsCenter.x,
+                    physicsCenter.y,
+                    physicsCenter.z,
+                    volume.rotationQx(),
+                    volume.rotationQy(),
+                    volume.rotationQz(),
+                    volume.rotationQw()
+            );
+            zeroBodyMotion(body);
         }
 
         private void trackBody(PhysicalizedVolumeEntity entity, long body) {
@@ -371,7 +423,6 @@ public final class PhysicsWorldManager {
                 updateWaterSurfaceColliders(level);
             }
             applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK);
-            applyMinecraftCollisionForces(level);
             for (int i = 0; i < SUBSTEPS_PER_SERVER_TICK; i++) {
                 world.step(PHYSICS_SUBSTEP_SECONDS);
             }
@@ -401,6 +452,11 @@ public final class PhysicsWorldManager {
                     continue;
                 }
 
+                if (volume.isPhysicsEditIsolated(level.getGameTime())) {
+                    anchorBodyToEntity(body, volume);
+                    continue;
+                }
+
                 volume.applyNativeSnapshot(
                         snapshot[i + 1],
                         snapshot[i + 2],
@@ -414,83 +470,10 @@ public final class PhysicsWorldManager {
             }
         }
 
-        private void applyMinecraftCollisionForces(ServerLevel level) {
-            if (bodyByEntityId.isEmpty()) {
-                return;
-            }
-
-            for (Int2LongMap.Entry entry : bodyByEntityId.int2LongEntrySet()) {
-                int entityId = entry.getIntKey();
-                if (Math.floorMod(level.getGameTime() + entityId, WORLD_CONTACT_SCAN_INTERVAL_TICKS) != 0) {
-                    continue;
-                }
-                Entity entity = level.getEntity(entityId);
-                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
-                    applyMinecraftCollisionForces(level, volume, entry.getLongValue());
-                }
-            }
-        }
-
-        private void applyMinecraftCollisionForces(ServerLevel level, PhysicalizedVolumeEntity volume, long body) {
-            PhysicalizedVolumeEntity.WorldCollisionContact contact = volume.worldCollisionContact();
-            if (contact == null || contact.penetration() <= 0.0) {
-                return;
-            }
-
-            Vec3 velocity = world.getBodyLinearVelocity(body);
-            double gravityCompensation = -GRAVITY_Y * PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK;
-            double upwardSpeed = Math.max(0.0, -velocity.y()) + gravityCompensation + contact.penetration() / WORLD_CONTACT_BIAS_SECONDS;
-            upwardSpeed = Math.min(upwardSpeed, WORLD_CONTACT_MAX_UPWARD_SPEED);
-            if (upwardSpeed <= 1.0E-5) {
-                return;
-            }
-
-            double mass = estimateBodyMass(volume);
-            double impulseY = mass * upwardSpeed;
-            world.applyBodyImpulse(body, 0.0, impulseY, 0.0);
-
-            Vec3 center = volume.physicsCenter();
-            double rx = contact.pointX() - center.x;
-            double rz = contact.pointZ() - center.z;
-            double torqueX = clamp(-rz * impulseY * WORLD_CONTACT_TORQUE_SCALE, -WORLD_CONTACT_MAX_TORQUE_IMPULSE, WORLD_CONTACT_MAX_TORQUE_IMPULSE);
-            double torqueZ = clamp(rx * impulseY * WORLD_CONTACT_TORQUE_SCALE, -WORLD_CONTACT_MAX_TORQUE_IMPULSE, WORLD_CONTACT_MAX_TORQUE_IMPULSE);
-            if (Math.abs(torqueX) > 1.0E-5 || Math.abs(torqueZ) > 1.0E-5) {
-                world.applyBodyTorqueImpulse(body, torqueX, 0.0, torqueZ);
-            }
-
-            if (contact.penetration() > WORLD_CONTACT_DEEP_PENETRATION) {
-                double recovery = Math.min(
-                        (contact.penetration() - WORLD_CONTACT_DEEP_PENETRATION) * 0.2,
-                        WORLD_CONTACT_MAX_POSITION_RECOVERY
-                );
-                if (recovery > 1.0E-5) {
-                    world.setBodyTranslation(body, center.x, center.y + recovery, center.z);
-                    volume.applyNativeSnapshot(
-                            center.x,
-                            center.y + recovery,
-                            center.z,
-                            volume.rotationQx(),
-                            volume.rotationQy(),
-                            volume.rotationQz(),
-                            volume.rotationQw()
-                    );
-                    fluids(level).forget(volume);
-                }
-            }
-        }
-
-        private static double estimateBodyMass(PhysicalizedVolumeEntity volume) {
-            return Math.max(0.05, volume.estimatedPhysicsMass());
-        }
-
-        private static double clamp(double value, double min, double max) {
-            return Math.max(min, Math.min(max, value));
-        }
-
         void markBlockChanged(ServerLevel level, BlockPos pos) {
             fluids(level).markDirty(level, pos);
             markSectionDirty(level, pos);
-            wakeBodiesInAabb(new AABB(pos).inflate(2.0));
+            wakeBodiesInAabb(level, new AABB(pos).inflate(2.0));
             for (Direction direction : DIRECTIONS) {
                 fluids(level).markDirty(level, pos.relative(direction));
                 markSectionDirty(level, pos.relative(direction));
@@ -500,7 +483,9 @@ public final class PhysicsWorldManager {
         private void applyFluidForces(ServerLevel level, double deltaSeconds) {
             for (Long2IntMap.Entry entry : entityIdByBody.long2IntEntrySet()) {
                 Entity entity = level.getEntity(entry.getIntValue());
-                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                if (entity instanceof PhysicalizedVolumeEntity volume
+                        && !volume.isRemoved()
+                        && !volume.isPhysicsEditIsolated(level.getGameTime())) {
                     fluids(level).applyFluidForces(level, world, volume, deltaSeconds);
                 }
             }
@@ -560,10 +545,16 @@ public final class PhysicsWorldManager {
             }
         }
 
-        void wakeBodiesInAabb(AABB box) {
+        void wakeBodiesInAabb(ServerLevel level, AABB box) {
             long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
             for (long body : bodies) {
                 if (entityIdByBody.containsKey(body)) {
+                    int entityId = entityIdByBody.get(body);
+                    Entity entity = entityId == Integer.MIN_VALUE ? null : level.getEntity(entityId);
+                    if (entity instanceof PhysicalizedVolumeEntity volume
+                            && volume.isPhysicsEditIsolated(level.getGameTime())) {
+                        continue;
+                    }
                     world.wakeUp(body);
                 }
             }
@@ -587,9 +578,6 @@ public final class PhysicsWorldManager {
             double dx = direction.getStepX() * distance;
             double dy = direction.getStepY() * distance;
             double dz = direction.getStepZ() * distance;
-            double vx = direction.getStepX() * PISTON_PUSH_VELOCITY;
-            double vy = direction.getStepY() * PISTON_PUSH_VELOCITY;
-            double vz = direction.getStepZ() * PISTON_PUSH_VELOCITY;
             AABB queryBox = sweptBox.inflate(0.0625);
 
             for (PhysicalizedVolumeEntity volume : level.getEntitiesOfClass(PhysicalizedVolumeEntity.class, queryBox)) {
@@ -612,7 +600,8 @@ public final class PhysicsWorldManager {
                     continue;
                 }
 
-                world.setBodyLinearVelocity(body, vx, vy, vz);
+                world.setBodyLinearVelocity(body, Vec3.ZERO, false);
+                world.setBodyAngularVelocity(body, Vec3.ZERO, false);
                 volume.applyNativeSnapshot(
                         centerX,
                         centerY,

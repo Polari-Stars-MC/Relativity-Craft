@@ -6,6 +6,7 @@ import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.interaction.PhysicalizedInteractionHandler;
+import org.polaris2023.relativity.interaction.PhysicalizedVolumeMapping;
 import org.polaris2023.relativity.interaction.PhysicalizedVolumeLookup;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.registry.ModAttachments;
@@ -17,7 +18,6 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.InteractionHand;
@@ -96,6 +96,8 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private float clientVisualTargetQy;
     private float clientVisualTargetQz;
     private float clientVisualTargetQw = 1.0F;
+    private long physicsEditIsolationUntilGameTime = Long.MIN_VALUE;
+    private static final double DEBUG_COLLISION_BOX_SAMPLE_STEP = 0.25;
 
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
@@ -189,11 +191,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return cachedMinecraftCollisionBoxes;
         }
 
-        AABB[] boxes = new AABB[localBoxes.size()];
-        for (int i = 0; i < localBoxes.size(); i++) {
-            boxes[i] = this.localBoxToWorldAabb(localBoxes.get(i));
+        List<AABB> boxes = new java.util.ArrayList<>(localBoxes.size());
+        PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(this);
+        for (AABB localBox : localBoxes) {
+            mapping.forEachWorldAabbOfLocal(localBox, DEBUG_COLLISION_BOX_SAMPLE_STEP, boxes::add);
         }
-        cachedMinecraftCollisionBoxes = List.of(boxes);
+        cachedMinecraftCollisionBoxes = List.copyOf(boxes);
         cachedMinecraftCollisionBoxesGameTime = gameTime;
         cachedMinecraftCollisionBoxesSnapshot = current;
         cachedMinecraftCollisionBoxesX = this.getX();
@@ -296,7 +299,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     public ClientVisualPose clientVisualPose(float partialTicks) {
-        Vec3 targetPosition = this.getPosition(partialTicks);
+        Vec3 targetPosition = this.position();
         float targetQx = this.rotationQx();
         float targetQy = this.rotationQy();
         float targetQz = this.rotationQz();
@@ -329,6 +332,17 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         }
 
         return this.clientCurrentVisualPose(now);
+    }
+
+    public void isolatePhysicsAfterBlockEdit(ServerLevel level, int ticks) {
+        if (level == null || ticks <= 0) {
+            return;
+        }
+        physicsEditIsolationUntilGameTime = Math.max(physicsEditIsolationUntilGameTime, level.getGameTime() + ticks);
+    }
+
+    public boolean isPhysicsEditIsolated(long gameTime) {
+        return gameTime <= physicsEditIsolationUntilGameTime;
     }
 
     public long nativeBodyHandle() {
@@ -622,12 +636,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public boolean isPushable() {
-        return !this.isRemoved();
+        return false;
     }
 
     @Override
     public boolean canBeCollidedWith(Entity other) {
-        return !this.isRemoved();
+        return false;
     }
 
     @Override
@@ -682,6 +696,11 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return;
         }
 
+        boolean activeNativeBody = PhysicsWorldManager.global().isBodyActive((ServerLevel) this.level(), this);
+        if (!activeNativeBody) {
+            this.nativeBodyHandle = 0L;
+        }
+
         if (this.nativeBodyHandle == 0L && PhysicsWorldManager.global().register(this)) {
             return;
         }
@@ -689,16 +708,8 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return;
         }
 
-        this.applyGravity();
-        this.move(MoverType.SELF, this.getDeltaMovement());
-        this.applyEffectsFromBlocks();
-
-        Vec3 movement = this.getDeltaMovement();
-        if (this.onGround()) {
-            this.setDeltaMovement(movement.x * 0.65, 0.0, movement.z * 0.65);
-        } else {
-            this.setDeltaMovement(movement.scale(0.98));
-        }
+        this.setDeltaMovement(Vec3.ZERO);
+        this.setBoundingBox(this.makeBoundingBox(this.position()));
     }
 
     @Override

@@ -44,8 +44,16 @@ public final class RcWorld implements AutoCloseable {
         return RelativityCraftRapier.rigidBodyGetLinearVelocity(handle, rigidBodyHandle);
     }
 
+    public Vec3 getRigidBodyAngularVelocity(long rigidBodyHandle) {
+        return RelativityCraftRapier.rigidBodyGetAngularVelocity(handle, rigidBodyHandle);
+    }
+
     public boolean setRigidBodyLinearVelocity(long rigidBodyHandle, Vec3 velocity, boolean wakeUp) {
         return RelativityCraftRapier.rigidBodySetLinearVelocity(handle, rigidBodyHandle, velocity, wakeUp);
+    }
+
+    public boolean setRigidBodyAngularVelocity(long rigidBodyHandle, Vec3 velocity, boolean wakeUp) {
+        return RelativityCraftRapier.rigidBodySetAngularVelocity(handle, rigidBodyHandle, velocity, wakeUp);
     }
 
     public boolean addRigidBodyForce(long rigidBodyHandle, Vec3 force, boolean wakeUp) {

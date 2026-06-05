@@ -174,12 +174,30 @@ public final class RapierNativeWorld implements AutoCloseable {
             bodyHandle,
             vec3(x, y, z),
             RelativityCraftRapier.rigidBodyGetRotation(world.handle(), bodyHandle),
-            true
+            false
+        );
+    }
+
+    public boolean setBodyPose(long bodyHandle, double x, double y, double z, double qx, double qy, double qz, double qw) {
+        return RelativityCraftRapier.rigidBodySetPose(
+            world.handle(),
+            bodyHandle,
+            vec3(x, y, z),
+            new Quaterniond(qx, qy, qz, qw),
+            false
         );
     }
 
     public boolean setBodyLinearVelocity(long bodyHandle, double x, double y, double z) {
         return world.setRigidBodyLinearVelocity(bodyHandle, vec3(x, y, z), true);
+    }
+
+    public boolean setBodyLinearVelocity(long bodyHandle, Vec3 velocity, boolean wakeUp) {
+        return world.setRigidBodyLinearVelocity(bodyHandle, velocity, wakeUp);
+    }
+
+    public boolean setBodyAngularVelocity(long bodyHandle, Vec3 velocity, boolean wakeUp) {
+        return world.setRigidBodyAngularVelocity(bodyHandle, velocity, wakeUp);
     }
 
     public boolean addBodyForce(long bodyHandle, double x, double y, double z) {
@@ -196,6 +214,10 @@ public final class RapierNativeWorld implements AutoCloseable {
 
     public Vec3 getBodyLinearVelocity(long bodyHandle) {
         return world.getRigidBodyLinearVelocity(bodyHandle);
+    }
+
+    public Vec3 getBodyAngularVelocity(long bodyHandle) {
+        return world.getRigidBodyAngularVelocity(bodyHandle);
     }
 
     public void step(double dt) {
@@ -236,6 +258,10 @@ public final class RapierNativeWorld implements AutoCloseable {
 
     public boolean wakeUp(long bodyHandle) {
         return RelativityCraftRapier.rigidBodyWakeUp(world.handle(), bodyHandle, true);
+    }
+
+    public boolean isBodySleeping(long bodyHandle) {
+        return RelativityCraftRapier.rigidBodyIsSleeping(world.handle(), bodyHandle);
     }
 
     public boolean areSleeping(long firstBody, long secondBody) {

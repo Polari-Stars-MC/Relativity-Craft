@@ -14,6 +14,7 @@ import net.minecraft.world.entity.EntitySelector;
 import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.level.BlockGetter;
 import net.minecraft.world.level.Level;
+import net.minecraft.world.level.SignalGetter;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ButtonBlock;
@@ -66,7 +67,6 @@ public final class PhysicalizedRedstoneMapping {
     private static final int MAX_PISTON_PUSH = 12;
 
     private final Map<CellKey, RedstoneAttachment> attachments = new Object2ObjectOpenHashMap<>();
-    private final Object2IntOpenHashMap<String> volumePower = new Object2IntOpenHashMap<>();
     private final Map<CellKey, Set<BlockPos>> lastVirtualSignalNeighborhoods = new Object2ObjectOpenHashMap<>();
     private final Object2LongOpenHashMap<CellKey> virtualButtonReleases = new Object2LongOpenHashMap<>();
     private final Object2LongOpenHashMap<CellKey> virtualObserverReleases = new Object2LongOpenHashMap<>();
@@ -75,7 +75,6 @@ public final class PhysicalizedRedstoneMapping {
     private final Map<String, RedstonePose> lastRedstonePoses = new Object2ObjectOpenHashMap<>();
 
     private PhysicalizedRedstoneMapping() {
-        volumePower.defaultReturnValue(0);
         lastObservedStates.defaultReturnValue(Integer.MIN_VALUE);
     }
 
@@ -91,7 +90,6 @@ public final class PhysicalizedRedstoneMapping {
         int signal = strongestSignal((ServerLevel) hit.entity().level(), placedPos, placedState);
         CellKey key = CellKey.of(hit.entity(), hit.cell());
         attachments.put(key, new RedstoneAttachment(hit.entity().getId(), placedPos.immutable(), placedState, signal));
-        updateVolumePower(hit.entity().volumeIdString(), signal);
         notifyRedstoneNeighborhood((ServerLevel) hit.entity().level(), placedPos, placedState);
         notifyVirtualCellNeighborhood((ServerLevel) hit.entity().level(), hit.entity(), hit.cell());
     }
@@ -104,7 +102,6 @@ public final class PhysicalizedRedstoneMapping {
         lastObservedStates.remove(CellKey.of(entity, cell));
         virtualProfiles.remove(entity.volumeIdString());
         lastRedstonePoses.remove(entity.volumeIdString());
-        recomputeVolumePower();
     }
 
     public void scheduleButtonRelease(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, long releaseGameTime) {
@@ -141,7 +138,6 @@ public final class PhysicalizedRedstoneMapping {
         signal = Math.max(signal, strongestProjectedVirtualSignal(level, virtualCell, direct));
         signal = Math.max(signal, strongestProjectedWorldSignal(level, virtualCell.mapping(), virtualCell.cell(), false));
         signal = Math.max(signal, strongestProjectedWorldSignal(level, virtualCell.mapping(), virtualCell.cell(), true));
-        signal = Math.max(signal, volumePower.getOrDefault(virtualCell.entity().volumeIdString(), 0));
         return Math.min(15, signal);
     }
 
@@ -225,7 +221,6 @@ public final class PhysicalizedRedstoneMapping {
             volume.snapshot().cellAt(key.localX(), key.localY(), key.localZ())
                     .ifPresent(cell -> notifyVirtualCellNeighborhoodIfMoved(level, volume, cell));
         }
-        recomputeVolumePower();
         notifyMovingVirtualSignalSources(level);
     }
 
@@ -389,32 +384,44 @@ public final class PhysicalizedRedstoneMapping {
                 continue;
             }
 
-            Direction facing = state.getValue(DirectionalBlock.FACING);
-            BlockPos observedPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ()).relative(facing);
-            int observedState = observedStateId(level, mapping, states, observedPos);
+            Direction localFacing = state.getValue(DirectionalBlock.FACING);
+            BlockPos observedPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ()).relative(localFacing);
+            int observedState = observedStateId(level, volume, mapping, states, observedPos);
             CellKey key = CellKey.of(volume, cell);
             if (!lastObservedStates.containsKey(key)) {
                 lastObservedStates.put(key, observedState);
                 continue;
             }
             int previous = lastObservedStates.getInt(key);
+            lastObservedStates.put(key, observedState);
             if (previous == observedState || state.getValue(BlockStateProperties.POWERED)) {
                 continue;
             }
 
-            lastObservedStates.put(key, observedState);
             setCellState(level, volume, cell, state.setValue(BlockStateProperties.POWERED, true));
             virtualObserverReleases.put(key, level.getGameTime() + 2L);
         }
     }
 
-    private static int observedStateId(ServerLevel level, PhysicalizedVolumeMapping mapping, Map<Long, BlockState> states, BlockPos localPos) {
+    private static int observedStateId(
+            ServerLevel level,
+            PhysicalizedVolumeEntity observerVolume,
+            PhysicalizedVolumeMapping mapping,
+            Map<Long, BlockState> states,
+            BlockPos localPos
+    ) {
         BlockState localState = stateAt(states, localPos);
         if (!localState.isAir()) {
             return Block.getId(localState);
         }
+
         Vec3 worldCenter = mapping.localToWorld(new Vec3(localPos.getX() + 0.5, localPos.getY() + 0.5, localPos.getZ() + 0.5));
-        return Block.getId(level.getBlockState(BlockPos.containing(worldCenter)));
+        BlockPos worldPos = BlockPos.containing(worldCenter);
+        VirtualCell virtualCell = GLOBAL.virtualCellAt(level, worldPos);
+        if (virtualCell != null && virtualCell.entity() != observerVolume) {
+            return Block.getId(virtualCell.cell().state());
+        }
+        return Block.getId(level.getBlockState(worldPos));
     }
 
     private void tickVirtualPistons(ServerLevel level, PhysicalizedVolumeEntity volume, VirtualFeatureProfile profile) {
@@ -553,7 +560,7 @@ public final class PhysicalizedRedstoneMapping {
             }
             cells.put(pistonPos, piston.withState(pistonState));
         } else {
-            retractVirtualPiston(level, mapping, cells, pistonPos, direction, sticky);
+            retractVirtualPiston(level, volume, mapping, cells, pistonPos, direction, sticky);
             cells.put(pistonPos, piston.withState(pistonState));
         }
 
@@ -571,43 +578,24 @@ public final class PhysicalizedRedstoneMapping {
             Direction direction,
             boolean sticky
     ) {
-        List<BlockPos> toPush = new ArrayList<>();
-        List<BlockPos> toDestroy = new ArrayList<>();
-        BlockPos cursor = pistonPos.relative(direction);
-        for (int pushed = 0; pushed <= MAX_PISTON_PUSH; pushed++) {
-            MutableCell cell = cells.get(cursor);
-            if (cell == null || cell.state().isAir()) {
-                break;
-            }
-            if (!isVirtualPushable(level, mapping, cursor, cell.state(), direction, true, direction)) {
-                return false;
-            }
-            if (cell.state().getPistonPushReaction() == PushReaction.DESTROY) {
-                toDestroy.add(cursor);
-                break;
-            }
-            if (toPush.size() >= MAX_PISTON_PUSH) {
-                return false;
-            }
-            toPush.add(cursor);
-            cursor = cursor.relative(direction);
-        }
-
-        if (!canVirtualPistonOccupyWorld(level, mapping, pistonPos, direction, toPush)) {
+        VirtualPistonMove move = VirtualPistonResolver.resolve(level, mapping, cells, pistonPos, direction, true);
+        if (move == null) {
             return false;
         }
-        pushPhysicalizedBodiesForVirtualPiston(level, volume, mapping, pistonPos, direction, toPush);
+        Set<BlockPos> occupied = new HashSet<>();
+        occupied.add(pistonPos.relative(direction));
+        for (BlockPos pushedPos : move.toPush()) {
+            occupied.add(pushedPos.relative(move.pushDirection()));
+        }
+        if (!canVirtualPistonOccupyWorld(level, mapping, occupied)) {
+            return false;
+        }
+        pushPhysicalizedBodiesForVirtualPiston(level, volume, mapping, move.pushDirection(), move.toPush(), pistonPos.relative(direction));
 
-        for (BlockPos destroyPos : toDestroy) {
-            cells.remove(destroyPos);
+        for (BlockPos destroyPos : move.toDestroy()) {
+            destroyVirtualPistonCell(level, mapping, cells, destroyPos);
         }
-        for (int i = toPush.size() - 1; i >= 0; i--) {
-            BlockPos from = toPush.get(i);
-            MutableCell moved = cells.remove(from);
-            if (moved != null) {
-                cells.put(from.relative(direction), moved);
-            }
-        }
+        moveVirtualCells(cells, move.toPush(), move.pushDirection());
 
         PistonType type = sticky ? PistonType.STICKY : PistonType.DEFAULT;
         BlockState head = Blocks.PISTON_HEAD.defaultBlockState()
@@ -621,17 +609,10 @@ public final class PhysicalizedRedstoneMapping {
     private static boolean canVirtualPistonOccupyWorld(
             ServerLevel level,
             PhysicalizedVolumeMapping mapping,
-            BlockPos pistonPos,
-            Direction direction,
-            List<BlockPos> pushed
+            Set<BlockPos> occupied
     ) {
-        Set<BlockPos> occupied = new HashSet<>();
-        occupied.add(projectedLocalBlockPos(mapping, pistonPos.relative(direction)));
-        for (BlockPos pushedPos : pushed) {
-            occupied.add(projectedLocalBlockPos(mapping, pushedPos.relative(direction)));
-        }
-
-        for (BlockPos worldPos : occupied) {
+        for (BlockPos localPos : occupied) {
+            BlockPos worldPos = projectedLocalBlockPos(mapping, localPos);
             BlockState worldState = level.getBlockState(worldPos);
             if (worldState.isAir() || worldState.is(Blocks.MOVING_PISTON)) {
                 continue;
@@ -647,18 +628,24 @@ public final class PhysicalizedRedstoneMapping {
             ServerLevel level,
             PhysicalizedVolumeEntity source,
             PhysicalizedVolumeMapping mapping,
-            BlockPos pistonPos,
-            Direction direction,
-            List<BlockPos> pushed
+            Direction pushDirection,
+            List<BlockPos> pushed,
+            BlockPos extraMovedPos
     ) {
-        AABB sweptBox = localBlockWorldBox(mapping, pistonPos.relative(direction));
-        sweptBox = union(sweptBox, localBlockWorldBox(mapping, pistonPos.relative(direction, 2)));
+        AABB sweptBox = null;
+        if (extraMovedPos != null) {
+            sweptBox = unionOrSelf(sweptBox, localBlockWorldBox(mapping, extraMovedPos));
+            sweptBox = unionOrSelf(sweptBox, localBlockWorldBox(mapping, extraMovedPos.relative(pushDirection)));
+        }
         for (BlockPos pushedPos : pushed) {
-            sweptBox = union(sweptBox, localBlockWorldBox(mapping, pushedPos));
-            sweptBox = union(sweptBox, localBlockWorldBox(mapping, pushedPos.relative(direction)));
+            sweptBox = unionOrSelf(sweptBox, localBlockWorldBox(mapping, pushedPos));
+            sweptBox = unionOrSelf(sweptBox, localBlockWorldBox(mapping, pushedPos.relative(pushDirection)));
+        }
+        if (sweptBox == null) {
+            return;
         }
 
-        Direction worldDirection = mapping.localFaceToWorld(direction);
+        Direction worldDirection = mapping.localFaceToWorld(pushDirection);
         PhysicsWorldManager.global().pushBodies(level, sweptBox.inflate(0.0625), worldDirection, 1.0, source);
     }
 
@@ -668,6 +655,10 @@ public final class PhysicalizedRedstoneMapping {
 
     private static AABB localBlockWorldBox(PhysicalizedVolumeMapping mapping, BlockPos localPos) {
         return mapping.worldAabbOfLocal(new AABB(localPos));
+    }
+
+    private static AABB unionOrSelf(AABB first, AABB second) {
+        return first == null ? second : union(first, second);
     }
 
     private static AABB union(AABB first, AABB second) {
@@ -683,6 +674,7 @@ public final class PhysicalizedRedstoneMapping {
 
     private void retractVirtualPiston(
             ServerLevel level,
+            PhysicalizedVolumeEntity volume,
             PhysicalizedVolumeMapping mapping,
             Map<BlockPos, MutableCell> cells,
             BlockPos pistonPos,
@@ -700,18 +692,22 @@ public final class PhysicalizedRedstoneMapping {
             return;
         }
 
-        BlockPos pullPos = pistonPos.relative(direction, 2);
-        MutableCell pulled = cells.get(pullPos);
-        if (pulled == null || pulled.state().isAir()) {
+        VirtualPistonMove move = VirtualPistonResolver.resolve(level, mapping, cells, pistonPos, direction, false);
+        if (move == null || move.toPush().isEmpty()) {
             return;
         }
-        if (pulled.state().getPistonPushReaction() != PushReaction.NORMAL
-                || !isVirtualPushable(level, mapping, pullPos, pulled.state(), direction.getOpposite(), false, direction)) {
+        Set<BlockPos> occupied = new HashSet<>();
+        for (BlockPos pushedPos : move.toPush()) {
+            occupied.add(pushedPos.relative(move.pushDirection()));
+        }
+        if (!canVirtualPistonOccupyWorld(level, mapping, occupied)) {
             return;
         }
-
-        cells.remove(pullPos);
-        cells.put(armPos, pulled);
+        pushPhysicalizedBodiesForVirtualPiston(level, volume, mapping, move.pushDirection(), move.toPush(), null);
+        for (BlockPos destroyPos : move.toDestroy()) {
+            destroyVirtualPistonCell(level, mapping, cells, destroyPos);
+        }
+        moveVirtualCells(cells, move.toPush(), move.pushDirection());
     }
 
     private boolean hasVirtualPistonSignal(
@@ -797,6 +793,213 @@ public final class PhysicalizedRedstoneMapping {
         return Math.max(state.getSignal(level, worldPos, worldDirection), state.getDirectSignal(level, worldPos, worldDirection));
     }
 
+    private static void destroyVirtualPistonCell(
+            ServerLevel level,
+            PhysicalizedVolumeMapping mapping,
+            Map<BlockPos, MutableCell> cells,
+            BlockPos localPos
+    ) {
+        MutableCell removed = cells.remove(localPos);
+        if (removed == null || removed.state().isAir()) {
+            return;
+        }
+
+        BlockPos dropPos = projectedLocalBlockPos(mapping, localPos);
+        BlockEntity blockEntity = removed.nbt() == null
+                ? null
+                : BlockEntity.loadStatic(dropPos, removed.state(), removed.nbt(), level.registryAccess());
+        Block.dropResources(removed.state(), level, dropPos, blockEntity);
+    }
+
+    private static void moveVirtualCells(Map<BlockPos, MutableCell> cells, List<BlockPos> toPush, Direction pushDirection) {
+        Map<BlockPos, MutableCell> movedCells = new HashMap<>(toPush.size());
+        for (BlockPos from : toPush) {
+            MutableCell moved = cells.remove(from);
+            if (moved != null) {
+                movedCells.put(from.relative(pushDirection), moved);
+            }
+        }
+        cells.putAll(movedCells);
+    }
+
+    private static final class VirtualPistonResolver {
+        private final ServerLevel level;
+        private final PhysicalizedVolumeMapping mapping;
+        private final Map<BlockPos, MutableCell> cells;
+        private final BlockPos pistonPos;
+        private final boolean extending;
+        private final BlockPos startPos;
+        private final Direction pushDirection;
+        private final Direction pistonDirection;
+        private final List<BlockPos> toPush = new ArrayList<>();
+        private final List<BlockPos> toDestroy = new ArrayList<>();
+
+        private VirtualPistonResolver(
+                ServerLevel level,
+                PhysicalizedVolumeMapping mapping,
+                Map<BlockPos, MutableCell> cells,
+                BlockPos pistonPos,
+                Direction pistonDirection,
+                boolean extending
+        ) {
+            this.level = level;
+            this.mapping = mapping;
+            this.cells = cells;
+            this.pistonPos = pistonPos;
+            this.pistonDirection = pistonDirection;
+            this.extending = extending;
+            this.pushDirection = extending ? pistonDirection : pistonDirection.getOpposite();
+            this.startPos = extending ? pistonPos.relative(pistonDirection) : pistonPos.relative(pistonDirection, 2);
+        }
+
+        static VirtualPistonMove resolve(
+                ServerLevel level,
+                PhysicalizedVolumeMapping mapping,
+                Map<BlockPos, MutableCell> cells,
+                BlockPos pistonPos,
+                Direction pistonDirection,
+                boolean extending
+        ) {
+            VirtualPistonResolver resolver = new VirtualPistonResolver(level, mapping, cells, pistonPos, pistonDirection, extending);
+            return resolver.resolve()
+                    ? new VirtualPistonMove(resolver.pushDirection, List.copyOf(resolver.toPush), List.copyOf(resolver.toDestroy))
+                    : null;
+        }
+
+        private boolean resolve() {
+            this.toPush.clear();
+            this.toDestroy.clear();
+            BlockState startState = this.stateAt(this.startPos);
+            if (!isVirtualPushable(this.level, this.mapping, this.startPos, startState, this.pushDirection, false, this.pistonDirection)) {
+                if (this.extending && startState.getPistonPushReaction() == PushReaction.DESTROY) {
+                    this.toDestroy.add(this.startPos);
+                    return true;
+                }
+                return false;
+            }
+            if (!this.addBlockLine(this.startPos, this.pushDirection)) {
+                return false;
+            }
+            for (int i = 0; i < this.toPush.size(); i++) {
+                BlockPos pos = this.toPush.get(i);
+                if (this.stateAt(pos).isStickyBlock() && !this.addBranchingBlocks(pos)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private boolean addBlockLine(BlockPos start, Direction direction) {
+            BlockState nextState = this.stateAt(start);
+            if (nextState.isAir()) {
+                return true;
+            }
+            if (!isVirtualPushable(this.level, this.mapping, start, nextState, this.pushDirection, false, direction)) {
+                return true;
+            }
+            if (start.equals(this.pistonPos) || this.toPush.contains(start)) {
+                return true;
+            }
+
+            int blockCount = 1;
+            if (blockCount + this.toPush.size() > MAX_PISTON_PUSH) {
+                return false;
+            }
+
+            while (nextState.isStickyBlock()) {
+                BlockPos pos = start.relative(this.pushDirection.getOpposite(), blockCount);
+                BlockState oldState = nextState;
+                nextState = this.stateAt(pos);
+                if (nextState.isAir()
+                        || !(oldState.canStickTo(nextState) && oldState.canStickTo(oldState))
+                        || !isVirtualPushable(this.level, this.mapping, pos, nextState, this.pushDirection, false, this.pushDirection.getOpposite())
+                        || pos.equals(this.pistonPos)) {
+                    break;
+                }
+                if (++blockCount + this.toPush.size() > MAX_PISTON_PUSH) {
+                    return false;
+                }
+            }
+
+            int blocksAdded = 0;
+            for (int i = blockCount - 1; i >= 0; i--) {
+                this.toPush.add(start.relative(this.pushDirection.getOpposite(), i));
+                blocksAdded++;
+            }
+
+            int distance = 1;
+            while (true) {
+                BlockPos pos = start.relative(this.pushDirection, distance);
+                int collisionPos = this.toPush.indexOf(pos);
+                if (collisionPos > -1) {
+                    this.reorderListAtCollision(blocksAdded, collisionPos);
+                    for (int j = 0; j <= collisionPos + blocksAdded; j++) {
+                        BlockPos branchPos = this.toPush.get(j);
+                        if (this.stateAt(branchPos).isStickyBlock() && !this.addBranchingBlocks(branchPos)) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+
+                nextState = this.stateAt(pos);
+                if (nextState.isAir()) {
+                    return true;
+                }
+                if (!isVirtualPushable(this.level, this.mapping, pos, nextState, this.pushDirection, true, this.pushDirection)
+                        || pos.equals(this.pistonPos)) {
+                    return false;
+                }
+                if (nextState.getPistonPushReaction() == PushReaction.DESTROY) {
+                    this.toDestroy.add(pos);
+                    return true;
+                }
+                if (this.toPush.size() >= MAX_PISTON_PUSH) {
+                    return false;
+                }
+
+                this.toPush.add(pos);
+                blocksAdded++;
+                distance++;
+            }
+        }
+
+        private void reorderListAtCollision(int blocksAdded, int collisionPos) {
+            List<BlockPos> head = new ArrayList<>(this.toPush.subList(0, collisionPos));
+            List<BlockPos> lastLineAdded = new ArrayList<>(this.toPush.subList(this.toPush.size() - blocksAdded, this.toPush.size()));
+            List<BlockPos> collisionToLine = new ArrayList<>(this.toPush.subList(collisionPos, this.toPush.size() - blocksAdded));
+            this.toPush.clear();
+            this.toPush.addAll(head);
+            this.toPush.addAll(lastLineAdded);
+            this.toPush.addAll(collisionToLine);
+        }
+
+        private boolean addBranchingBlocks(BlockPos fromPos) {
+            BlockState fromState = this.stateAt(fromPos);
+            for (Direction direction : DIRECTIONS) {
+                if (direction.getAxis() == this.pushDirection.getAxis()) {
+                    continue;
+                }
+                BlockPos neighborPos = fromPos.relative(direction);
+                BlockState neighborState = this.stateAt(neighborPos);
+                if (neighborState.canStickTo(fromState)
+                        && fromState.canStickTo(neighborState)
+                        && !this.addBlockLine(neighborPos, direction)) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private BlockState stateAt(BlockPos pos) {
+            MutableCell cell = this.cells.get(pos);
+            return cell == null ? Blocks.AIR.defaultBlockState() : cell.state();
+        }
+    }
+
+    private record VirtualPistonMove(Direction pushDirection, List<BlockPos> toPush, List<BlockPos> toDestroy) {
+    }
+
     private static boolean isPistonBase(BlockState state) {
         return (state.is(Blocks.PISTON) || state.is(Blocks.STICKY_PISTON))
                 && state.hasProperty(DirectionalBlock.FACING)
@@ -815,11 +1018,23 @@ public final class PhysicalizedRedstoneMapping {
         if (state.isAir()) {
             return true;
         }
+        BlockPos worldPos = projectedLocalBlockPos(mapping, localPos);
+        Direction worldDirection = mapping.localFaceToWorld(direction);
+        if (worldPos.getY() < level.getMinY()
+                || worldPos.getY() > level.getMaxY()
+                || !level.getWorldBorder().isWithinBounds(worldPos)) {
+            return false;
+        }
         if (state.is(Blocks.OBSIDIAN)
                 || state.is(Blocks.CRYING_OBSIDIAN)
                 || state.is(Blocks.RESPAWN_ANCHOR)
-                || state.is(Blocks.REINFORCED_DEEPSLATE)
-                || state.hasBlockEntity()) {
+                || state.is(Blocks.REINFORCED_DEEPSLATE)) {
+            return false;
+        }
+        if (worldDirection == Direction.DOWN && worldPos.getY() == level.getMinY()) {
+            return false;
+        }
+        if (worldDirection == Direction.UP && worldPos.getY() == level.getMaxY()) {
             return false;
         }
         if ((state.is(Blocks.PISTON) || state.is(Blocks.STICKY_PISTON))
@@ -828,8 +1043,7 @@ public final class PhysicalizedRedstoneMapping {
             return false;
         }
 
-        Vec3 worldCenter = mapping.localToWorld(new Vec3(localPos.getX() + 0.5, localPos.getY() + 0.5, localPos.getZ() + 0.5));
-        if (state.getDestroySpeed(level, BlockPos.containing(worldCenter)) == -1.0F) {
+        if (state.getDestroySpeed(level, worldPos) == -1.0F) {
             return false;
         }
 
@@ -843,7 +1057,7 @@ public final class PhysicalizedRedstoneMapping {
         if (reaction == PushReaction.PUSH_ONLY) {
             return direction == connectionDirection;
         }
-        return true;
+        return !state.hasBlockEntity();
     }
 
     private void applySnapshotMutation(ServerLevel level, PhysicalizedVolumeEntity volume, SnapshotMutation mutation) {
@@ -856,9 +1070,7 @@ public final class PhysicalizedRedstoneMapping {
         } else {
             volume.updateSnapshot(mutation.snapshot());
         }
-        volume.resolveWorldCollisionAfterShapeChange();
-        PhysicsWorldManager.global().rebuildBodyShape(level, volume);
-        PhysicsWorldManager.global().wakeBodiesInAabb(level, volume.getBoundingBox().inflate(0.5));
+        PhysicsWorldManager.global().rebuildBodyShape(level, volume, false);
         recomputeVirtualRedstone(level, volume);
         notifyAllVirtualNeighborhoods(level, volume);
     }
@@ -947,6 +1159,55 @@ public final class PhysicalizedRedstoneMapping {
         BlockPos pos = new BlockPos(localX, localY, localZ);
         states.put(pack(localX, localY, localZ), state);
         return refreshWireConnections(state, pos, new StateMapBlockGetter(states, snapshot.sizeY()));
+    }
+
+    public static PhysicalizedVolumeSnapshot refreshVanillaNeighborShapes(
+            Level backingLevel,
+            PhysicalizedVolumeSnapshot snapshot,
+            int localX,
+            int localY,
+            int localZ
+    ) {
+        if (snapshot == null || snapshot.blockCount() <= 0) {
+            return PhysicalizedVolumeSnapshot.EMPTY;
+        }
+
+        PhysicalizedVolumeSnapshot current = snapshot;
+        boolean changed;
+        do {
+            changed = false;
+            PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, backingLevel);
+            for (Direction direction : DIRECTIONS) {
+                int neighborX = localX + direction.getStepX();
+                int neighborY = localY + direction.getStepY();
+                int neighborZ = localZ + direction.getStepZ();
+                PhysicalizedBlockSnapshot neighbor = current.cellAt(neighborX, neighborY, neighborZ).orElse(null);
+                if (neighbor == null || neighbor.state().isAir()) {
+                    continue;
+                }
+
+                BlockPos neighborPos = new BlockPos(neighborX, neighborY, neighborZ);
+                BlockPos changedPos = new BlockPos(localX, localY, localZ);
+                BlockState nextState = neighbor.state().updateShape(
+                        localLevel,
+                        localLevel,
+                        neighborPos,
+                        direction.getOpposite(),
+                        changedPos,
+                        localLevel.getBlockState(changedPos),
+                        backingLevel.getRandom()
+                );
+                if (!nextState.equals(neighbor.state())) {
+                    current = nextState.isAir()
+                            ? current.withoutCell(neighbor)
+                            : current.withCellState(neighbor, nextState, neighbor.blockEntityNbt());
+                    changed = true;
+                    break;
+                }
+            }
+        } while (changed && current.blockCount() > 0);
+
+        return current;
     }
 
     private static BlockState refreshWireConnections(BlockState state, BlockPos pos, StateMapBlockGetter localLevel) {
@@ -1050,6 +1311,9 @@ public final class PhysicalizedRedstoneMapping {
         }
         if (state.is(Blocks.REDSTONE_WIRE)) {
             return wireSignal(state, direction);
+        }
+        if (level instanceof SignalGetter signalGetter && !(level instanceof Level)) {
+            return direct ? signalGetter.getDirectSignal(pos, direction) : signalGetter.getSignal(pos, direction);
         }
         return direct ? state.getDirectSignal(level, pos, direction) : state.getSignal(level, pos, direction);
     }
@@ -1223,6 +1487,7 @@ public final class PhysicalizedRedstoneMapping {
 
     private static int strongestAdjacentLocalSignal(VirtualCell virtualCell, BlockPos localPos, boolean direct) {
         int signal = 0;
+        PhysicalizedSnapshotBlockGetter localLevel = virtualCell.localLevel();
         for (Direction direction : DIRECTIONS) {
             BlockPos neighborPos = localPos.relative(direction);
             PhysicalizedBlockSnapshot neighbor = virtualCell.entity()
@@ -1233,7 +1498,7 @@ public final class PhysicalizedRedstoneMapping {
                 continue;
             }
             BlockState state = neighbor.state();
-            signal = Math.max(signal, signalFromState(state, virtualCell.localLevel(), neighborPos, direction, direct));
+            signal = Math.max(signal, signalFromState(state, localLevel, neighborPos, direction, direct));
         }
         return Math.min(15, signal);
     }
@@ -1293,26 +1558,6 @@ public final class PhysicalizedRedstoneMapping {
         return BlockPos.containing(mapping.localToWorld(localNeighborCenter));
     }
 
-    private void updateVolumePower(String volumeId, int signal) {
-        if (signal <= 0) {
-            return;
-        }
-        volumePower.put(volumeId, Math.max(volumePower.getInt(volumeId), Math.min(15, signal)));
-    }
-
-    private void recomputeVolumePower() {
-        Object2IntOpenHashMap<String> next = new Object2IntOpenHashMap<>();
-        for (Map.Entry<CellKey, RedstoneAttachment> entry : attachments.entrySet()) {
-            int signal = Math.min(15, Math.max(0, entry.getValue().signal()));
-            if (signal > 0) {
-                String volumeId = entry.getKey().volumeId();
-                next.put(volumeId, Math.max(next.getInt(volumeId), signal));
-            }
-        }
-        volumePower.clear();
-        volumePower.putAll(next);
-    }
-
     private void notifyMovingVirtualSignalSources(ServerLevel level) {
         for (PhysicalizedVolumeEntity volume : PhysicalizedVolumeLookup.loadedVolumes(level)) {
             if (volume.isRemoved()) {
@@ -1322,14 +1567,10 @@ public final class PhysicalizedRedstoneMapping {
             if (profile.hasRedstoneCircuit() && shouldRecomputeMovingRedstone(level, volume, profile)) {
                 recomputeVirtualRedstone(level, volume);
             }
-            boolean hasHardPower = volumePower.getOrDefault(volume.volumeIdString(), 0) > 0;
-            if (!profile.hasMovingSignalSources() && !hasHardPower) {
+            if (!profile.hasMovingSignalSources()) {
                 continue;
             }
-            Iterable<PhysicalizedBlockSnapshot> signalCells = profile.hasMovingSignalSources()
-                    ? profile.movingSignalCells()
-                    : volume.snapshot().cells();
-            for (PhysicalizedBlockSnapshot cell : signalCells) {
+            for (PhysicalizedBlockSnapshot cell : profile.movingSignalCells()) {
                 BlockState state = cell.state();
                 if (state.isAir()
                         || (!state.isSignalSource()
@@ -1585,7 +1826,7 @@ public final class PhysicalizedRedstoneMapping {
         return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
     }
 
-    private record StateMapBlockGetter(Map<Long, BlockState> states, int height) implements BlockGetter {
+    private record StateMapBlockGetter(Map<Long, BlockState> states, int height) implements SignalGetter {
         @Override
         public BlockEntity getBlockEntity(BlockPos pos) {
             return null;

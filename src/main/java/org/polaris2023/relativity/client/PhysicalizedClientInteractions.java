@@ -30,11 +30,18 @@ import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.item.BlockItem;
 import net.minecraft.world.item.ItemStack;
 import net.minecraft.world.level.block.Block;
+import net.minecraft.world.level.block.AbstractFurnaceBlock;
+import net.minecraft.world.level.block.BarrelBlock;
 import net.minecraft.world.level.block.ButtonBlock;
+import net.minecraft.world.level.block.ChestBlock;
+import net.minecraft.world.level.block.DispenserBlock;
+import net.minecraft.world.level.block.DropperBlock;
+import net.minecraft.world.level.block.HopperBlock;
 import net.minecraft.world.level.block.LeverBlock;
 import net.minecraft.world.level.block.RedStoneWireBlock;
 import net.minecraft.world.level.block.RepeaterBlock;
 import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.ShulkerBoxBlock;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.phys.AABB;
@@ -72,6 +79,12 @@ public final class PhysicalizedClientInteractions {
     }
 
     public static PlacementVisualPrediction placementVisualFor(PhysicalizedVolumeEntity entity) {
+        // Server snapshots are the source of truth for body pose. Rendering an
+        // expanded client-side snapshot here makes the whole rigid body appear
+        // to jump until the authoritative snapshot arrives.
+        if (disablePlacementVisualPrediction()) {
+            return null;
+        }
         PredictedPlacement prediction = PREDICTED_PLACEMENTS.get(entity.getId());
         if (prediction == null) {
             return null;
@@ -86,6 +99,10 @@ public final class PhysicalizedClientInteractions {
             return null;
         }
         return new PlacementVisualPrediction(prediction.snapshot(), prediction.localOrigin(), prediction.center());
+    }
+
+    private static boolean disablePlacementVisualPrediction() {
+        return true;
     }
 
     @SubscribeEvent
@@ -348,6 +365,7 @@ public final class PhysicalizedClientInteractions {
                 minecraft.player,
                 hand,
                 stack,
+                hit.visualBlockPos(),
                 targetPos,
                 hit.worldFace(),
                 hit.worldLocation()
@@ -391,7 +409,7 @@ public final class PhysicalizedClientInteractions {
 
         Vec3 nextCenter = futureCenter(entity, oldMapping, placement.snapshot());
         Vec3 nextOrigin = futureLocalOrigin(entity, oldMapping, placement);
-        if (!PhysicalizedInteractionHandler.canPlacePhysicalizedState(placement.snapshot(), placedX, placedY, placedZ, placementState)) {
+        if (!PhysicalizedInteractionHandler.canPlacePhysicalizedState(minecraft.level, placement.snapshot(), placedX, placedY, placedZ, placementState)) {
             return PlacementPredictionResult.FAILED;
         }
         if (PhysicalizedInteractionHandler.wouldPhysicalizedPlacementCollideWithWorld(
@@ -417,6 +435,13 @@ public final class PhysicalizedClientInteractions {
     private static boolean shouldPreferPhysicalizedBlockUse(PhysicalizedHit hit) {
         BlockState state = hit.cell().state();
         return hit.cell().hasBlockEntityNbt()
+                || state.getBlock() instanceof DispenserBlock
+                || state.getBlock() instanceof DropperBlock
+                || state.getBlock() instanceof HopperBlock
+                || state.getBlock() instanceof AbstractFurnaceBlock
+                || state.getBlock() instanceof ShulkerBoxBlock
+                || state.getBlock() instanceof ChestBlock
+                || state.getBlock() instanceof BarrelBlock
                 || state.getBlock() instanceof LeverBlock
                 || state.getBlock() instanceof ButtonBlock
                 || state.getBlock() instanceof RepeaterBlock

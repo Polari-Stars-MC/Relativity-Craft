@@ -45,6 +45,17 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public PhysicalizedVolumeSnapshot modelMeshSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
     public boolean modelMeshAmbientOcclusion;
     public boolean modelMeshCutoutLeaves;
+    public double modelMeshSampleX = Double.NaN;
+    public double modelMeshSampleY = Double.NaN;
+    public double modelMeshSampleZ = Double.NaN;
+    public float modelMeshSampleLocalOriginX = Float.NaN;
+    public float modelMeshSampleLocalOriginY = Float.NaN;
+    public float modelMeshSampleLocalOriginZ = Float.NaN;
+    public float modelMeshSampleCenterYOffset = Float.NaN;
+    public float modelMeshSampleQx = Float.NaN;
+    public float modelMeshSampleQy = Float.NaN;
+    public float modelMeshSampleQz = Float.NaN;
+    public float modelMeshSampleQw = Float.NaN;
     public CachedModelMesh modelMesh = CachedModelMesh.EMPTY;
     public ClientLevel clientLevel;
     public int breakLocalX = -1;
