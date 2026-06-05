@@ -164,17 +164,19 @@ static String nativeTaskSuffix(String platformId) {
     platformId.split("-").collect { it.capitalize() }.join("")
 }
 
-static boolean nativeUsesZig(Map config) {
+static boolean nativeUsesZig(String hostOs, Map config) {
     return config.os in ["linux", "freebsd"]
+            || (config.os == "macos" && hostOs != "macos")
+            || config.triple.endsWith("windows-gnullvm")
 }
 
 static boolean nativeCanBuildOnHost(String hostOs, Map config, File zigExecutable) {
     if (hostOs == "windows") {
         if (config.os == "windows") {
-            return config.arch == "x64"
+            return config.arch == "x64" || (config.arch == "arm64" && nativeUsesZig(hostOs, config) && zigExecutable.exists())
         }
         if (config.os == "macos") {
-            return false
+            return zigExecutable.exists() && config.arch in ["x64", "arm64"]
         }
         if (config.os == "freebsd") {
             return false
@@ -184,9 +186,9 @@ static boolean nativeCanBuildOnHost(String hostOs, Map config, File zigExecutabl
         }
     }
     if (config.os == "macos") {
-        return hostOs == "macos"
+        return hostOs == "macos" || zigExecutable.exists()
     }
-    if (nativeUsesZig(config)) {
+    if (nativeUsesZig(hostOs, config)) {
         return zigExecutable.exists()
     }
     return true
@@ -202,7 +204,7 @@ def nativeTargetMatrix = [
         "macos-x64"   : [os: "macos", arch: "x64", triple: "x86_64-apple-darwin"],
         "macos-arm64" : [os: "macos", arch: "arm64", triple: "aarch64-apple-darwin"],
         "windows-x64" : [os: "windows", arch: "x64", triple: "x86_64-pc-windows-msvc"],
-        "windows-arm64": [os: "windows", arch: "arm64", triple: "aarch64-pc-windows-msvc"],
+        "windows-arm64": [os: "windows", arch: "arm64", triple: "aarch64-pc-windows-gnullvm"],
 ]
 
 def currentNativePlatform = "${overrunglOs}-${overrunglArch}".toString()
@@ -223,7 +225,7 @@ nativeTargetMatrix.each { platformId, config ->
     def packageClasspathTaskName = "packageNativeClasspath${suffix}"
     def headerTaskName = "syncNativeHeader${suffix}"
     def artifactName = "${nativeArtifactPrefix(config.os)}${nativeLibraryBaseName}.${nativeArtifactExtension(config.os)}"
-    def usesZig = nativeUsesZig(config)
+    def usesZig = nativeUsesZig(overrunglOs, config)
     def canBuildOnHost = nativeCanBuildOnHost(overrunglOs, config, zigExecutable)
     def artifactFile = new File(nativeProjectDir, "target/${config.triple}/release/${artifactName}")
     def mustRunAfterTaskName = previousNativeBuildTaskName
