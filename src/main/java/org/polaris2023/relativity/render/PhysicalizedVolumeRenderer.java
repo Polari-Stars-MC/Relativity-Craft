@@ -473,13 +473,35 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         boolean cutoutLeaves = minecraft.options.cutoutLeaves().get();
         if (state.modelMeshSnapshot == state.renderSnapshot
                 && state.modelMeshAmbientOcclusion == ambientOcclusion
-                && state.modelMeshCutoutLeaves == cutoutLeaves) {
+                && state.modelMeshCutoutLeaves == cutoutLeaves
+                && state.modelMeshSampleX == state.x
+                && state.modelMeshSampleY == state.y
+                && state.modelMeshSampleZ == state.z
+                && state.modelMeshSampleLocalOriginX == state.localOriginX
+                && state.modelMeshSampleLocalOriginY == state.localOriginY
+                && state.modelMeshSampleLocalOriginZ == state.localOriginZ
+                && state.modelMeshSampleCenterYOffset == centerYOffset
+                && state.modelMeshSampleQx == rotation.x
+                && state.modelMeshSampleQy == rotation.y
+                && state.modelMeshSampleQz == rotation.z
+                && state.modelMeshSampleQw == rotation.w) {
             return state.modelMesh;
         }
 
         state.modelMeshSnapshot = state.renderSnapshot;
         state.modelMeshAmbientOcclusion = ambientOcclusion;
         state.modelMeshCutoutLeaves = cutoutLeaves;
+        state.modelMeshSampleX = state.x;
+        state.modelMeshSampleY = state.y;
+        state.modelMeshSampleZ = state.z;
+        state.modelMeshSampleLocalOriginX = state.localOriginX;
+        state.modelMeshSampleLocalOriginY = state.localOriginY;
+        state.modelMeshSampleLocalOriginZ = state.localOriginZ;
+        state.modelMeshSampleCenterYOffset = centerYOffset;
+        state.modelMeshSampleQx = rotation.x;
+        state.modelMeshSampleQy = rotation.y;
+        state.modelMeshSampleQz = rotation.z;
+        state.modelMeshSampleQw = rotation.w;
         state.modelMesh = buildCachedModelMesh(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves);
         return state.modelMesh;
     }
@@ -871,9 +893,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             if (state.clientLevel == null) {
                 return -1;
             }
-            BlockPos worldPos = worldPos(pos);
-            Holder<Biome> biome = state.clientLevel.getBiome(worldPos);
-            return color.getColor(biome.value(), worldPos.getX(), worldPos.getZ());
+            return state.clientLevel.getBlockTint(worldPos(pos), color);
         }
 
         @Override

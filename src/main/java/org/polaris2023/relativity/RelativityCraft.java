@@ -85,6 +85,9 @@ public final class RelativityCraft {
     @SubscribeEvent
     public void afterLevelTick(LevelTickEvent.Post event) {
         if (event.getLevel() instanceof ServerLevel level) {
+            if (PhysicalizedRedstoneMapping.global().isLogicBodyLevel(level)) {
+                return;
+            }
             WpoFiniteWaterPhysics.drainQueuedTicks(level);
             PhysicalizedVolumeManager.global().drainJobsFor(500_000L);
             BlockRemovalQueue.global().drain(level, 2_000_000L);
@@ -98,6 +101,9 @@ public final class RelativityCraft {
     public void onEntityLeaveLevel(EntityLeaveLevelEvent event) {
         if (event.getEntity() instanceof PhysicalizedVolumeEntity entity) {
             PhysicsWorldManager.global().unregister(entity);
+            if (event.getLevel() instanceof ServerLevel level) {
+                PhysicalizedRedstoneMapping.global().removeBody(level, entity);
+            }
         }
     }
 

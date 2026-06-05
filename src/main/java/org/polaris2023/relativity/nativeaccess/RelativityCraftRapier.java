@@ -139,6 +139,10 @@ public final class RelativityCraftRapier {
         "rc_rigid_body_get_linvel_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
+    private static final MethodHandle RC_RIGID_BODY_GET_ANGVEL = downcall(
+        "rc_rigid_body_get_angvel",
+        FunctionDescriptor.of(RC_VEC3, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
+    );
     private static final MethodHandle RC_RIGID_BODY_GET_ROTATION = downcall(
         "rc_rigid_body_get_rotation_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
@@ -150,6 +154,10 @@ public final class RelativityCraftRapier {
     private static final MethodHandle RC_RIGID_BODY_SET_LINVEL = downcall(
         "rc_rigid_body_set_linvel_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
+    );
+    private static final MethodHandle RC_RIGID_BODY_SET_ANGVEL = downcall(
+        "rc_rigid_body_set_angvel",
+        FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_ADD_FORCE = downcall(
         "rc_rigid_body_add_force_flag",
@@ -484,6 +492,18 @@ public final class RelativityCraftRapier {
         }
     }
 
+    static Vec3 rigidBodyGetAngularVelocity(MemorySegment world, long handle) {
+        try (Arena arena = Arena.ofConfined()) {
+            Object result = RC_RIGID_BODY_GET_ANGVEL.invoke((SegmentAllocator) arena, world, handle);
+            if (result instanceof MemorySegment segment) {
+                return decodeVec3(segment);
+            }
+            throw new IllegalStateException("Unexpected rc_rigid_body_get_angvel return type: " + result);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_rigid_body_get_angvel", t);
+        }
+    }
+
     static Quaterniond rigidBodyGetRotation(MemorySegment world, long handle) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment out = arena.allocate(RC_QUAT);
@@ -518,6 +538,37 @@ public final class RelativityCraftRapier {
             ) != 0;
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_rigid_body_set_linvel", t);
+        }
+    }
+
+    static boolean rigidBodySetAngularVelocity(MemorySegment world, long handle, Vec3 velocity, boolean wakeUp) {
+        try (Arena arena = Arena.ofConfined()) {
+            Object result;
+            try {
+                result = RC_RIGID_BODY_SET_ANGVEL.invoke(
+                    (SegmentAllocator) arena,
+                    world,
+                    handle,
+                    encodeVec3(arena, velocity),
+                    encodeBool(arena, wakeUp)
+                );
+            } catch (WrongMethodTypeException ignored) {
+                result = RC_RIGID_BODY_SET_ANGVEL.invoke(
+                    world,
+                    handle,
+                    encodeVec3(arena, velocity),
+                    encodeBool(arena, wakeUp)
+                );
+            }
+            if (result instanceof MemorySegment segment) {
+                return decodeBool(segment);
+            }
+            if (result instanceof Byte value) {
+                return value != 0;
+            }
+            throw new IllegalStateException("Unexpected rc_rigid_body_set_angvel return type: " + result);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call rc_rigid_body_set_angvel", t);
         }
     }
 

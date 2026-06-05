@@ -12,8 +12,16 @@ import net.minecraft.world.phys.Vec3;
 public final class PhysicalizedBlockPlaceContext extends BlockPlaceContext {
     private final BlockPos targetPos;
 
-    public PhysicalizedBlockPlaceContext(Player player, InteractionHand hand, ItemStack stack, BlockPos targetPos, Direction clickedFace, Vec3 clickLocation) {
-        super(player, hand, stack, new BlockHitResult(clickLocation, clickedFace, targetPos.relative(clickedFace.getOpposite()), false));
+    public PhysicalizedBlockPlaceContext(
+            Player player,
+            InteractionHand hand,
+            ItemStack stack,
+            BlockPos clickedPos,
+            BlockPos targetPos,
+            Direction clickedFace,
+            Vec3 clickLocation
+    ) {
+        super(player, hand, stack, new BlockHitResult(clickLocation, clickedFace, clickedPos, false));
         this.targetPos = targetPos;
         this.replaceClicked = false;
     }

@@ -41,6 +41,7 @@ import net.minecraft.world.level.block.state.properties.ChestType;
 import net.minecraft.world.level.storage.TagValueInput;
 import net.minecraft.world.level.storage.TagValueOutput;
 import net.minecraft.world.level.storage.ValueInput;
+import net.minecraft.world.phys.Vec3;
 import org.jspecify.annotations.Nullable;
 
 public final class PhysicalizedContainerMenuProvider implements MenuProvider {
@@ -183,7 +184,11 @@ public final class PhysicalizedContainerMenuProvider implements MenuProvider {
 
         @Override
         public boolean stillValid(Player player) {
-            return !entity.isRemoved() && player.distanceToSqr(entity) <= 64.0;
+            if (entity.isRemoved()) {
+                return false;
+            }
+            Vec3 cellCenter = PhysicalizedVolumeMapping.current(entity).cellWorldCenter(cell);
+            return player.distanceToSqr(cellCenter) <= 64.0;
         }
 
         @Override

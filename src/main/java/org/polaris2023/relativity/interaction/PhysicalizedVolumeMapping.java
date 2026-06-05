@@ -9,6 +9,7 @@ import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.Vec3;
 
 import java.util.Optional;
+import java.util.function.Consumer;
 
 public final class PhysicalizedVolumeMapping {
     private static final double EPSILON = 1.0E-7;
@@ -127,6 +128,75 @@ public final class PhysicalizedVolumeMapping {
         return bounds.toAabb();
     }
 
+    public boolean intersectsLocalBoxWithWorldAabb(AABB localBox, AABB worldBox, double epsilon) {
+        AABB localQuery = localAabbOfWorld(worldBox.inflate(epsilon));
+        if (!localBox.inflate(epsilon).intersects(localQuery)) {
+            return false;
+        }
+        return localObbIntersectsWorldAabb(localBox, worldBox, epsilon);
+    }
+
+    public Vec3 worldAabbPenetrationCorrection(AABB localBox, AABB worldBox, double epsilon) {
+        Vec3 localQueryCenter = worldToLocal(worldBox.getCenter());
+        Vec3 localBoxCenter = center(localBox);
+        Vec3 localHalf = halfExtents(localBox);
+        Vec3 worldHalf = halfExtents(worldBox);
+        Axis[] axes = obbTestAxes(epsilon);
+        double bestOverlap = Double.POSITIVE_INFINITY;
+        Vec3 bestAxis = null;
+
+        for (Axis axis : axes) {
+            if (axis.isZero(epsilon)) {
+                continue;
+            }
+            Vec3 localAxis = axis.local();
+            Vec3 worldAxis = axis.world();
+            double distance = localQueryCenter.subtract(localBoxCenter).dot(localAxis);
+            double projectedLocal = projectedLocalRadius(localHalf, localAxis);
+            double projectedWorld = projectedWorldRadius(worldHalf, worldAxis);
+            double overlap = projectedLocal + projectedWorld - Math.abs(distance);
+            if (overlap < -epsilon) {
+                return Vec3.ZERO;
+            }
+            if (overlap < bestOverlap) {
+                bestOverlap = overlap;
+                bestAxis = worldAxis.scale(distance < 0.0 ? 1.0 : -1.0);
+            }
+        }
+
+        if (bestAxis == null || bestOverlap <= epsilon) {
+            return Vec3.ZERO;
+        }
+        return bestAxis.scale(bestOverlap + epsilon);
+    }
+
+    public void forEachWorldAabbOfLocal(AABB localBox, double maxLocalStep, Consumer<AABB> output) {
+        double step = Math.max(1.0 / 16.0, maxLocalStep);
+        int xParts = splitCount(localBox.maxX - localBox.minX, step);
+        int yParts = splitCount(localBox.maxY - localBox.minY, step);
+        int zParts = splitCount(localBox.maxZ - localBox.minZ, step);
+        for (int x = 0; x < xParts; x++) {
+            double minX = Mth.lerp((double) x / xParts, localBox.minX, localBox.maxX);
+            double maxX = Mth.lerp((double) (x + 1) / xParts, localBox.minX, localBox.maxX);
+            for (int y = 0; y < yParts; y++) {
+                double minY = Mth.lerp((double) y / yParts, localBox.minY, localBox.maxY);
+                double maxY = Mth.lerp((double) (y + 1) / yParts, localBox.minY, localBox.maxY);
+                for (int z = 0; z < zParts; z++) {
+                    double minZ = Mth.lerp((double) z / zParts, localBox.minZ, localBox.maxZ);
+                    double maxZ = Mth.lerp((double) (z + 1) / zParts, localBox.minZ, localBox.maxZ);
+                    output.accept(worldAabbOfLocal(new AABB(minX, minY, minZ, maxX, maxY, maxZ)));
+                }
+            }
+        }
+    }
+
+    private static int splitCount(double length, double step) {
+        if (length <= EPSILON) {
+            return 1;
+        }
+        return Math.max(1, Math.min(8, Mth.ceil(length / step)));
+    }
+
     private static void forEachCorner(AABB box, CornerConsumer consumer) {
         consumer.accept(new Vec3(box.minX, box.minY, box.minZ));
         consumer.accept(new Vec3(box.minX, box.minY, box.maxZ));
@@ -138,8 +208,103 @@ public final class PhysicalizedVolumeMapping {
         consumer.accept(new Vec3(box.maxX, box.maxY, box.maxZ));
     }
 
+    private boolean localObbIntersectsWorldAabb(AABB localBox, AABB worldBox, double epsilon) {
+        Vec3 localQueryCenter = worldToLocal(worldBox.getCenter());
+        Vec3 localBoxCenter = center(localBox);
+        Vec3 localHalf = halfExtents(localBox);
+        Vec3 worldHalf = halfExtents(worldBox);
+        Vec3 delta = localQueryCenter.subtract(localBoxCenter);
+
+        for (Axis axis : obbTestAxes(epsilon)) {
+            if (axis.isZero(epsilon)) {
+                continue;
+            }
+            double distance = Math.abs(delta.dot(axis.local()));
+            double projectedLocal = projectedLocalRadius(localHalf, axis.local());
+            double projectedWorld = projectedWorldRadius(worldHalf, axis.world());
+            if (distance > projectedLocal + projectedWorld + epsilon) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    private Axis[] obbTestAxes(double epsilon) {
+        Vec3 localX = new Vec3(1.0, 0.0, 0.0);
+        Vec3 localY = new Vec3(0.0, 1.0, 0.0);
+        Vec3 localZ = new Vec3(0.0, 0.0, 1.0);
+        Vec3 worldXLocal = worldNormalToLocal(localX);
+        Vec3 worldYLocal = worldNormalToLocal(localY);
+        Vec3 worldZLocal = worldNormalToLocal(localZ);
+        return new Axis[] {
+                new Axis(localX, localNormalToWorld(localX)),
+                new Axis(localY, localNormalToWorld(localY)),
+                new Axis(localZ, localNormalToWorld(localZ)),
+                new Axis(worldXLocal, localX),
+                new Axis(worldYLocal, localY),
+                new Axis(worldZLocal, localZ),
+                new Axis(normalizeOrNull(localX.cross(worldXLocal), epsilon), localNormalToWorld(normalizeOrNull(localX.cross(worldXLocal), epsilon))),
+                new Axis(normalizeOrNull(localX.cross(worldYLocal), epsilon), localNormalToWorld(normalizeOrNull(localX.cross(worldYLocal), epsilon))),
+                new Axis(normalizeOrNull(localX.cross(worldZLocal), epsilon), localNormalToWorld(normalizeOrNull(localX.cross(worldZLocal), epsilon))),
+                new Axis(normalizeOrNull(localY.cross(worldXLocal), epsilon), localNormalToWorld(normalizeOrNull(localY.cross(worldXLocal), epsilon))),
+                new Axis(normalizeOrNull(localY.cross(worldYLocal), epsilon), localNormalToWorld(normalizeOrNull(localY.cross(worldYLocal), epsilon))),
+                new Axis(normalizeOrNull(localY.cross(worldZLocal), epsilon), localNormalToWorld(normalizeOrNull(localY.cross(worldZLocal), epsilon))),
+                new Axis(normalizeOrNull(localZ.cross(worldXLocal), epsilon), localNormalToWorld(normalizeOrNull(localZ.cross(worldXLocal), epsilon))),
+                new Axis(normalizeOrNull(localZ.cross(worldYLocal), epsilon), localNormalToWorld(normalizeOrNull(localZ.cross(worldYLocal), epsilon))),
+                new Axis(normalizeOrNull(localZ.cross(worldZLocal), epsilon), localNormalToWorld(normalizeOrNull(localZ.cross(worldZLocal), epsilon)))
+        };
+    }
+
+    private static Vec3 normalizeOrNull(Vec3 axis, double epsilon) {
+        double length = axis.length();
+        if (length <= epsilon) {
+            return Vec3.ZERO;
+        }
+        return axis.scale(1.0 / length);
+    }
+
+    private static double projectedLocalRadius(Vec3 halfExtents, Vec3 localAxis) {
+        if (localAxis.lengthSqr() <= EPSILON) {
+            return 0.0;
+        }
+        return Math.abs(localAxis.x) * halfExtents.x
+                + Math.abs(localAxis.y) * halfExtents.y
+                + Math.abs(localAxis.z) * halfExtents.z;
+    }
+
+    private static double projectedWorldRadius(Vec3 halfExtents, Vec3 worldAxis) {
+        if (worldAxis.lengthSqr() <= EPSILON) {
+            return 0.0;
+        }
+        return Math.abs(worldAxis.x) * halfExtents.x
+                + Math.abs(worldAxis.y) * halfExtents.y
+                + Math.abs(worldAxis.z) * halfExtents.z;
+    }
+
+    private static Vec3 center(AABB box) {
+        return new Vec3(
+                (box.minX + box.maxX) * 0.5,
+                (box.minY + box.maxY) * 0.5,
+                (box.minZ + box.maxZ) * 0.5
+        );
+    }
+
+    private static Vec3 halfExtents(AABB box) {
+        return new Vec3(
+                (box.maxX - box.minX) * 0.5,
+                (box.maxY - box.minY) * 0.5,
+                (box.maxZ - box.minZ) * 0.5
+        );
+    }
+
     private interface CornerConsumer {
         void accept(Vec3 corner);
+    }
+
+    private record Axis(Vec3 local, Vec3 world) {
+        boolean isZero(double epsilon) {
+            return local.lengthSqr() <= epsilon * epsilon || world.lengthSqr() <= epsilon * epsilon;
+        }
     }
 
     private static final class MutableBounds {

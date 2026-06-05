@@ -4,6 +4,7 @@
   "compatibilityLevel": "JAVA_25",
   "mixins": [
     "AbstractBoatWaterPhysicsMixin",
+    "AbstractMinecartPhysicalizedRailMixin",
     "BlockGetterMixin",
     "BlockStateBaseMixin",
     "BucketItemMixin",
@@ -12,6 +13,8 @@
     "EntityWaterPhysicsMixin",
     "FlowingFluidMixin",
     "LevelEntityGetterAccessor",
+    "NewMinecartBehaviorPhysicalizedRailMixin",
+    "OldMinecartBehaviorPhysicalizedRailMixin",
     "PistonMovingBlockEntityMixin",
     "SignalGetterMixin"
   ],

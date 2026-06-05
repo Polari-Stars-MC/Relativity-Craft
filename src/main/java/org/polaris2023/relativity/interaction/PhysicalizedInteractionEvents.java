@@ -29,6 +29,9 @@ public final class PhysicalizedInteractionEvents {
 
     @SubscribeEvent
     public static void rightClickItem(PlayerInteractEvent.RightClickItem event) {
+        if (event.isCanceled()) {
+            return;
+        }
         if (event.getEntity() instanceof ServerPlayer player) {
             handleRaycastUse(player, event.getHand()).ifPresent(result -> {
                 event.setCanceled(true);
@@ -39,6 +42,9 @@ public final class PhysicalizedInteractionEvents {
 
     @SubscribeEvent
     public static void rightClickBlock(PlayerInteractEvent.RightClickBlock event) {
+        if (event.isCanceled()) {
+            return;
+        }
         if (!(event.getEntity() instanceof ServerPlayer player)) {
             return;
         }
@@ -48,7 +54,7 @@ public final class PhysicalizedInteractionEvents {
             return;
         }
 
-        InteractionResult result = PhysicalizedInteractionHandler.use(player, event.getHand(), hit.get().entity());
+        InteractionResult result = PhysicalizedInteractionHandler.useHit(player, event.getHand(), hit.get());
         if (result.consumesAction()) {
             event.setCanceled(true);
             event.setCancellationResult(result);
@@ -57,6 +63,9 @@ public final class PhysicalizedInteractionEvents {
 
     @SubscribeEvent
     public static void rightClickSpecific(PlayerInteractEvent.EntityInteractSpecific event) {
+        if (event.isCanceled()) {
+            return;
+        }
         if (event.getTarget() instanceof PhysicalizedVolumeEntity volume && event.getEntity() instanceof ServerPlayer player) {
             InteractionResult result = PhysicalizedInteractionHandler.use(player, event.getHand(), volume);
             if (result.consumesAction()) {
@@ -68,6 +77,9 @@ public final class PhysicalizedInteractionEvents {
 
     @SubscribeEvent
     public static void rightClickEntity(PlayerInteractEvent.EntityInteract event) {
+        if (event.isCanceled()) {
+            return;
+        }
         if (event.getTarget() instanceof PhysicalizedVolumeEntity volume && event.getEntity() instanceof ServerPlayer player) {
             InteractionResult result = PhysicalizedInteractionHandler.use(player, event.getHand(), volume);
             if (result.consumesAction()) {
@@ -92,7 +104,7 @@ public final class PhysicalizedInteractionEvents {
             return Optional.empty();
         }
 
-        InteractionResult result = PhysicalizedInteractionHandler.use(player, hand, hit.get().entity());
+        InteractionResult result = PhysicalizedInteractionHandler.useHit(player, hand, hit.get());
         return result.consumesAction() ? Optional.of(result) : Optional.empty();
     }
 
