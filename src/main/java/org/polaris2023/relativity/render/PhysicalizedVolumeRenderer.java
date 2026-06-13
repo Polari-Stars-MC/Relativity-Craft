@@ -473,35 +473,13 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         boolean cutoutLeaves = minecraft.options.cutoutLeaves().get();
         if (state.modelMeshSnapshot == state.renderSnapshot
                 && state.modelMeshAmbientOcclusion == ambientOcclusion
-                && state.modelMeshCutoutLeaves == cutoutLeaves
-                && state.modelMeshSampleX == state.x
-                && state.modelMeshSampleY == state.y
-                && state.modelMeshSampleZ == state.z
-                && state.modelMeshSampleLocalOriginX == state.localOriginX
-                && state.modelMeshSampleLocalOriginY == state.localOriginY
-                && state.modelMeshSampleLocalOriginZ == state.localOriginZ
-                && state.modelMeshSampleCenterYOffset == centerYOffset
-                && state.modelMeshSampleQx == rotation.x
-                && state.modelMeshSampleQy == rotation.y
-                && state.modelMeshSampleQz == rotation.z
-                && state.modelMeshSampleQw == rotation.w) {
+                && state.modelMeshCutoutLeaves == cutoutLeaves) {
             return state.modelMesh;
         }
 
         state.modelMeshSnapshot = state.renderSnapshot;
         state.modelMeshAmbientOcclusion = ambientOcclusion;
         state.modelMeshCutoutLeaves = cutoutLeaves;
-        state.modelMeshSampleX = state.x;
-        state.modelMeshSampleY = state.y;
-        state.modelMeshSampleZ = state.z;
-        state.modelMeshSampleLocalOriginX = state.localOriginX;
-        state.modelMeshSampleLocalOriginY = state.localOriginY;
-        state.modelMeshSampleLocalOriginZ = state.localOriginZ;
-        state.modelMeshSampleCenterYOffset = centerYOffset;
-        state.modelMeshSampleQx = rotation.x;
-        state.modelMeshSampleQy = rotation.y;
-        state.modelMeshSampleQz = rotation.z;
-        state.modelMeshSampleQw = rotation.w;
         state.modelMesh = buildCachedModelMesh(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves);
         return state.modelMesh;
     }
