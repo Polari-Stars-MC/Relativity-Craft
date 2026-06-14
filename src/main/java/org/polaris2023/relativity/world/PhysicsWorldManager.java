@@ -240,7 +240,7 @@ public final class PhysicsWorldManager {
     private void warnNativeUnavailableOnce() {
         if (!warnedNativeUnavailable) {
             warnedNativeUnavailable = true;
-            RelativityCraft.LOGGER.warn("Rapier native backend is unavailable; physicalized volumes will use Java fallback motion.");
+            RelativityCraft.LOGGER.warn("Rapier native backend is unavailable; physicalized volume simulation is disabled.");
         }
     }
 

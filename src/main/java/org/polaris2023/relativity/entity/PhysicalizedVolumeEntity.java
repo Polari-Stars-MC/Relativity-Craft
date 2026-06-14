@@ -2,7 +2,6 @@ package org.polaris2023.relativity.entity;
 
 import org.joml.Quaternionf;
 
-import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
@@ -19,7 +18,6 @@ import net.minecraft.world.damagesource.DamageSource;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.EntityDimensions;
 import net.minecraft.world.entity.EntityType;
-import net.minecraft.world.entity.MoverType;
 import net.minecraft.world.entity.Pose;
 import net.minecraft.world.entity.player.Player;
 import net.minecraft.world.InteractionHand;
@@ -86,9 +84,6 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private static final double SUPPORT_SCAN_DEPTH = 0.125;
     private static final double SUPPORT_CONTACT_EPSILON = 1.0E-4;
     private static final double SUPPORT_HORIZONTAL_EPSILON = 1.0E-3;
-    private static final double JAVA_FALLBACK_GRAVITY_PER_TICK = -0.08;
-    private static final double JAVA_FALLBACK_MAX_FALL_SPEED = -1.25;
-    private static final double JAVA_FALLBACK_MOVE_EPSILON = 1.0E-5;
     private long clientVisualStartNanos = Long.MIN_VALUE;
     private double clientVisualStartX;
     private double clientVisualStartY;
@@ -772,36 +767,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return;
         }
 
-        if (!RelativityCraft.isRapierAvailable()) {
-            this.tickJavaFallbackPhysics((ServerLevel) this.level());
-            return;
-        }
-
         this.setDeltaMovement(Vec3.ZERO);
-        this.setBoundingBox(this.makeBoundingBox(this.position()));
-    }
-
-    private void tickJavaFallbackPhysics(ServerLevel level) {
-        this.setBoundingBox(this.makeBoundingBox(this.position()));
-        if (this.hasWorldSupport()) {
-            this.setDeltaMovement(Vec3.ZERO);
-            this.setBoundingBox(this.makeBoundingBox(this.position()));
-            return;
-        }
-
-        this.clearPhysicsEditIsolation();
-        Vec3 motion = this.getDeltaMovement().add(0.0, JAVA_FALLBACK_GRAVITY_PER_TICK, 0.0);
-        if (motion.y < JAVA_FALLBACK_MAX_FALL_SPEED) {
-            motion = new Vec3(motion.x, JAVA_FALLBACK_MAX_FALL_SPEED, motion.z);
-        }
-
-        Vec3 before = this.position();
-        this.move(MoverType.SELF, motion);
-        Vec3 actual = this.position().subtract(before);
-        if (motion.y < 0.0 && Math.abs(actual.y - motion.y) > JAVA_FALLBACK_MOVE_EPSILON) {
-            actual = new Vec3(actual.x, 0.0, actual.z);
-        }
-        this.setDeltaMovement(actual);
         this.setBoundingBox(this.makeBoundingBox(this.position()));
     }
 
