@@ -2,6 +2,7 @@ package org.polaris2023.relativity.interaction;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.mixin.ButtonBlockAccessor;
 import org.polaris2023.relativity.physicalization.PhysicalizedBlockSnapshot;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
@@ -33,9 +34,13 @@ import net.minecraft.world.level.block.RedStoneWireBlock;
 import net.minecraft.world.level.block.RedstoneTorchBlock;
 import net.minecraft.world.level.block.TargetBlock;
 import net.minecraft.world.level.block.WeightedPressurePlateBlock;
+import net.minecraft.world.level.block.state.properties.BlockSetType;
+import net.minecraft.world.level.block.state.properties.ComparatorMode;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.piston.PistonBaseBlock;
 import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.sounds.SoundEvents;
+import net.minecraft.sounds.SoundSource;
 import net.minecraft.world.phys.BlockHitResult;
 import net.minecraft.world.phys.Vec3;
 
@@ -319,19 +324,21 @@ final class PhysicalizedLogicBodyRedstone {
         }
 
         BlockHitResult bodyHit = bodyHitResult(body, hit.entity(), hit.cell(), hit.localFace(), hit.localLocation());
-        BlockState state = logicLevel.getBlockState(bodyHit.getBlockPos());
-        if (state.isAir()) {
+        BlockPos worldPos = hit.visualBlockPos();
+        BlockState beforeState = logicLevel.getBlockState(bodyHit.getBlockPos());
+        if (beforeState.isAir()) {
             return InteractionResult.PASS;
         }
 
         ItemStack stack = player.getItemInHand(hand);
-        InteractionResult itemUse = state.useItemOn(stack, logicLevel, player, hand, bodyHit);
+        InteractionResult itemUse = beforeState.useItemOn(stack, logicLevel, player, hand, bodyHit);
         InteractionResult result = itemUse;
         if (itemUse instanceof InteractionResult.TryEmptyHandInteraction && hand == InteractionHand.MAIN_HAND) {
-            result = state.useWithoutItem(logicLevel, player, bodyHit);
+            result = beforeState.useWithoutItem(logicLevel, player, bodyHit);
         }
         if (result.consumesAction()) {
             syncFromLogicBody(worldLevel, hit.entity());
+            playMappedInteractionSound(worldLevel, worldPos, beforeState, logicLevel.getBlockState(bodyHit.getBlockPos()));
         }
         return result;
     }
@@ -359,6 +366,41 @@ final class PhysicalizedLogicBodyRedstone {
                 centeredLocalHit.z + entity.localOriginZ()
         );
         return new BlockHitResult(bodyHitLocation, localFace, body.bodyPosOf(cell), false);
+    }
+
+    private static void playMappedInteractionSound(Level worldLevel, BlockPos worldPos, BlockState beforeState, BlockState afterState) {
+        if (!(worldLevel instanceof ServerLevel serverLevel) || beforeState.isAir() || afterState.isAir()) {
+            return;
+        }
+
+        if (beforeState.getBlock() instanceof LeverBlock && beforeState.hasProperty(LeverBlock.POWERED) && afterState.hasProperty(LeverBlock.POWERED)
+                && beforeState.getValue(LeverBlock.POWERED) != afterState.getValue(LeverBlock.POWERED)) {
+            float pitch = afterState.getValue(LeverBlock.POWERED) ? 0.6F : 0.5F;
+            serverLevel.playSound(null, worldPos, SoundEvents.LEVER_CLICK, SoundSource.BLOCKS, 0.3F, pitch);
+            return;
+        }
+
+        if (beforeState.getBlock() instanceof ButtonBlock buttonBlock
+                && beforeState.hasProperty(ButtonBlock.POWERED)
+                && afterState.hasProperty(ButtonBlock.POWERED)
+                && beforeState.getValue(ButtonBlock.POWERED) != afterState.getValue(ButtonBlock.POWERED)) {
+            BlockSetType type = ((ButtonBlockAccessor) buttonBlock).relativityCraft$getType();
+            serverLevel.playSound(
+                    null,
+                    worldPos,
+                    afterState.getValue(ButtonBlock.POWERED) ? type.buttonClickOn() : type.buttonClickOff(),
+                    SoundSource.BLOCKS
+            );
+            return;
+        }
+
+        if (beforeState.getBlock() instanceof ComparatorBlock
+                && beforeState.hasProperty(ComparatorBlock.MODE)
+                && afterState.hasProperty(ComparatorBlock.MODE)
+                && beforeState.getValue(ComparatorBlock.MODE) != afterState.getValue(ComparatorBlock.MODE)) {
+            float pitch = afterState.getValue(ComparatorBlock.MODE) == ComparatorMode.SUBTRACT ? 0.55F : 0.5F;
+            serverLevel.playSound(null, worldPos, SoundEvents.COMPARATOR_CLICK, SoundSource.BLOCKS, 0.3F, pitch);
+        }
     }
 
     private void syncFromLogicBody(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {

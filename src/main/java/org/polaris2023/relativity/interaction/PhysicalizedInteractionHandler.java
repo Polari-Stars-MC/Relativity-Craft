@@ -975,8 +975,8 @@ public final class PhysicalizedInteractionHandler {
                 placedPos,
                 soundType.getPlaceSound(),
                 SoundSource.BLOCKS,
-                1.0F,
-                1.0F
+                (soundType.getVolume() + 1.0F) / 2.0F,
+                soundType.getPitch() * 0.8F
         );
     }
 
@@ -985,7 +985,14 @@ public final class PhysicalizedInteractionHandler {
             return;
         }
         SoundType soundType = state.getSoundType(level, pos, player);
-        level.playSound(null, pos, soundType.getBreakSound(), SoundSource.BLOCKS, 1.0F, 1.0F);
+        level.playSound(
+                player.gameMode.isCreative() ? player : null,
+                pos,
+                soundType.getBreakSound(),
+                SoundSource.BLOCKS,
+                (soundType.getVolume() + 1.0F) / 2.0F,
+                soundType.getPitch() * 0.8F
+        );
     }
 
     private static void applyCreativeEditPhysics(ServerLevel level, PhysicalizedVolumeEntity entity) {
