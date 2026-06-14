@@ -28,19 +28,13 @@ import net.minecraft.world.item.context.BlockPlaceContext;
 import net.minecraft.world.level.block.Block;
 import net.minecraft.world.level.block.BaseRailBlock;
 import net.minecraft.world.level.block.Blocks;
-import net.minecraft.world.level.block.ButtonBlock;
 import net.minecraft.world.level.block.DirectionalBlock;
-import net.minecraft.world.level.block.LeverBlock;
-import net.minecraft.world.level.block.RedStoneWireBlock;
-import net.minecraft.world.level.block.RepeaterBlock;
 import net.minecraft.world.level.block.SoundType;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.piston.PistonBaseBlock;
 import net.minecraft.world.level.block.piston.PistonHeadBlock;
 import net.minecraft.world.level.block.state.BlockState;
-import net.minecraft.world.level.block.state.properties.BlockStateProperties;
 import net.minecraft.world.level.block.state.properties.RailShape;
-import net.minecraft.world.level.block.state.properties.RedstoneSide;
 import net.minecraft.world.level.Level;
 import net.minecraft.world.level.LevelReader;
 import net.minecraft.world.level.gameevent.GameEvent;
@@ -62,6 +56,8 @@ import java.util.UUID;
 public final class PhysicalizedInteractionHandler {
     private static final int CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS = 40;
     private static final long CREATIVE_PLACE_COOLDOWN_TICKS = 2L;
+    private static final double PLACEMENT_COLLISION_EPSILON = 1.0E-5;
+    private static final double PLACEMENT_GROUND_CONTACT_ALLOWANCE = 0.0625;
 
     private static final Object2FloatOpenHashMap<BreakKey> BREAK_PROGRESS = new Object2FloatOpenHashMap<>();
     private static final Map<UUID, BreakKey> ACTIVE_BREAKS = new Object2ObjectOpenHashMap<>();
@@ -237,7 +233,10 @@ public final class PhysicalizedInteractionHandler {
         }
 
         if (player.gameMode.isCreative()) {
-            return placeCreativeBlockThroughVanillaPipeline(level, player, hand, stack, blockItem, hit);
+            InteractionResult mappedPlacement = placeCreativeBlockThroughVanillaPipeline(level, player, hand, stack, blockItem, hit);
+            if (mappedPlacement.consumesAction()) {
+                return mappedPlacement;
+            }
         }
 
         PhysicalizedVolumeEntity entity = hit.entity();
@@ -328,14 +327,13 @@ public final class PhysicalizedInteractionHandler {
 
         entity.updateSnapshotAtEntityCenter(refreshedSnapshot, nextOrigin, nextCenter);
         boolean creative = player.gameMode.isCreative();
-        if (creative) {
-            entity.isolatePhysicsAfterBlockEdit(level, CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS);
-        } else {
+        if (!creative) {
             entity.resolveWorldCollisionAfterShapeChange();
         }
-        PhysicsWorldManager.global().rebuildBodyShape(level, entity, !creative);
         if (creative) {
-            PhysicsWorldManager.global().resetBodyMotion(level, entity);
+            applyCreativeEditPhysics(level, entity);
+        } else {
+            PhysicsWorldManager.global().rebuildBodyShape(level, entity, true);
         }
 
         if (!player.hasInfiniteMaterials()) {
@@ -380,34 +378,10 @@ public final class PhysicalizedInteractionHandler {
     }
 
     private static InteractionResult activatePhysicalizedBlock(ServerLevel level, ServerPlayer player, InteractionHand hand, PhysicalizedHit hit) {
-        if (player.gameMode.isCreative()) {
+        if (player.gameMode.isCreative() || PhysicalizedLogicBodyRedstone.isProjectedRedstoneState(hit.cell().state())) {
             return PhysicalizedLogicBodyRedstone.global().useMappedBlock(level, player, hand, hit);
         }
-
-        PhysicalizedBlockSnapshot cell = hit.cell();
-        BlockState state = cell.state();
-        BlockState nextState = null;
-
-        if (state.getBlock() instanceof LeverBlock && state.hasProperty(BlockStateProperties.POWERED)) {
-            nextState = state.cycle(BlockStateProperties.POWERED);
-        } else if (state.getBlock() instanceof ButtonBlock && state.hasProperty(BlockStateProperties.POWERED)) {
-            if (state.getValue(BlockStateProperties.POWERED)) {
-                return InteractionResult.CONSUME;
-            }
-            nextState = state.setValue(BlockStateProperties.POWERED, true);
-            PhysicalizedRedstoneMapping.global().scheduleButtonRelease(level, hit.entity(), cell, level.getGameTime() + 20L);
-        } else if (state.getBlock() instanceof RepeaterBlock && state.hasProperty(RepeaterBlock.DELAY) && player.getAbilities().mayBuild) {
-            nextState = state.cycle(RepeaterBlock.DELAY);
-        } else if (state.is(Blocks.REDSTONE_WIRE) && player.getAbilities().mayBuild) {
-            nextState = toggleWireShape(state);
-        }
-
-        if (nextState == null || nextState == state) {
-            return InteractionResult.PASS;
-        }
-
-        replacePhysicalizedCellState(level, hit.entity(), cell, nextState);
-        return InteractionResult.SUCCESS;
+        return InteractionResult.PASS;
     }
 
     private static InteractionResult placeCreativeBlockThroughVanillaPipeline(
@@ -508,9 +482,7 @@ public final class PhysicalizedInteractionHandler {
 
         PlacedLogicCell placedLogicCell = placedLogicCell(level, logicLevel, logicBodies, entity, bodyTarget, placedX, placedY, placedZ, beforeBodyState);
         logicBodies.syncBodyToEntity(level, entity);
-        entity.isolatePhysicsAfterBlockEdit(level, CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS);
-        PhysicsWorldManager.global().rebuildBodyShape(level, entity, false);
-        PhysicsWorldManager.global().resetBodyMotion(level, entity);
+        applyCreativeEditPhysics(level, entity);
         if (placedLogicCell != null) {
             int finalPlacedX = placedLogicCell.localX() + preview.shiftX();
             int finalPlacedY = placedLogicCell.localY() + preview.shiftY();
@@ -784,35 +756,6 @@ public final class PhysicalizedInteractionHandler {
         }
     }
 
-    private static BlockState toggleWireShape(BlockState state) {
-        boolean north = state.getValue(RedStoneWireBlock.NORTH).isConnected();
-        boolean east = state.getValue(RedStoneWireBlock.EAST).isConnected();
-        boolean south = state.getValue(RedStoneWireBlock.SOUTH).isConnected();
-        boolean west = state.getValue(RedStoneWireBlock.WEST).isConnected();
-        boolean cross = north && east && south && west;
-        boolean dot = !north && !east && !south && !west;
-        if (!cross && !dot) {
-            return state;
-        }
-
-        int power = state.getValue(RedStoneWireBlock.POWER);
-        BlockState next = Blocks.REDSTONE_WIRE.defaultBlockState().setValue(RedStoneWireBlock.POWER, power);
-        if (dot) {
-            next = next.setValue(RedStoneWireBlock.NORTH, RedstoneSide.SIDE)
-                    .setValue(RedStoneWireBlock.EAST, RedstoneSide.SIDE)
-                    .setValue(RedStoneWireBlock.SOUTH, RedstoneSide.SIDE)
-                    .setValue(RedStoneWireBlock.WEST, RedstoneSide.SIDE);
-        }
-        return next;
-    }
-
-    private static void replacePhysicalizedCellState(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell, BlockState state) {
-        entity.updateSnapshot(entity.snapshot().withCellState(cell, state, cell.blockEntityNbt()));
-        entity.isolatePhysicsAfterBlockEdit(level, CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS);
-        PhysicsWorldManager.global().rebuildBodyShape(level, entity, false);
-        PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, cell.localX(), cell.localY(), cell.localZ());
-    }
-
     private static Optional<PhysicalizedHit> raycastTarget(ServerPlayer player, PhysicalizedVolumeEntity target) {
         Optional<PhysicalizedHit> hit = PhysicalizedRaycaster.raycast(player);
         if (hit.isPresent() && hit.get().entity() == target) {
@@ -850,6 +793,7 @@ public final class PhysicalizedInteractionHandler {
                 ? BlockEntity.loadStatic(dropPos, state, cell.blockEntityNbt(), level.registryAccess())
                 : null;
 
+        playBlockBreakSound(level, player, dropPos, state);
         level.levelEvent(player, 2001, dropPos, Block.getId(state));
         if (!creative && !player.preventsBlockDrops()) {
             if (blockEntity instanceof net.minecraft.world.Container container) {
@@ -882,9 +826,6 @@ public final class PhysicalizedInteractionHandler {
         nextSnapshot = unsupportedRemoval.snapshot();
 
         entity.updateSnapshot(nextSnapshot);
-        if (creative) {
-            entity.isolatePhysicsAfterBlockEdit(level, CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS);
-        }
         for (PhysicalizedBlockSnapshot removedCell : removedCells) {
             PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, removedCell.localX(), removedCell.localY(), removedCell.localZ());
         }
@@ -895,8 +836,7 @@ public final class PhysicalizedInteractionHandler {
             entity.discard();
         } else {
             if (creative) {
-                PhysicsWorldManager.global().rebuildBodyShape(level, entity, false);
-                PhysicsWorldManager.global().resetBodyMotion(level, entity);
+                applyCreativeEditPhysics(level, entity);
             } else {
                 entity.resolveWorldCollisionAfterShapeChange();
                 PhysicsWorldManager.global().rebuildBodyShape(level, entity, true);
@@ -1030,16 +970,38 @@ public final class PhysicalizedInteractionHandler {
 
     private static void playCreativePlaceSound(ServerLevel level, ServerPlayer player, BlockPos placedPos, BlockState placementState) {
         SoundType soundType = placementState.getSoundType(level, placedPos, player);
-        float volume = (soundType.getVolume() + 1.0F) / 2.0F;
-        float pitch = soundType.getPitch() * 0.8F;
         level.playSound(
                 null,
                 placedPos,
                 soundType.getPlaceSound(),
                 SoundSource.BLOCKS,
-                volume,
-                pitch
+                1.0F,
+                1.0F
         );
+    }
+
+    private static void playBlockBreakSound(ServerLevel level, ServerPlayer player, BlockPos pos, BlockState state) {
+        if (state.isAir()) {
+            return;
+        }
+        SoundType soundType = state.getSoundType(level, pos, player);
+        level.playSound(null, pos, soundType.getBreakSound(), SoundSource.BLOCKS, 1.0F, 1.0F);
+    }
+
+    private static void applyCreativeEditPhysics(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (entity.isRemoved() || entity.snapshot().blockCount() <= 0) {
+            return;
+        }
+        if (entity.hasWorldSupport()) {
+            entity.isolatePhysicsAfterBlockEdit(level, CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS);
+            PhysicsWorldManager.global().rebuildBodyShape(level, entity, false);
+            PhysicsWorldManager.global().resetBodyMotion(level, entity);
+            return;
+        }
+
+        entity.clearPhysicsEditIsolation();
+        PhysicsWorldManager.global().rebuildBodyShape(level, entity, true);
+        PhysicsWorldManager.global().wakeBody(level, entity);
     }
 
     private static void sendCreativePlaceParticles(ServerLevel level, ServerPlayer source, BlockPos placedPos, BlockState placementState) {
@@ -1095,10 +1057,11 @@ public final class PhysicalizedInteractionHandler {
             return false;
         }
 
+        PhysicalizedVolumeMapping placementMapping = PhysicalizedVolumeMapping.at(volume, nextCenter, nextOrigin);
         List<AABB> placementBoxes = new java.util.ArrayList<>();
         AABB queryBox = null;
         for (AABB localPart : localShape.toAabbs()) {
-            AABB worldPart = transformedAabb(oldMapping, nextCenter, nextOrigin, localPart.move(localX, localY, localZ)).inflate(1.0E-4);
+            AABB worldPart = placementMapping.worldAabbOfLocal(localPart.move(localX, localY, localZ)).inflate(1.0E-4);
             placementBoxes.add(worldPart);
             queryBox = queryBox == null ? worldPart : union(queryBox, worldPart);
         }
@@ -1134,8 +1097,10 @@ public final class PhysicalizedInteractionHandler {
             int localZ,
             BlockState state
     ) {
-        for (AABB worldPart : placementCollisionBoxes(oldMapping, nextSnapshot, nextCenter, nextOrigin, localX, localY, localZ, state)) {
-            AABB queryBox = worldPart.deflate(1.0E-5);
+        PhysicalizedVolumeMapping placementMapping = PhysicalizedVolumeMapping.at(volume, nextCenter, nextOrigin);
+        for (AABB localPart : placementLocalCollisionBoxes(nextSnapshot, localX, localY, localZ, state)) {
+            AABB worldPart = placementMapping.worldAabbOfLocal(localPart);
+            AABB queryBox = worldPart.deflate(PLACEMENT_COLLISION_EPSILON);
             if (queryBox.getSize() <= 1.0E-7) {
                 continue;
             }
@@ -1144,13 +1109,20 @@ public final class PhysicalizedInteractionHandler {
                     continue;
                 }
                 for (AABB obstacle : collision.toAabbs()) {
-                    if (queryBox.intersects(obstacle)) {
+                    if (!queryBox.intersects(obstacle) || isAllowedGroundContact(worldPart, obstacle)) {
+                        continue;
+                    }
+                    if (placementMapping.intersectsLocalBoxWithWorldAabb(localPart, obstacle, PLACEMENT_COLLISION_EPSILON)) {
                         return true;
                     }
                 }
             }
         }
         return false;
+    }
+
+    private static boolean isAllowedGroundContact(AABB worldPart, AABB obstacle) {
+        return obstacle.maxY <= worldPart.minY + PLACEMENT_GROUND_CONTACT_ALLOWANCE;
     }
 
     private static boolean intersectsAny(AABB entityBox, Iterable<AABB> placementBoxes) {
@@ -1163,34 +1135,8 @@ public final class PhysicalizedInteractionHandler {
         return false;
     }
 
-    private static AABB transformedAabb(
-            PhysicalizedVolumeMapping oldMapping,
-            Vec3 nextCenter,
-            Vec3 nextOrigin,
-            AABB localBox
-    ) {
-        Vec3 corner1 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.minX, localBox.minY, localBox.minZ);
-        Vec3 corner2 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.minX, localBox.minY, localBox.maxZ);
-        Vec3 corner3 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.minX, localBox.maxY, localBox.minZ);
-        Vec3 corner4 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.minX, localBox.maxY, localBox.maxZ);
-        Vec3 corner5 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.maxX, localBox.minY, localBox.minZ);
-        Vec3 corner6 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.maxX, localBox.minY, localBox.maxZ);
-        Vec3 corner7 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.maxX, localBox.maxY, localBox.minZ);
-        Vec3 corner8 = transformedPoint(oldMapping, nextCenter, nextOrigin, localBox.maxX, localBox.maxY, localBox.maxZ);
-        double minX = Math.min(Math.min(Math.min(corner1.x, corner2.x), Math.min(corner3.x, corner4.x)), Math.min(Math.min(corner5.x, corner6.x), Math.min(corner7.x, corner8.x)));
-        double minY = Math.min(Math.min(Math.min(corner1.y, corner2.y), Math.min(corner3.y, corner4.y)), Math.min(Math.min(corner5.y, corner6.y), Math.min(corner7.y, corner8.y)));
-        double minZ = Math.min(Math.min(Math.min(corner1.z, corner2.z), Math.min(corner3.z, corner4.z)), Math.min(Math.min(corner5.z, corner6.z), Math.min(corner7.z, corner8.z)));
-        double maxX = Math.max(Math.max(Math.max(corner1.x, corner2.x), Math.max(corner3.x, corner4.x)), Math.max(Math.max(corner5.x, corner6.x), Math.max(corner7.x, corner8.x)));
-        double maxY = Math.max(Math.max(Math.max(corner1.y, corner2.y), Math.max(corner3.y, corner4.y)), Math.max(Math.max(corner5.y, corner6.y), Math.max(corner7.y, corner8.y)));
-        double maxZ = Math.max(Math.max(Math.max(corner1.z, corner2.z), Math.max(corner3.z, corner4.z)), Math.max(Math.max(corner5.z, corner6.z), Math.max(corner7.z, corner8.z)));
-        return new AABB(minX, minY, minZ, maxX, maxY, maxZ);
-    }
-
-    private static List<AABB> placementCollisionBoxes(
-            PhysicalizedVolumeMapping oldMapping,
+    private static List<AABB> placementLocalCollisionBoxes(
             PhysicalizedVolumeSnapshot nextSnapshot,
-            Vec3 nextCenter,
-            Vec3 nextOrigin,
             int localX,
             int localY,
             int localZ,
@@ -1204,21 +1150,9 @@ public final class PhysicalizedInteractionHandler {
 
         List<AABB> boxes = new ArrayList<>();
         for (AABB localPart : localShape.toAabbs()) {
-            boxes.add(transformedAabb(oldMapping, nextCenter, nextOrigin, localPart.move(localX, localY, localZ)));
+            boxes.add(localPart.move(localX, localY, localZ));
         }
         return boxes;
-    }
-
-    private static Vec3 transformedPoint(
-            PhysicalizedVolumeMapping oldMapping,
-            Vec3 nextCenter,
-            Vec3 nextOrigin,
-            double x,
-            double y,
-            double z
-    ) {
-        Vec3 centered = new Vec3(x - nextOrigin.x, y - nextOrigin.y, z - nextOrigin.z);
-        return nextCenter.add(oldMapping.localNormalToWorld(centered));
     }
 
     private static AABB union(AABB first, AABB second) {

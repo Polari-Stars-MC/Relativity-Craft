@@ -81,6 +81,9 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private static final float CLIENT_VISUAL_ROTATION_EPSILON = 1.0E-5F;
     private static final double WORLD_COLLISION_EPSILON = 1.0E-4;
     private static final double WORLD_COLLISION_MAX_PUSH_UP = 16.0;
+    private static final double SUPPORT_SCAN_DEPTH = 0.125;
+    private static final double SUPPORT_CONTACT_EPSILON = 1.0E-4;
+    private static final double SUPPORT_HORIZONTAL_EPSILON = 1.0E-3;
     private long clientVisualStartNanos = Long.MIN_VALUE;
     private double clientVisualStartX;
     private double clientVisualStartY;
@@ -97,7 +100,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private float clientVisualTargetQz;
     private float clientVisualTargetQw = 1.0F;
     private long physicsEditIsolationUntilGameTime = Long.MIN_VALUE;
-    private static final double DEBUG_COLLISION_BOX_SAMPLE_STEP = 0.25;
+    private static final double DEBUG_COLLISION_BOX_SAMPLE_STEP = 1.0;
 
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
@@ -183,7 +186,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
             return cachedMinecraftCollisionBoxes;
         }
 
-        List<AABB> localBoxes = current.localCollisionBoxes();
+        List<AABB> localBoxes = current.physicsCollisionBoxes();
         if (localBoxes.isEmpty()) {
             cachedMinecraftCollisionBoxes = List.of();
             cachedMinecraftCollisionBoxesGameTime = gameTime;
@@ -348,6 +351,10 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         physicsEditIsolationUntilGameTime = Math.max(physicsEditIsolationUntilGameTime, level.getGameTime() + ticks);
     }
 
+    public void clearPhysicsEditIsolation() {
+        physicsEditIsolationUntilGameTime = Long.MIN_VALUE;
+    }
+
     public boolean isPhysicsEditIsolated(long gameTime) {
         return gameTime <= physicsEditIsolationUntilGameTime;
     }
@@ -461,6 +468,49 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public WorldCollisionContact worldCollisionContact() {
         this.setBoundingBox(this.makeBoundingBox(this.position()));
         return worldCollisionContact(this.getBoundingBox());
+    }
+
+    public boolean hasWorldSupport() {
+        return this.worldSupportContactCount() > 0;
+    }
+
+    public int worldSupportContactCount() {
+        PhysicalizedVolumeSnapshot current = this.currentSnapshot();
+        if (this.level().isClientSide() || this.isRemoved() || this.noPhysics || current.blockCount() <= 0) {
+            return 0;
+        }
+
+        List<AABB> collisionBoxes = current.physicsCollisionBoxes();
+        if (collisionBoxes.isEmpty()) {
+            return 0;
+        }
+
+        PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(this);
+        double lowestWorldY = Double.POSITIVE_INFINITY;
+        for (AABB localBox : collisionBoxes) {
+            if (localBox.getSize() <= SUPPORT_CONTACT_EPSILON) {
+                continue;
+            }
+            lowestWorldY = Math.min(lowestWorldY, mapping.worldAabbOfLocal(localBox).minY);
+        }
+        if (!Double.isFinite(lowestWorldY)) {
+            return 0;
+        }
+
+        int contacts = 0;
+        for (AABB localBox : collisionBoxes) {
+            if (localBox.getSize() <= SUPPORT_CONTACT_EPSILON) {
+                continue;
+            }
+            AABB worldBox = mapping.worldAabbOfLocal(localBox);
+            if (worldBox.minY > lowestWorldY + SUPPORT_SCAN_DEPTH + SUPPORT_CONTACT_EPSILON) {
+                continue;
+            }
+            if (hasWorldSupportFor(mapping, localBox, worldBox)) {
+                contacts++;
+            }
+        }
+        return contacts;
     }
 
     public void applyNativeSnapshot(double centerX, double centerY, double centerZ, float qx, float qy, float qz, float qw) {
@@ -1245,6 +1295,36 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
                 deepestPenetration,
                 supportArea
         );
+    }
+
+    private boolean hasWorldSupportFor(PhysicalizedVolumeMapping mapping, AABB localBox, AABB worldBox) {
+        AABB supportQuery = new AABB(
+                worldBox.minX,
+                worldBox.minY - SUPPORT_SCAN_DEPTH,
+                worldBox.minZ,
+                worldBox.maxX,
+                worldBox.minY + SUPPORT_CONTACT_EPSILON,
+                worldBox.maxZ
+        ).inflate(SUPPORT_HORIZONTAL_EPSILON, 0.0, SUPPORT_HORIZONTAL_EPSILON);
+
+        for (VoxelShape collision : this.level().getBlockCollisions(this, supportQuery)) {
+            if (collision.isEmpty()) {
+                continue;
+            }
+            for (AABB obstacle : collision.toAabbs()) {
+                if (!supportQuery.intersects(obstacle)) {
+                    continue;
+                }
+                if (obstacle.maxY < worldBox.minY - SUPPORT_SCAN_DEPTH
+                        || obstacle.minY > worldBox.minY + SUPPORT_CONTACT_EPSILON) {
+                    continue;
+                }
+                if (mapping.intersectsLocalBoxWithWorldAabb(localBox, obstacle, SUPPORT_CONTACT_EPSILON)) {
+                    return true;
+                }
+            }
+        }
+        return false;
     }
 
     private InteractionResult clientInteractionPreview(Player player, InteractionHand hand) {

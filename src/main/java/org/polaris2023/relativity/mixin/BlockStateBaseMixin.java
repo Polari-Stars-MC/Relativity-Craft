@@ -4,7 +4,6 @@ import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
 import net.minecraft.world.level.BlockGetter;
-import net.minecraft.world.level.block.SupportType;
 import net.minecraft.world.level.block.state.BlockBehaviour;
 import net.minecraft.world.level.block.state.BlockState;
 import org.spongepowered.asm.mixin.Mixin;
@@ -19,37 +18,23 @@ public abstract class BlockStateBaseMixin {
     protected abstract BlockState asState();
 
     @Inject(
-            method = "isFaceSturdy(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;Lnet/minecraft/world/level/block/SupportType;)Z",
-            at = @At("HEAD"),
-            cancellable = true
-    )
-    private void relativityCraft$virtualPhysicalizedFace(
-            BlockGetter level,
-            BlockPos pos,
-            Direction direction,
-            SupportType supportType,
-            CallbackInfoReturnable<Boolean> cir
-    ) {
-        if (this.asState().isAir() && PhysicalizedRedstoneMapping.global().isVirtualFaceSturdy(level, pos, direction, supportType)) {
-            cir.setReturnValue(true);
-        }
-    }
-
-    @Inject(
             method = "getSignal(Lnet/minecraft/world/level/BlockGetter;Lnet/minecraft/core/BlockPos;Lnet/minecraft/core/Direction;)I",
             at = @At("HEAD"),
             cancellable = true
     )
-    private void relativityCraft$virtualPhysicalizedSignal(
+    private void relativityCraft$projectedPhysicalizedSignal(
             BlockGetter level,
             BlockPos pos,
             Direction direction,
             CallbackInfoReturnable<Integer> cir
     ) {
+        if (PhysicalizedRedstoneMapping.suppressProjectedSignalQueries()) {
+            return;
+        }
         if (!this.asState().isAir()) {
             return;
         }
-        int signal = PhysicalizedRedstoneMapping.global().virtualSignal(level, pos, direction, false);
+        int signal = PhysicalizedRedstoneMapping.global().projectedSignal(level, pos, direction, false);
         if (signal > 0) {
             cir.setReturnValue(signal);
         }
@@ -60,16 +45,19 @@ public abstract class BlockStateBaseMixin {
             at = @At("HEAD"),
             cancellable = true
     )
-    private void relativityCraft$virtualPhysicalizedDirectSignal(
+    private void relativityCraft$projectedPhysicalizedDirectSignal(
             BlockGetter level,
             BlockPos pos,
             Direction direction,
             CallbackInfoReturnable<Integer> cir
     ) {
+        if (PhysicalizedRedstoneMapping.suppressProjectedSignalQueries()) {
+            return;
+        }
         if (!this.asState().isAir()) {
             return;
         }
-        int signal = PhysicalizedRedstoneMapping.global().virtualSignal(level, pos, direction, true);
+        int signal = PhysicalizedRedstoneMapping.global().projectedSignal(level, pos, direction, true);
         if (signal > 0) {
             cir.setReturnValue(signal);
         }

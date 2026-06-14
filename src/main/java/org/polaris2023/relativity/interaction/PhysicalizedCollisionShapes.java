@@ -28,6 +28,9 @@ public final class PhysicalizedCollisionShapes {
     private static final int MAX_PUSH_OUT_ITERATIONS = 2;
     private static final int PUSH_SCAN_INTERVAL_TICKS = 20;
     private static final int MAX_PUSH_SCANS_PER_TICK = 8;
+    private static final double STEP_QUERY_DEPTH = 0.125;
+    private static final double STEP_QUERY_HEIGHT = 0.0625;
+    private static final double STEP_QUERY_INSET = 1.0E-3;
 
     private PhysicalizedCollisionShapes() {
     }
@@ -116,6 +119,93 @@ public final class PhysicalizedCollisionShapes {
                             continue;
                         }
                         output.accept(mapping.worldAabbOfLocal(localBox).inflate(inflate));
+                    }
+                }
+            }
+        }
+    }
+
+    public static StepSound stepSound(Entity source) {
+        if (source == null || source instanceof PhysicalizedVolumeEntity || !(source.level() instanceof Level level)) {
+            return null;
+        }
+
+        AABB box = source.getBoundingBox();
+        double minX = box.minX + STEP_QUERY_INSET;
+        double maxX = box.maxX - STEP_QUERY_INSET;
+        double minZ = box.minZ + STEP_QUERY_INSET;
+        double maxZ = box.maxZ - STEP_QUERY_INSET;
+        if (minX >= maxX || minZ >= maxZ) {
+            minX = box.minX;
+            maxX = box.maxX;
+            minZ = box.minZ;
+            maxZ = box.maxZ;
+        }
+
+        AABB stepQuery = new AABB(
+                minX,
+                box.minY - STEP_QUERY_DEPTH,
+                minZ,
+                maxX,
+                box.minY + STEP_QUERY_HEIGHT,
+                maxZ
+        );
+        BestStepSound best = new BestStepSound(box.minY);
+        PhysicalizedVolumeLookup.forEachLoadedVolume(level, stepQuery, 1.0, volume -> {
+            if (volume.getBoundingBox().inflate(QUERY_EPSILON).intersects(stepQuery)) {
+                findStepSound(volume, source, stepQuery, best);
+            }
+        });
+        return best.sound;
+    }
+
+    private static void findStepSound(
+            PhysicalizedVolumeEntity volume,
+            Entity source,
+            AABB queryBox,
+            BestStepSound best
+    ) {
+        PhysicalizedVolumeMapping mapping = PhysicalizedVolumeMapping.current(volume);
+        PhysicalizedVolumeSnapshot snapshot = volume.snapshot();
+        PhysicalizedSnapshotBlockGetter localLevel = new PhysicalizedSnapshotBlockGetter(snapshot);
+        AABB localQuery = mapping.localAabbOfWorld(queryBox.inflate(QUERY_EPSILON)).inflate(1.0);
+        int minX = Math.max(snapshot.occupiedMinX(), Mth.floor(localQuery.minX) - 1);
+        int minY = Math.max(snapshot.occupiedMinY(), Mth.floor(localQuery.minY) - 1);
+        int minZ = Math.max(snapshot.occupiedMinZ(), Mth.floor(localQuery.minZ) - 1);
+        int maxX = Math.min(snapshot.occupiedMaxX(), Mth.floor(localQuery.maxX) + 1);
+        int maxY = Math.min(snapshot.occupiedMaxY(), Mth.floor(localQuery.maxY) + 1);
+        int maxZ = Math.min(snapshot.occupiedMaxZ(), Mth.floor(localQuery.maxZ) + 1);
+        if (minX > maxX || minY > maxY || minZ > maxZ) {
+            return;
+        }
+        CollisionContext context = collisionContext(source, mapping);
+
+        for (int y = minY; y <= maxY; y++) {
+            for (int z = minZ; z <= maxZ; z++) {
+                for (int x = minX; x <= maxX; x++) {
+                    PhysicalizedBlockSnapshot cell = snapshot.cellAtOrNull(x, y, z);
+                    if (cell == null || cell.state().isAir()) {
+                        continue;
+                    }
+
+                    BlockPos localPos = mapping.localBlockPos(cell);
+                    VoxelShape localShape = cell.state().getCollisionShape(localLevel, localPos, context);
+                    if (localShape.isEmpty()) {
+                        continue;
+                    }
+
+                    for (AABB localPart : localShape.toAabbs()) {
+                        AABB localBox = localPart.move(localPos);
+                        if (!mapping.intersectsLocalBoxWithWorldAabb(localBox, queryBox, QUERY_EPSILON)) {
+                            continue;
+                        }
+
+                        AABB worldBox = mapping.worldAabbOfLocal(localBox);
+                        double distance = Math.abs(best.footY - worldBox.maxY);
+                        if (distance < best.distance) {
+                            best.distance = distance;
+                            best.sound = new StepSound(cell.state(), mapping.visualBlockPos(cell));
+                        }
                     }
                 }
             }
@@ -216,6 +306,16 @@ public final class PhysicalizedCollisionShapes {
         private double distance = Double.POSITIVE_INFINITY;
     }
 
+    private static final class BestStepSound {
+        private final double footY;
+        private StepSound sound;
+        private double distance = Double.POSITIVE_INFINITY;
+
+        private BestStepSound(double footY) {
+            this.footY = footY;
+        }
+    }
+
     private static Vec3 dampenVelocity(Vec3 velocity, Vec3 correction) {
         double x = Math.abs(correction.x) > 0.0 && velocity.x * correction.x < 0.0 ? 0.0 : velocity.x;
         double y = Math.abs(correction.y) > 0.0 && velocity.y * correction.y < 0.0 ? 0.0 : velocity.y;
@@ -228,6 +328,9 @@ public final class PhysicalizedCollisionShapes {
             return CollisionContext.empty();
         }
         return CollisionContext.withPosition(source, mapping.worldToLocal(source.position()).y);
+    }
+
+    public record StepSound(BlockState state, BlockPos pos) {
     }
 
 }

@@ -46,6 +46,8 @@ public final class PhysicsWorldManager {
     private static final double PISTON_PUSH_VELOCITY = 2.0;
     private static final long PRIORITY_TERRAIN_BUILD_BUDGET_NANOS = 3_000_000L;
     private static final long BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS = 1_500_000L;
+    private static final long SUPPORT_CHANGE_TERRAIN_BUILD_BUDGET_NANOS = 750_000L;
+    private static final int MAX_SUPPORT_RELEASES_PER_BLOCK_CHANGE = 4;
 
     private final Map<String, LevelPhysicsState> levels = new Object2ObjectOpenHashMap<>();
     private boolean warnedNativeUnavailable;
@@ -146,6 +148,21 @@ public final class PhysicsWorldManager {
         }
     }
 
+    public void wakeBody(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (entity.isRemoved() || !(entity.level() instanceof ServerLevel entityLevel) || entityLevel != level) {
+            return;
+        }
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return;
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        if (state != null) {
+            state.wakeBody(entity);
+        }
+    }
+
     public boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity) {
         return rebuildBodyShape(level, entity, true);
     }
@@ -242,11 +259,13 @@ public final class PhysicsWorldManager {
         private final Set<ChunkSectionKey> priorityQueuedSections = new ObjectOpenHashSet<>();
         private final ArrayDeque<TerrainBuildJob> backgroundTerrainJobs = new ArrayDeque<>();
         private final ArrayDeque<TerrainBuildJob> priorityTerrainJobs = new ArrayDeque<>();
+        private final Int2LongOpenHashMap supportReleaseTickByEntityId = new Int2LongOpenHashMap();
 
         private LevelPhysicsState() {
             bodyByEntityId.defaultReturnValue(0L);
             entityIdByBody.defaultReturnValue(Integer.MIN_VALUE);
             bodyByVolumeId.defaultReturnValue(0L);
+            supportReleaseTickByEntityId.defaultReturnValue(Long.MIN_VALUE);
         }
 
         private FluidDomainManager fluids(ServerLevel level) {
@@ -498,6 +517,7 @@ public final class PhysicsWorldManager {
         void markBlockChanged(ServerLevel level, BlockPos pos) {
             fluids(level).markDirty(level, pos);
             markSectionDirty(level, pos);
+            releaseUnsupportedBodiesNear(level, new AABB(pos).inflate(2.0));
             wakeBodiesInAabb(level, new AABB(pos).inflate(2.0));
             for (Direction direction : DIRECTIONS) {
                 fluids(level).markDirty(level, pos.relative(direction));
@@ -582,6 +602,45 @@ public final class PhysicsWorldManager {
                     }
                     world.wakeUp(body);
                 }
+            }
+        }
+
+        void wakeBody(PhysicalizedVolumeEntity entity) {
+            long body = entity.nativeBodyHandle();
+            if (body != 0L && bodyByEntityId.get(entity.getId()) == body) {
+                world.wakeUp(body);
+            }
+        }
+
+        private void releaseUnsupportedBodiesNear(ServerLevel level, AABB box) {
+            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            int released = 0;
+            for (long body : bodies) {
+                if (released >= MAX_SUPPORT_RELEASES_PER_BLOCK_CHANGE) {
+                    return;
+                }
+                int entityId = entityIdByBody.get(body);
+                if (entityId == Integer.MIN_VALUE || supportReleaseTickByEntityId.get(entityId) == level.getGameTime()) {
+                    continue;
+                }
+
+                Entity entity = level.getEntity(entityId);
+                if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved() || volume.hasWorldSupport()) {
+                    continue;
+                }
+
+                supportReleaseTickByEntityId.put(entityId, level.getGameTime());
+                volume.clearPhysicsEditIsolation();
+                requestTerrainAround(level, volume.getBoundingBox(), true, true);
+                drainTerrainJobs(
+                        level,
+                        priorityTerrainJobs,
+                        priorityQueuedSections,
+                        System.nanoTime() + SUPPORT_CHANGE_TERRAIN_BUILD_BUDGET_NANOS
+                );
+                rebuildBodyShape(level, volume, true);
+                wakeBody(volume);
+                released++;
             }
         }
 

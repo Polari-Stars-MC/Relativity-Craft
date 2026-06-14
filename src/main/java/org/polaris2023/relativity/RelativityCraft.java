@@ -27,6 +27,7 @@ import net.minecraft.world.phys.AABB;
 import net.neoforged.bus.api.IEventBus;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.fml.common.Mod;
+import net.neoforged.fml.loading.FMLPaths;
 import net.neoforged.neoforge.common.NeoForge;
 import net.neoforged.neoforge.common.util.BlockSnapshot;
 import net.neoforged.neoforge.event.BuildCreativeModeTabContentsEvent;
@@ -40,6 +41,9 @@ import net.neoforged.neoforge.event.level.block.BreakBlockEvent;
 import net.neoforged.neoforge.event.level.block.CreateFluidSourceEvent;
 import net.neoforged.neoforge.event.tick.LevelTickEvent;
 import org.slf4j.Logger;
+
+import java.nio.file.Files;
+import java.nio.file.Path;
 
 @Mod(RelativityCraft.MOD_ID)
 public final class RelativityCraft {
@@ -62,12 +66,26 @@ public final class RelativityCraft {
     }
 
     private static boolean loadRapier() {
+        prepareJnaTempDirectory();
         try {
             RelativityCraftRapier.ensureLoaded();
             return true;
         } catch (Throwable t) {
             LOGGER.warn("Rapier native backend is unavailable; Java fallback systems remain active. Cause: {}", t.toString());
             return false;
+        }
+    }
+
+    private static void prepareJnaTempDirectory() {
+        try {
+            Path tempDir = FMLPaths.GAMEDIR.get()
+                    .resolve(MOD_ID)
+                    .resolve("native-temp")
+                    .resolve("jna");
+            Files.createDirectories(tempDir);
+            System.setProperty("jna.tmpdir", tempDir.toAbsolutePath().toString());
+        } catch (Throwable t) {
+            LOGGER.warn("Could not prepare the local JNA temp directory; native loading will use the JVM default. Cause: {}", t.toString());
         }
     }
 

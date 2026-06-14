@@ -15,6 +15,7 @@
     "LevelEntityGetterAccessor",
     "NewMinecartBehaviorPhysicalizedRailMixin",
     "OldMinecartBehaviorPhysicalizedRailMixin",
+    "EntityStepSoundMixin",
     "PistonMovingBlockEntityMixin",
     "SignalGetterMixin"
   ],

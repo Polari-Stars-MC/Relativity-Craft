@@ -46,6 +46,7 @@ import it.unimi.dsi.fastutil.longs.LongSet;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import java.util.ArrayList;
 import java.util.BitSet;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -82,6 +83,10 @@ final class PhysicalizedLogicBodyRedstone {
 
     boolean isApplyingLogicBody() {
         return applyingLogicBody;
+    }
+
+    boolean needsLogicBodyTick(PhysicalizedVolumeEntity entity) {
+        return entity != null && needsLogicBodyTick(entity.snapshot());
     }
 
     boolean isLogicBodyLevel(Level level) {
@@ -434,12 +439,9 @@ final class PhysicalizedLogicBodyRedstone {
         ServerLevel worldLevel = query.worldLevel();
         BlockState worldState = worldLevel.getBlockState(worldPos);
         if (!worldState.isAir() && !isLogicBodyPos(worldLevel, worldPos)) {
-            signal = direct
+            signal = PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> direct
                     ? worldState.getDirectSignal(worldLevel, worldPos, worldDirection)
-                    : worldState.getSignal(worldLevel, worldPos, worldDirection);
-        }
-        if (!isLogicBodyPos(worldLevel, worldPos)) {
-            signal = Math.max(signal, PhysicalizedRedstoneMapping.global().virtualSignal(worldLevel, worldPos, worldDirection, direct));
+                    : worldState.getSignal(worldLevel, worldPos, worldDirection));
         }
         return Math.min(15, signal);
     }
@@ -455,8 +457,9 @@ final class PhysicalizedLogicBodyRedstone {
         int signal = 0;
         ServerLevel worldLevel = query.worldLevel();
         if (!isLogicBodyPos(worldLevel, worldPos)) {
-            signal = Math.max(signal, worldLevel.getControlInputSignal(worldPos, worldDirection, onlyDiodes));
-            signal = Math.max(signal, PhysicalizedRedstoneMapping.global().virtualControlInputSignal(worldLevel, worldPos, worldDirection, onlyDiodes));
+            signal = Math.max(signal, PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(
+                    () -> worldLevel.getControlInputSignal(worldPos, worldDirection, onlyDiodes)
+            ));
         }
         return Math.min(15, signal);
     }
@@ -490,7 +493,8 @@ final class PhysicalizedLogicBodyRedstone {
             ProjectionTransform transform
     ) {
         String volumeId = entity.volumeIdString();
-        removeProjectionIndex(level, volumeId);
+        Map<BlockPos, ProjectionIndexEntry> previousEntries = projectedEntriesFor(volumeId);
+        removeProjectionIndex(level, volumeId, false);
 
         Set<BlockPos> nextKeys = ConcurrentHashMap.newKeySet();
         for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
@@ -516,9 +520,9 @@ final class PhysicalizedLogicBodyRedstone {
             projectedLinksByWorldPos.compute(projectedPos, (ignored, existing) ->
                     existing == null || shouldReplaceProjection(candidate, existing) ? candidate : existing);
             nextKeys.add(projectedPos);
-            notifyProjectedNeighborhood(level, projectedPos, state);
         }
         projectedKeysByVolumeId.put(volumeId, nextKeys);
+        notifyProjectionIndexChanges(level, previousEntries, projectedEntriesFor(volumeId));
     }
 
     private static void notifyProjectedStateChanges(
@@ -544,6 +548,10 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private void removeProjectionIndex(ServerLevel level, String volumeId) {
+        removeProjectionIndex(level, volumeId, true);
+    }
+
+    private void removeProjectionIndex(ServerLevel level, String volumeId, boolean notify) {
         Set<BlockPos> keys = projectedKeysByVolumeId.remove(volumeId);
         if (keys == null) {
             return;
@@ -552,7 +560,44 @@ final class PhysicalizedLogicBodyRedstone {
             ProjectionIndexEntry entry = projectedLinksByWorldPos.get(key);
             if (entry != null && entry.link().volumeId().equals(volumeId)) {
                 projectedLinksByWorldPos.remove(key);
-                notifyProjectedNeighborhood(level, key, entry.link().state());
+                if (notify) {
+                    notifyProjectedNeighborhood(level, key, entry.link().state());
+                }
+            }
+        }
+    }
+
+    private Map<BlockPos, ProjectionIndexEntry> projectedEntriesFor(String volumeId) {
+        Set<BlockPos> keys = projectedKeysByVolumeId.get(volumeId);
+        if (keys == null || keys.isEmpty()) {
+            return Map.of();
+        }
+
+        Map<BlockPos, ProjectionIndexEntry> entries = new HashMap<>();
+        for (BlockPos key : keys) {
+            ProjectionIndexEntry entry = projectedLinksByWorldPos.get(key);
+            if (entry != null && entry.link().volumeId().equals(volumeId)) {
+                entries.put(key, entry);
+            }
+        }
+        return entries;
+    }
+
+    private static void notifyProjectionIndexChanges(
+            ServerLevel level,
+            Map<BlockPos, ProjectionIndexEntry> previousEntries,
+            Map<BlockPos, ProjectionIndexEntry> nextEntries
+    ) {
+        for (Map.Entry<BlockPos, ProjectionIndexEntry> previous : previousEntries.entrySet()) {
+            ProjectionIndexEntry next = nextEntries.get(previous.getKey());
+            if (next == null || !next.link().state().equals(previous.getValue().link().state())) {
+                notifyProjectedNeighborhood(level, previous.getKey(), previous.getValue().link().state());
+            }
+        }
+        for (Map.Entry<BlockPos, ProjectionIndexEntry> next : nextEntries.entrySet()) {
+            ProjectionIndexEntry previous = previousEntries.get(next.getKey());
+            if (previous == null || !previous.link().state().equals(next.getValue().link().state())) {
+                notifyProjectedNeighborhood(level, next.getKey(), next.getValue().link().state());
             }
         }
     }
@@ -671,24 +716,27 @@ final class PhysicalizedLogicBodyRedstone {
         return true;
     }
 
+    static boolean isProjectedRedstoneState(BlockState state) {
+        return state.is(Blocks.REDSTONE_BLOCK)
+                || state.getBlock() instanceof RedStoneWireBlock
+                || state.getBlock() instanceof RedstoneTorchBlock
+                || state.getBlock() instanceof DiodeBlock
+                || state.getBlock() instanceof ComparatorBlock
+                || state.getBlock() instanceof LeverBlock
+                || state.getBlock() instanceof ButtonBlock
+                || state.getBlock() instanceof PressurePlateBlock
+                || state.getBlock() instanceof WeightedPressurePlateBlock
+                || state.getBlock() instanceof ObserverBlock
+                || state.getBlock() instanceof PistonBaseBlock
+                || state.getBlock() instanceof DispenserBlock
+                || state.getBlock() instanceof DropperBlock
+                || state.getBlock() instanceof DaylightDetectorBlock
+                || state.getBlock() instanceof TargetBlock;
+    }
+
     private static boolean needsLogicBodyTick(PhysicalizedVolumeSnapshot snapshot) {
         for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
-            BlockState state = cell.state();
-            if (state.is(Blocks.REDSTONE_BLOCK)
-                    || state.getBlock() instanceof RedStoneWireBlock
-                    || state.getBlock() instanceof RedstoneTorchBlock
-                    || state.getBlock() instanceof DiodeBlock
-                    || state.getBlock() instanceof ComparatorBlock
-                    || state.getBlock() instanceof LeverBlock
-                    || state.getBlock() instanceof ButtonBlock
-                    || state.getBlock() instanceof PressurePlateBlock
-                    || state.getBlock() instanceof WeightedPressurePlateBlock
-                    || state.getBlock() instanceof ObserverBlock
-                    || state.getBlock() instanceof PistonBaseBlock
-                    || state.getBlock() instanceof DispenserBlock
-                    || state.getBlock() instanceof DropperBlock
-                    || state.getBlock() instanceof DaylightDetectorBlock
-                    || state.getBlock() instanceof TargetBlock) {
+            if (isProjectedRedstoneState(cell.state())) {
                 return true;
             }
         }

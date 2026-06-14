@@ -22,18 +22,31 @@ public final class PhysicalizedVolumeMapping {
     private final double originZ;
 
     private PhysicalizedVolumeMapping(PhysicalizedVolumeEntity entity, Vec3 center, Quaternion rotation) {
+        this(entity, center, new Vec3(entity.localOriginX(), entity.localOriginY(), entity.localOriginZ()), rotation);
+    }
+
+    private PhysicalizedVolumeMapping(PhysicalizedVolumeEntity entity, Vec3 center, Vec3 origin, Quaternion rotation) {
         this.entity = entity;
         this.center = center;
         this.rotation = rotation;
-        this.originX = entity.localOriginX();
-        this.originY = entity.localOriginY();
-        this.originZ = entity.localOriginZ();
+        this.originX = origin.x;
+        this.originY = origin.y;
+        this.originZ = origin.z;
     }
 
     public static PhysicalizedVolumeMapping current(PhysicalizedVolumeEntity entity) {
         return new PhysicalizedVolumeMapping(
                 entity,
                 new Vec3(entity.getX(), entity.getY() + entity.sizeY() * 0.5, entity.getZ()),
+                Quaternion.normalized(entity.rotationQx(), entity.rotationQy(), entity.rotationQz(), entity.rotationQw())
+        );
+    }
+
+    public static PhysicalizedVolumeMapping at(PhysicalizedVolumeEntity entity, Vec3 center, Vec3 origin) {
+        return new PhysicalizedVolumeMapping(
+                entity,
+                center,
+                origin,
                 Quaternion.normalized(entity.rotationQx(), entity.rotationQy(), entity.rotationQz(), entity.rotationQw())
         );
     }
