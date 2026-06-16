@@ -29,7 +29,7 @@ public final class RcWorld implements AutoCloseable {
     }
 
     public long insertRigidBody(RcRigidBodyBuilder builder) {
-        return RelativityCraftRapier.worldInsertRigidBody(handle, builder.handle());
+        return RelativityCraftRapier.worldInsertRigidBody(handle, builder.consume());
     }
 
     public boolean removeRigidBody(long rigidBodyHandle, boolean removeAttachedColliders) {
@@ -73,11 +73,11 @@ public final class RcWorld implements AutoCloseable {
     }
 
     public long insertCollider(RcColliderBuilder builder) {
-        return RelativityCraftRapier.worldInsertCollider(handle, builder.handle());
+        return RelativityCraftRapier.worldInsertCollider(handle, builder.consume());
     }
 
     public long insertColliderWithParent(RcColliderBuilder builder, long parentHandle) {
-        return RelativityCraftRapier.worldInsertColliderWithParent(handle, builder.handle(), parentHandle);
+        return RelativityCraftRapier.worldInsertColliderWithParent(handle, builder.consume(), parentHandle);
     }
 
     public boolean removeCollider(long colliderHandle, boolean wakeUp) {

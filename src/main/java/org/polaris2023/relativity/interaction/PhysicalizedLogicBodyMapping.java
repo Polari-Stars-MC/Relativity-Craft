@@ -14,10 +14,10 @@ final class PhysicalizedLogicBodyMapping {
     static final int GRID_SIZE = 1024;
     static final int SLOT_COUNT = GRID_SIZE * GRID_SIZE;
 
-    private static final int BODY_GRID_ORIGIN_X = 29_000_000;
-    private static final int BODY_GRID_ORIGIN_Z = 29_000_000;
+    static final int BODY_GRID_ORIGIN_X = 29_000_000;
+    static final int BODY_GRID_ORIGIN_Z = 29_000_000;
     private static final int BODY_GRID_BASE_Y = -64;
-    private static final int BODY_SLOT_STRIDE = 512;
+    static final int BODY_SLOT_STRIDE = 512;
 
     private final int slot;
     private final BlockPos bodyOrigin;

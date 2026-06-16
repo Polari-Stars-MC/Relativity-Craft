@@ -71,7 +71,7 @@ public final class RelativityCraft {
             RelativityCraftRapier.ensureLoaded();
             return true;
         } catch (Throwable t) {
-            LOGGER.warn("Rapier native backend is unavailable; physicalized volume simulation is disabled. Cause: {}", t.toString());
+            LOGGER.warn("Rapier native backend is unavailable; physicalized volume simulation is disabled.", t);
             return false;
         }
     }
@@ -81,11 +81,16 @@ public final class RelativityCraft {
             Path tempDir = FMLPaths.GAMEDIR.get()
                     .resolve(MOD_ID)
                     .resolve("native-temp")
-                    .resolve("jna");
+                    .resolve("libraries");
             Files.createDirectories(tempDir);
-            System.setProperty("jna.tmpdir", tempDir.toAbsolutePath().toString());
+            String tempPath = tempDir.toAbsolutePath().toString();
+            System.setProperty("java.io.tmpdir", tempPath);
+            System.setProperty("jna.tmpdir", tempPath);
+            System.setProperty("io.netty.tmpdir", tempPath);
+            System.setProperty("io.netty.native.workdir", tempPath);
+            System.setProperty("org.lwjgl.system.SharedLibraryExtractPath", tempPath);
         } catch (Throwable t) {
-            LOGGER.warn("Could not prepare the local JNA temp directory; native loading will use the JVM default. Cause: {}", t.toString());
+            LOGGER.warn("Could not prepare the local native temp directory; native loading will use the JVM default. Cause: {}", t.toString());
         }
     }
 

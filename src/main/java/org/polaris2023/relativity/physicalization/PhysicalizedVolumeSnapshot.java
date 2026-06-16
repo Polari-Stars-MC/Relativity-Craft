@@ -57,8 +57,9 @@ public final class PhysicalizedVolumeSnapshot {
     private final int occupiedMaxY;
     private final int occupiedMaxZ;
     private final AABB occupiedLocalBounds;
-    private final List<AABB> localCollisionBoxes;
-    private final List<AABB> physicsCollisionBoxes;
+    private volatile List<AABB> localCollisionBoxes;
+    private volatile List<AABB> physicsCollisionBoxes;
+    private volatile double[] physicsCollisionFrictions;
     private final boolean hasBlockEntityNbt;
     private final double centerOfMassLocalX;
     private final double centerOfMassLocalY;
@@ -141,9 +142,10 @@ public final class PhysicalizedVolumeSnapshot {
         this.centerOfMassLocalY = massProperties.centerY();
         this.centerOfMassLocalZ = massProperties.centerZ();
         this.estimatedPhysicsMass = massProperties.mass();
-        CollisionBoxes collisionBoxes = buildCollisionBoxes();
-        this.localCollisionBoxes = collisionBoxes.localBoxes();
-        this.physicsCollisionBoxes = collisionBoxes.physicsBoxes();
+        // Collision boxes are built lazily on first access (expensive for large volumes).
+        this.localCollisionBoxes = null;
+        this.physicsCollisionBoxes = null;
+        this.physicsCollisionFrictions = null;
     }
     public static PhysicalizedVolumeSnapshot capture(ServerLevel level, BlockBox box) {
         List<PhysicalizedBlockSnapshot> cells = new ArrayList<>();
@@ -314,11 +316,40 @@ public final class PhysicalizedVolumeSnapshot {
     }
 
     public List<AABB> localCollisionBoxes() {
-        return localCollisionBoxes;
+        List<AABB> result = this.localCollisionBoxes;
+        if (result == null) {
+            synchronized (this) {
+                result = this.localCollisionBoxes;
+                if (result == null) {
+                    result = buildLocalCollisionBoxes();
+                    this.localCollisionBoxes = result;
+                }
+            }
+        }
+        return result;
     }
 
     public List<AABB> physicsCollisionBoxes() {
-        return physicsCollisionBoxes;
+        List<AABB> result = this.physicsCollisionBoxes;
+        if (result == null) {
+            synchronized (this) {
+                result = this.physicsCollisionBoxes;
+                if (result == null) {
+                    CollisionBoxes boxes = buildPhysicsCollisionBoxes();
+                    this.physicsCollisionBoxes = boxes.physicsBoxes();
+                    this.physicsCollisionFrictions = boxes.physicsBoxFrictions();
+                    result = this.physicsCollisionBoxes;
+                }
+            }
+        }
+        return result;
+    }
+
+    public double[] physicsCollisionFrictions() {
+        if (this.physicsCollisionFrictions == null) {
+            physicsCollisionBoxes(); // triggers lazy build
+        }
+        return this.physicsCollisionFrictions;
     }
 
     public boolean hasBlockEntityNbt() {
@@ -539,12 +570,40 @@ public final class PhysicalizedVolumeSnapshot {
         return (localY * sizeZ + localZ) * sizeX + localX;
     }
 
-    private CollisionBoxes buildCollisionBoxes() {
+    private List<AABB> buildLocalCollisionBoxes() {
+        if (this.cells.isEmpty()) {
+            return List.of();
+        }
+        SnapshotBlockGetter localLevel = new SnapshotBlockGetter(this);
+        List<AABB> localBoxes = new ArrayList<>(this.cells.size());
+        for (PhysicalizedBlockSnapshot cell : this.cells) {
+            BlockState state = cell.state();
+            if (state.isAir()) {
+                continue;
+            }
+            // Fast path: most blocks are full-block — use unit AABB directly
+            if (state.isCollisionShapeFullBlock(localLevel, new BlockPos(cell.localX(), cell.localY(), cell.localZ()))) {
+                localBoxes.add(new AABB(cell.localX(), cell.localY(), cell.localZ(),
+                        cell.localX() + 1.0, cell.localY() + 1.0, cell.localZ() + 1.0));
+                continue;
+            }
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            VoxelShape shape = state.getCollisionShape(localLevel, localPos, CollisionContext.empty());
+            if (shape.isEmpty()) {
+                continue;
+            }
+            for (AABB localShapeBox : shape.toAabbs()) {
+                localBoxes.add(localShapeBox.move(localPos));
+            }
+        }
+        return List.copyOf(localBoxes);
+    }
+
+    private CollisionBoxes buildPhysicsCollisionBoxes() {
         if (this.cells.isEmpty()) {
             return CollisionBoxes.EMPTY;
         }
         SnapshotBlockGetter localLevel = new SnapshotBlockGetter(this);
-        List<AABB> localBoxes = new ArrayList<>();
         List<AABB> physicsBoxes = new ArrayList<>();
         LongSet fullBlocks = new LongOpenHashSet();
         for (PhysicalizedBlockSnapshot cell : this.cells) {
@@ -559,11 +618,9 @@ public final class PhysicalizedVolumeSnapshot {
             }
             List<AABB> shapeBoxes = shape.toAabbs();
             boolean fullBlock = isFullBlockBoxes(shapeBoxes);
-            for (AABB localShapeBox : shapeBoxes) {
-                AABB movedBox = localShapeBox.move(localPos);
-                localBoxes.add(movedBox);
-                if (!fullBlock) {
-                    physicsBoxes.add(movedBox);
+            if (!fullBlock) {
+                for (AABB localShapeBox : shapeBoxes) {
+                    physicsBoxes.add(localShapeBox.move(localPos));
                 }
             }
             if (fullBlock) {
@@ -571,7 +628,9 @@ public final class PhysicalizedVolumeSnapshot {
             }
         }
         mergeFullBlocks(fullBlocks, physicsBoxes);
-        return new CollisionBoxes(List.copyOf(localBoxes), List.copyOf(physicsBoxes));
+        double[] frictionArray = new double[physicsBoxes.size()];
+        java.util.Arrays.fill(frictionArray, 0.75);
+        return new CollisionBoxes(List.of(), List.copyOf(physicsBoxes), frictionArray);
     }
 
     private static void mergeFullBlocks(LongSet remaining, List<AABB> output) {
@@ -689,8 +748,8 @@ public final class PhysicalizedVolumeSnapshot {
     private record MassProperties(double centerX, double centerY, double centerZ, double mass) {
     }
 
-    private record CollisionBoxes(List<AABB> localBoxes, List<AABB> physicsBoxes) {
-        private static final CollisionBoxes EMPTY = new CollisionBoxes(List.of(), List.of());
+    private record CollisionBoxes(List<AABB> localBoxes, List<AABB> physicsBoxes, double[] physicsBoxFrictions) {
+        private static final CollisionBoxes EMPTY = new CollisionBoxes(List.of(), List.of(), new double[0]);
     }
 
     private record SnapshotBlockGetter(PhysicalizedVolumeSnapshot snapshot) implements BlockGetter {

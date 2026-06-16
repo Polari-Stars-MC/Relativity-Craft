@@ -225,6 +225,42 @@ uint32_t rc_query_intersect_aabb_rigid_bodies(const struct RcWorldHandle *world,
                                               RcRigidBodyHandle *out_handles,
                                               uint32_t capacity);
 
+/**
+ * Snapshot only active (non-sleeping) dynamic bodies. Returns the number of bodies written.
+ * This is significantly faster than the full snapshot when many bodies are sleeping.
+ */
+uint32_t rc_world_active_body_snapshot(const struct RcWorldHandle *world,
+                                       RcRigidBodyHandle *out_handles,
+                                       double *out_values,
+                                       uint32_t capacity);
+
+/**
+ * Count active (non-sleeping) dynamic bodies.
+ */
+uint32_t rc_world_active_body_count(const struct RcWorldHandle *world);
+
+/**
+ * Batch apply forces to multiple bodies in a single call.
+ * `body_handles` is an array of body handles.
+ * `forces` is a flat array of [fx, fy, fz] per body (stride 3).
+ * Returns the number of forces successfully applied.
+ */
+uint32_t rc_world_apply_forces_batch(struct RcWorldHandle *world,
+                                     const RcRigidBodyHandle *body_handles,
+                                     const double *forces,
+                                     uint32_t count,
+                                     uint8_t wake_up);
+
+/**
+ * Batch apply impulses to multiple bodies in a single call.
+ * Same layout as forces batch.
+ */
+uint32_t rc_world_apply_impulses_batch(struct RcWorldHandle *world,
+                                       const RcRigidBodyHandle *body_handles,
+                                       const double *impulses,
+                                       uint32_t count,
+                                       uint8_t wake_up);
+
 struct RcColliderBuilderHandle *rc_collider_builder_create(enum RcShapeType shape_type,
                                                            struct RcVec3 shape_data);
 

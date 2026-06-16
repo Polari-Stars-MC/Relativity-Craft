@@ -810,7 +810,7 @@ public final class PhysicalizedInteractionHandler {
                 level.levelEvent(player, 2001, removedPos, Block.getId(removedCell.state()));
             }
             nextSnapshot = nextSnapshot.withoutCell(removedCell);
-            PhysicalizedRedstoneMapping.global().clearCell(entity, removedCell);
+            PhysicalizedRedstoneMapping.global().clearCell(level, entity, removedCell);
         }
 
         for (PhysicalizedBlockSnapshot removedCell : removedCells) {
@@ -906,7 +906,7 @@ public final class PhysicalizedInteractionHandler {
                         ? BlockEntity.loadStatic(dropPos, candidateState, candidate.blockEntityNbt(), level.registryAccess())
                         : null;
                 Block.dropResources(candidateState, level, dropPos, blockEntity);
-                PhysicalizedRedstoneMapping.global().clearCell(entity, candidate);
+                PhysicalizedRedstoneMapping.global().clearCell(level, entity, candidate);
                 removed.add(candidate);
                 current = current.withoutCell(candidate);
                 changed = true;

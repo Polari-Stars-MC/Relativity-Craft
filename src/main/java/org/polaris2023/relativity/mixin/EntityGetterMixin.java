@@ -33,22 +33,9 @@ public interface EntityGetterMixin {
                 entity -> canCollide.test(entity)
                         && (!(source instanceof PhysicalizedVolumeEntity) || !(entity instanceof PhysicalizedVolumeEntity))
         );
-        if (collidingEntities.isEmpty()) {
-            cir.setReturnValue(List.of());
-            return;
-        }
-
         ImmutableList.Builder<VoxelShape> shapes = ImmutableList.builderWithExpectedSize(collidingEntities.size());
         for (Entity entity : collidingEntities) {
             if (entity instanceof PhysicalizedVolumeEntity volume) {
-                if (!volume.getBoundingBox().intersects(testArea)) {
-                    continue;
-                }
-                for (AABB box : volume.minecraftCollisionBoxes()) {
-                    if (box.intersects(testArea)) {
-                        shapes.add(Shapes.create(box));
-                    }
-                }
                 continue;
             }
             shapes.add(Shapes.create(entity.getBoundingBox()));

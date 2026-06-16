@@ -20,8 +20,8 @@ import java.lang.invoke.MethodHandle;
 import java.lang.invoke.WrongMethodTypeException;
 
 public final class RelativityCraftRapier {
-    private static final String MODULE = "relativity_craft_rapier";
-    private static final String BASENAME = "relativity_craft_rapier";
+    private static final String MODULE = "mps_rigid_body";
+    private static final String BASENAME = "mps_rigid_body";
     private static final String VERSION = "0.1.4";
 
     static final GroupLayout RC_VEC3 = MemoryLayout.structLayout(
@@ -34,47 +34,52 @@ public final class RelativityCraftRapier {
         ValueLayout.JAVA_DOUBLE.withName("j"),
         ValueLayout.JAVA_DOUBLE.withName("k"),
         ValueLayout.JAVA_DOUBLE.withName("w")
-    ).withName("RcQuat");
+    ).withName("Quat");
     static final GroupLayout RC_BOOL = MemoryLayout.structLayout(
         ValueLayout.JAVA_BYTE.withName("_0")
-    ).withName("RcBool");
+    ).withName("Bool");
     static final GroupLayout RC_AABB = MemoryLayout.structLayout(
         RC_VEC3.withName("mins"),
         RC_VEC3.withName("maxs")
-    ).withName("RcAabb");
+    ).withName("AabbDesc");
+    static final GroupLayout RC_OBB = MemoryLayout.structLayout(
+        RC_VEC3.withName("center"),
+        RC_VEC3.withName("half_extents"),
+        RC_QUAT.withName("rotation")
+    ).withName("Obb");
     static final GroupLayout RC_INTERACTION_GROUPS = MemoryLayout.structLayout(
         ValueLayout.JAVA_INT.withName("memberships"),
         ValueLayout.JAVA_INT.withName("filter")
-    ).withName("RcInteractionGroups");
+    ).withName("InteractionGroupsDesc");
     private static final SymbolLookup SYMBOL_LOOKUP = RuntimeHelper.load(MODULE, BASENAME, VERSION);
     private static final Linker LINKER = Linker.nativeLinker();
 
     private static final MethodHandle RC_WORLD_CREATE = downcall(
-        "rc_world_create",
+        "world_create",
         FunctionDescriptor.of(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_WORLD_DESTROY = downcall(
-        "rc_world_destroy",
+        "world_destroy",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_STEP = downcall(
-        "rc_world_step",
+        "world_step",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_WORLD_SET_GRAVITY = downcall(
-        "rc_world_set_gravity",
+        "world_set_gravity",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_WORLD_GET_GRAVITY = downcall(
-        "rc_world_get_gravity_out",
+        "world_get_gravity_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_DYNAMIC_BODY_SNAPSHOT_COUNT = optionalDowncall(
-        "rc_world_dynamic_body_snapshot_count",
+        "world_dynamic_body_snapshot_count",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_DYNAMIC_BODY_SNAPSHOT = optionalDowncall(
-        "rc_world_dynamic_body_snapshot",
+        "world_dynamic_body_snapshot",
         FunctionDescriptor.of(
             ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS,
@@ -83,156 +88,204 @@ public final class RelativityCraftRapier {
             ValueLayout.JAVA_INT
         )
     );
+    private static final MethodHandle RC_WORLD_ACTIVE_BODY_COUNT = optionalDowncall(
+        "world_active_body_count",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS)
+    );
+    private static final MethodHandle RC_WORLD_ACTIVE_BODY_SNAPSHOT = optionalDowncall(
+        "world_active_body_snapshot",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT
+        )
+    );
+    private static final MethodHandle RC_WORLD_APPLY_FORCES_BATCH = optionalDowncall(
+        "world_apply_forces_batch",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_BYTE
+        )
+    );
+    private static final MethodHandle RC_WORLD_APPLY_IMPULSES_BATCH = optionalDowncall(
+        "world_apply_impulses_batch",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT,
+            ValueLayout.JAVA_BYTE
+        )
+    );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_CREATE = downcall(
-        "rc_rigid_body_builder_create",
+        "rigid_body_builder_create",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_DESTROY = downcall(
-        "rc_rigid_body_builder_destroy",
+        "rigid_body_builder_destroy",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
+    private static final MethodHandle RC_RIGID_BODY_BUILDER_BUILD = downcall(
+        "rigid_body_builder_build",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_TRANSLATION = downcall(
-        "rc_rigid_body_builder_set_translation",
+        "rigid_body_builder_set_translation",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_ROTATION = downcall(
-        "rc_rigid_body_builder_set_rotation",
+        "rigid_body_builder_set_rotation",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_LINVEL = downcall(
-        "rc_rigid_body_builder_set_linvel",
+        "rigid_body_builder_set_linvel",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_ANGVEL = downcall(
-        "rc_rigid_body_builder_set_angvel",
+        "rigid_body_builder_set_angvel",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_GRAVITY_SCALE = downcall(
-        "rc_rigid_body_builder_set_gravity_scale",
+        "rigid_body_builder_set_gravity_scale",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_LINEAR_DAMPING = downcall(
-        "rc_rigid_body_builder_set_linear_damping",
+        "rigid_body_builder_set_linear_damping",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_ANGULAR_DAMPING = downcall(
-        "rc_rigid_body_builder_set_angular_damping",
+        "rigid_body_builder_set_angular_damping",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_RIGID_BODY_BUILDER_SET_CAN_SLEEP = downcall(
-        "rc_rigid_body_builder_set_can_sleep",
+        "rigid_body_builder_set_can_sleep",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_BOOL)
     );
     private static final MethodHandle RC_WORLD_INSERT_RIGID_BODY = downcall(
-        "rc_world_insert_rigid_body",
+        "world_insert_rigid_body",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_REMOVE_RIGID_BODY = downcall(
-        "rc_world_remove_rigid_body_flag",
+        "world_remove_rigid_body_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_TRANSLATION = downcall(
-        "rc_rigid_body_get_translation_out",
+        "rigid_body_get_translation_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_LINVEL = downcall(
-        "rc_rigid_body_get_linvel_out",
+        "rigid_body_get_linvel_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_ANGVEL = downcall(
-        "rc_rigid_body_get_angvel",
+        "rigid_body_get_angvel",
         FunctionDescriptor.of(RC_VEC3, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_RIGID_BODY_GET_ROTATION = downcall(
-        "rc_rigid_body_get_rotation_out",
+        "rigid_body_get_rotation_out",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_RIGID_BODY_SET_POSE = downcall(
-        "rc_rigid_body_set_pose_flag",
+        "rigid_body_set_pose_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_QUAT, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_SET_LINVEL = downcall(
-        "rc_rigid_body_set_linvel_flag",
+        "rigid_body_set_linvel_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_SET_ANGVEL = downcall(
-        "rc_rigid_body_set_angvel",
+        "rigid_body_set_angvel",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_ADD_FORCE = downcall(
-        "rc_rigid_body_add_force_flag",
+        "rigid_body_add_force_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_APPLY_IMPULSE = downcall(
-        "rc_rigid_body_apply_impulse",
+        "rigid_body_apply_impulse",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_APPLY_TORQUE_IMPULSE = downcall(
-        "rc_rigid_body_apply_torque_impulse",
+        "rigid_body_apply_torque_impulse",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_VEC3, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_ENABLE_CCD = downcall(
-        "rc_rigid_body_enable_ccd",
+        "rigid_body_enable_ccd",
         FunctionDescriptor.of(RC_BOOL, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_SLEEP = downcall(
-        "rc_rigid_body_sleep_flag",
+        "rigid_body_sleep_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_RIGID_BODY_WAKE_UP = downcall(
-        "rc_rigid_body_wake_up_flag",
+        "rigid_body_wake_up_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_RIGID_BODY_IS_SLEEPING = downcall(
-        "rc_rigid_body_is_sleeping_flag",
+        "rigid_body_is_sleeping_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_CREATE = downcall(
-        "rc_collider_builder_create",
+        "collider_builder_create",
         FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.JAVA_INT, RC_VEC3)
     );
+    private static final MethodHandle RC_COLLIDER_BUILDER_CREATE_OBB = downcall(
+        "collider_builder_create_obb",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, RC_OBB)
+    );
     private static final MethodHandle RC_COLLIDER_BUILDER_DESTROY = downcall(
-        "rc_collider_builder_destroy",
+        "collider_builder_destroy",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS)
     );
+    private static final MethodHandle RC_COLLIDER_BUILDER_BUILD = downcall(
+        "collider_builder_build",
+        FunctionDescriptor.of(ValueLayout.ADDRESS, ValueLayout.ADDRESS)
+    );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_TRANSLATION = downcall(
-        "rc_collider_builder_set_translation",
+        "collider_builder_set_translation",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_VEC3)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_FRICTION = downcall(
-        "rc_collider_builder_set_friction",
+        "collider_builder_set_friction",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_RESTITUTION = downcall(
-        "rc_collider_builder_set_restitution",
+        "collider_builder_set_restitution",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_DENSITY = downcall(
-        "rc_collider_builder_set_density",
+        "collider_builder_set_density",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, ValueLayout.JAVA_DOUBLE)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_COLLISION_GROUPS = downcall(
-        "rc_collider_builder_set_collision_groups",
+        "collider_builder_set_collision_groups",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_INTERACTION_GROUPS)
     );
     private static final MethodHandle RC_COLLIDER_BUILDER_SET_SOLVER_GROUPS = downcall(
-        "rc_collider_builder_set_solver_groups",
+        "collider_builder_set_solver_groups",
         FunctionDescriptor.ofVoid(ValueLayout.ADDRESS, RC_INTERACTION_GROUPS)
     );
     private static final MethodHandle RC_WORLD_INSERT_COLLIDER = downcall(
-        "rc_world_insert_collider",
+        "world_insert_collider",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS)
     );
     private static final MethodHandle RC_WORLD_INSERT_COLLIDER_WITH_PARENT = downcall(
-        "rc_world_insert_collider_with_parent",
+        "world_insert_collider_with_parent",
         FunctionDescriptor.of(ValueLayout.JAVA_LONG, ValueLayout.ADDRESS, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG)
     );
     private static final MethodHandle RC_WORLD_REMOVE_COLLIDER = downcall(
-        "rc_world_remove_collider_flag",
+        "world_remove_collider_flag",
         FunctionDescriptor.of(ValueLayout.JAVA_BYTE, ValueLayout.ADDRESS, ValueLayout.JAVA_LONG, RC_BOOL)
     );
     private static final MethodHandle RC_WORLD_INSERT_DYNAMIC_CUBOIDS = downcall(
-        "rc_world_insert_dynamic_cuboids",
+        "world_insert_dynamic_cuboids",
         FunctionDescriptor.of(
             ValueLayout.JAVA_LONG,
             ValueLayout.ADDRESS,
@@ -249,7 +302,7 @@ public final class RelativityCraftRapier {
         )
     );
     private static final MethodHandle RC_WORLD_INSERT_STATIC_TRIMESH = downcall(
-        "rc_world_insert_static_trimesh",
+        "world_insert_static_trimesh",
         FunctionDescriptor.of(
             ValueLayout.JAVA_LONG,
             ValueLayout.ADDRESS,
@@ -262,15 +315,29 @@ public final class RelativityCraftRapier {
         )
     );
     private static final MethodHandle RC_QUERY_INTERSECT_AABB_RIGID_BODY_COUNT = downcall(
-        "rc_query_intersect_aabb_rigid_body_count_all",
+        "query_intersect_aabb_rigid_body_count_all",
         FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, RC_AABB)
     );
     private static final MethodHandle RC_QUERY_INTERSECT_AABB_RIGID_BODIES = downcall(
-        "rc_query_intersect_aabb_rigid_bodies_all",
+        "query_intersect_aabb_rigid_bodies_all",
         FunctionDescriptor.of(
             ValueLayout.JAVA_INT,
             ValueLayout.ADDRESS,
             RC_AABB,
+            ValueLayout.ADDRESS,
+            ValueLayout.JAVA_INT
+        )
+    );
+    private static final MethodHandle RC_QUERY_INTERSECT_OBB_COUNT = downcall(
+        "query_intersect_obb_count_all",
+        FunctionDescriptor.of(ValueLayout.JAVA_INT, ValueLayout.ADDRESS, RC_OBB)
+    );
+    private static final MethodHandle RC_QUERY_INTERSECT_OBB = downcall(
+        "query_intersect_obb_all",
+        FunctionDescriptor.of(
+            ValueLayout.JAVA_INT,
+            ValueLayout.ADDRESS,
+            RC_OBB,
             ValueLayout.ADDRESS,
             ValueLayout.JAVA_INT
         )
@@ -310,6 +377,17 @@ public final class RelativityCraftRapier {
             return new RcColliderBuilder(handle);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_collider_builder_create", t);
+        }
+    }
+
+    public static RcColliderBuilder createObbColliderBuilder(Vec3 center, Vec3 halfExtents, Quaterniond rotation) {
+        try {
+            MemorySegment handle = (MemorySegment) RC_COLLIDER_BUILDER_CREATE_OBB.invokeExact(
+                encodeObb(Arena.ofAuto(), center, halfExtents, rotation)
+            );
+            return new RcColliderBuilder(handle);
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call collider_builder_create_obb", t);
         }
     }
 
@@ -377,6 +455,95 @@ public final class RelativityCraftRapier {
             return snapshot;
         } catch (Throwable ignored) {
             return null;
+        }
+    }
+
+    /**
+     * Snapshot only active (non-sleeping) dynamic bodies. Returns stride-8 array
+     * [handle, x, y, z, qx, qy, qz, qw] per body, or null if unavailable.
+     */
+    static double[] worldActiveBodySnapshot(MemorySegment world) {
+        if (RC_WORLD_ACTIVE_BODY_COUNT == null || RC_WORLD_ACTIVE_BODY_SNAPSHOT == null) {
+            return null;
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            int count = (int) RC_WORLD_ACTIVE_BODY_COUNT.invokeExact(world);
+            if (count <= 0) {
+                return new double[0];
+            }
+
+            MemorySegment handles = arena.allocate(ValueLayout.JAVA_LONG, count);
+            MemorySegment values = arena.allocate(ValueLayout.JAVA_DOUBLE, count * 7L);
+            int written = (int) RC_WORLD_ACTIVE_BODY_SNAPSHOT.invokeExact(world, handles, values, count);
+            double[] snapshot = new double[written * 8];
+            for (int i = 0; i < written; i++) {
+                int out = i * 8;
+                int value = i * 7;
+                snapshot[out] = handles.getAtIndex(ValueLayout.JAVA_LONG, i);
+                snapshot[out + 1] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value);
+                snapshot[out + 2] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 1);
+                snapshot[out + 3] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 2);
+                snapshot[out + 4] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 3);
+                snapshot[out + 5] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 4);
+                snapshot[out + 6] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 5);
+                snapshot[out + 7] = values.getAtIndex(ValueLayout.JAVA_DOUBLE, value + 6);
+            }
+            return snapshot;
+        } catch (Throwable ignored) {
+            return null;
+        }
+    }
+
+    /**
+     * Batch apply forces to multiple bodies. Returns number of forces applied.
+     */
+    static int worldApplyForcesBatch(MemorySegment world, long[] bodyHandles, double[] forces, boolean wakeUp) {
+        if (RC_WORLD_APPLY_FORCES_BATCH == null || bodyHandles.length == 0) {
+            return 0;
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            int count = bodyHandles.length;
+            MemorySegment handleBuffer = arena.allocate(ValueLayout.JAVA_LONG, count);
+            for (int i = 0; i < count; i++) {
+                handleBuffer.setAtIndex(ValueLayout.JAVA_LONG, i, bodyHandles[i]);
+            }
+            MemorySegment forceBuffer = arena.allocate(ValueLayout.JAVA_DOUBLE, forces.length);
+            for (int i = 0; i < forces.length; i++) {
+                forceBuffer.setAtIndex(ValueLayout.JAVA_DOUBLE, i, forces[i]);
+            }
+            return (int) RC_WORLD_APPLY_FORCES_BATCH.invokeExact(
+                    world, handleBuffer, forceBuffer, count, (byte) (wakeUp ? 1 : 0)
+            );
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    /**
+     * Batch apply impulses to multiple bodies. Returns number of impulses applied.
+     */
+    static int worldApplyImpulsesBatch(MemorySegment world, long[] bodyHandles, double[] impulses, boolean wakeUp) {
+        if (RC_WORLD_APPLY_IMPULSES_BATCH == null || bodyHandles.length == 0) {
+            return 0;
+        }
+
+        try (Arena arena = Arena.ofConfined()) {
+            int count = bodyHandles.length;
+            MemorySegment handleBuffer = arena.allocate(ValueLayout.JAVA_LONG, count);
+            for (int i = 0; i < count; i++) {
+                handleBuffer.setAtIndex(ValueLayout.JAVA_LONG, i, bodyHandles[i]);
+            }
+            MemorySegment impulseBuffer = arena.allocate(ValueLayout.JAVA_DOUBLE, impulses.length);
+            for (int i = 0; i < impulses.length; i++) {
+                impulseBuffer.setAtIndex(ValueLayout.JAVA_DOUBLE, i, impulses[i]);
+            }
+            return (int) RC_WORLD_APPLY_IMPULSES_BATCH.invokeExact(
+                    world, handleBuffer, impulseBuffer, count, (byte) (wakeUp ? 1 : 0)
+            );
+        } catch (Throwable ignored) {
+            return 0;
         }
     }
 
@@ -454,7 +621,11 @@ public final class RelativityCraftRapier {
 
     static long worldInsertRigidBody(MemorySegment world, MemorySegment builder) {
         try {
-            return (long) RC_WORLD_INSERT_RIGID_BODY.invokeExact(world, builder);
+            MemorySegment body = (MemorySegment) RC_RIGID_BODY_BUILDER_BUILD.invokeExact(builder);
+            if (body.equals(MemorySegment.NULL)) {
+                return 0L;
+            }
+            return (long) RC_WORLD_INSERT_RIGID_BODY.invokeExact(world, body);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_insert_rigid_body", t);
         }
@@ -753,7 +924,11 @@ public final class RelativityCraftRapier {
 
     static long worldInsertCollider(MemorySegment world, MemorySegment builder) {
         try {
-            return (long) RC_WORLD_INSERT_COLLIDER.invokeExact(world, builder);
+            MemorySegment collider = (MemorySegment) RC_COLLIDER_BUILDER_BUILD.invokeExact(builder);
+            if (collider.equals(MemorySegment.NULL)) {
+                return 0L;
+            }
+            return (long) RC_WORLD_INSERT_COLLIDER.invokeExact(world, collider);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_insert_collider", t);
         }
@@ -761,7 +936,11 @@ public final class RelativityCraftRapier {
 
     static long worldInsertColliderWithParent(MemorySegment world, MemorySegment builder, long parentHandle) {
         try {
-            return (long) RC_WORLD_INSERT_COLLIDER_WITH_PARENT.invokeExact(world, builder, parentHandle);
+            MemorySegment collider = (MemorySegment) RC_COLLIDER_BUILDER_BUILD.invokeExact(builder);
+            if (collider.equals(MemorySegment.NULL)) {
+                return 0L;
+            }
+            return (long) RC_WORLD_INSERT_COLLIDER_WITH_PARENT.invokeExact(world, collider, parentHandle);
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_insert_collider_with_parent", t);
         }
@@ -859,6 +1038,25 @@ public final class RelativityCraftRapier {
         }
     }
 
+    static long[] queryIntersectObbColliders(MemorySegment world, Vec3 center, Vec3 halfExtents, Quaterniond rotation) {
+        try (Arena arena = Arena.ofConfined()) {
+            MemorySegment encodedObb = encodeObb(arena, center, halfExtents, rotation);
+            int count = (int) RC_QUERY_INTERSECT_OBB_COUNT.invokeExact(world, encodedObb);
+            if (count <= 0) {
+                return new long[0];
+            }
+            MemorySegment out = arena.allocate(ValueLayout.JAVA_LONG, count);
+            int written = (int) RC_QUERY_INTERSECT_OBB.invokeExact(world, encodedObb, out, count);
+            long[] result = new long[written];
+            for (int i = 0; i < written; i++) {
+                result[i] = out.getAtIndex(ValueLayout.JAVA_LONG, i);
+            }
+            return result;
+        } catch (Throwable t) {
+            throw new IllegalStateException("Failed to call query_intersect_obb_all", t);
+        }
+    }
+
     static MemorySegment encodeVec3(Arena arena, Vec3 vec3) {
         MemorySegment segment = arena.allocate(RC_VEC3);
         segment.set(ValueLayout.JAVA_DOUBLE, 0, vec3.x());
@@ -884,6 +1082,15 @@ public final class RelativityCraftRapier {
         segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize(), aabb.maxX);
         segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize() + 8, aabb.maxY);
         segment.set(ValueLayout.JAVA_DOUBLE, RC_VEC3.byteSize() + 16, aabb.maxZ);
+        return segment;
+    }
+
+    static MemorySegment encodeObb(Arena arena, Vec3 center, Vec3 halfExtents, Quaterniond rotation) {
+        MemorySegment segment = arena.allocate(RC_OBB);
+        encodeVec3(center, segment.asSlice(0, RC_VEC3.byteSize()));
+        encodeVec3(halfExtents, segment.asSlice(RC_VEC3.byteSize(), RC_VEC3.byteSize()));
+        MemorySegment encodedRotation = encodeQuat(arena, rotation);
+        MemorySegment.copy(encodedRotation, 0, segment, RC_VEC3.byteSize() * 2, RC_QUAT.byteSize());
         return segment;
     }
 
@@ -926,6 +1133,7 @@ public final class RelativityCraftRapier {
     static boolean decodeBool(MemorySegment segment) {
         return segment.get(ValueLayout.JAVA_BYTE, 0) != 0;
     }
+
 
     private static MethodHandle downcall(String symbol, FunctionDescriptor descriptor) {
         return LINKER.downcallHandle(find(symbol), descriptor);

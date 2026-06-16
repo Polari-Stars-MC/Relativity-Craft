@@ -57,6 +57,7 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public float modelMeshSampleQz = Float.NaN;
     public float modelMeshSampleQw = Float.NaN;
     public CachedModelMesh modelMesh = CachedModelMesh.EMPTY;
+    public long lastMeshRebuildNanos;
     public ClientLevel clientLevel;
     public int breakLocalX = -1;
     public int breakLocalY = -1;

@@ -16,6 +16,11 @@ public final class RcColliderBuilder implements AutoCloseable {
         return handle;
     }
 
+    MemorySegment consume() {
+        closed = true;
+        return handle;
+    }
+
     public RcColliderBuilder translation(Vec3 translation) {
         RelativityCraftRapier.colliderBuilderSetTranslation(handle, translation);
         return this;

@@ -16,6 +16,11 @@ public final class RcRigidBodyBuilder implements AutoCloseable {
         return handle;
     }
 
+    MemorySegment consume() {
+        closed = true;
+        return handle;
+    }
+
     public RcRigidBodyBuilder translation(Vec3 translation) {
         RelativityCraftRapier.rigidBodyBuilderSetTranslation(handle, translation);
         return this;

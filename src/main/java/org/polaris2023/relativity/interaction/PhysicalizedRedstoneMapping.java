@@ -63,7 +63,11 @@ public final class PhysicalizedRedstoneMapping {
         PhysicalizedLogicBodyRedstone.global().removeBody(level, entity);
     }
 
-    public void clearCell(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell) {
+    public void clearCell(ServerLevel level, PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell) {
+        if (PhysicalizedLogicBodyRedstone.global().isApplyingLogicBody()) {
+            return;
+        }
+        PhysicalizedLogicBodyRedstone.global().clearLogicBodyCell(level, entity, cell.localX(), cell.localY(), cell.localZ());
     }
 
     public void notifyCellChanged(ServerLevel level, PhysicalizedVolumeEntity entity, int localX, int localY, int localZ) {

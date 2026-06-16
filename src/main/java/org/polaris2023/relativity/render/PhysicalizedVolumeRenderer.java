@@ -477,6 +477,16 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             return state.modelMesh;
         }
 
+        // For large volumes, throttle mesh rebuilds to avoid FPS drops.
+        // Keep using old mesh until enough time has passed.
+        if (state.blockCount > 500 && state.modelMesh != PhysicalizedVolumeRenderState.CachedModelMesh.EMPTY) {
+            long now = System.nanoTime();
+            if (now - state.lastMeshRebuildNanos < 500_000_000L) { // max once per 500ms
+                return state.modelMesh;
+            }
+            state.lastMeshRebuildNanos = now;
+        }
+
         state.modelMeshSnapshot = state.renderSnapshot;
         state.modelMeshAmbientOcclusion = ambientOcclusion;
         state.modelMeshCutoutLeaves = cutoutLeaves;

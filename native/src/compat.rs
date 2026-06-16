@@ -218,3 +218,139 @@ pub extern "C" fn rc_query_intersect_aabb_rigid_bodies(
 
     written as u32
 }
+
+/// Snapshot only active (non-sleeping) dynamic bodies. Returns the number of bodies written.
+/// This is significantly faster than the full snapshot when many bodies are sleeping.
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_active_body_snapshot(
+    world: *const RcWorldHandle,
+    out_handles: *mut RcRigidBodyHandle,
+    out_values: *mut f64,
+    capacity: u32,
+) -> u32 {
+    let Some(world) = (unsafe { world.as_ref() }) else {
+        return 0;
+    };
+    if out_handles.is_null() || out_values.is_null() || capacity == 0 {
+        return 0;
+    }
+
+    let capacity = capacity as usize;
+    let handles = unsafe { slice::from_raw_parts_mut(out_handles, capacity) };
+    let values = unsafe { slice::from_raw_parts_mut(out_values, capacity * 7) };
+    let mut written = 0usize;
+
+    // Only iterate active (non-sleeping) dynamic bodies via the island manager
+    for body_handle in world.inner.islands.active_bodies() {
+        if written >= capacity {
+            break;
+        }
+        let Some(body) = world.inner.bodies.get(body_handle) else {
+            continue;
+        };
+        if !body.is_dynamic() {
+            continue;
+        }
+
+        let translation = crate::ffi::vec3_from_rapier(body.translation());
+        let rotation = crate::ffi::quat_from_rapier(*body.rotation());
+        handles[written] = pack_rigid_body_handle(body_handle);
+        let offset = written * 7;
+        values[offset] = translation.x;
+        values[offset + 1] = translation.y;
+        values[offset + 2] = translation.z;
+        values[offset + 3] = rotation.i;
+        values[offset + 4] = rotation.j;
+        values[offset + 5] = rotation.k;
+        values[offset + 6] = rotation.w;
+        written += 1;
+    }
+
+    written as u32
+}
+
+/// Count active (non-sleeping) dynamic bodies.
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_active_body_count(world: *const RcWorldHandle) -> u32 {
+    let Some(world) = (unsafe { world.as_ref() }) else {
+        return 0;
+    };
+
+    world.inner.islands.active_bodies().count() as u32
+}
+
+/// Batch apply forces to multiple bodies in a single call.
+/// `body_handles` is an array of body handles.
+/// `forces` is a flat array of [fx, fy, fz] per body (stride 3).
+/// Returns the number of forces successfully applied.
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_apply_forces_batch(
+    world: *mut RcWorldHandle,
+    body_handles: *const RcRigidBodyHandle,
+    forces: *const f64,
+    count: u32,
+    wake_up: u8,
+) -> u32 {
+    let Some(world) = (unsafe { world.as_mut() }) else {
+        return 0;
+    };
+    if body_handles.is_null() || forces.is_null() || count == 0 {
+        return 0;
+    }
+
+    let handles = unsafe { slice::from_raw_parts(body_handles, count as usize) };
+    let forces = unsafe { slice::from_raw_parts(forces, (count as usize) * 3) };
+    let wake = wake_up != 0;
+    let mut applied = 0u32;
+
+    for i in 0..count as usize {
+        let body_handle = crate::ffi::unpack_rigid_body_handle(handles[i]);
+        let Some(body) = world.inner.bodies.get_mut(body_handle) else {
+            continue;
+        };
+
+        let offset = i * 3;
+        let force = Vector::new(forces[offset], forces[offset + 1], forces[offset + 2]);
+        body.add_force(force, wake);
+        applied += 1;
+    }
+
+    applied
+}
+
+/// Batch apply impulses to multiple bodies in a single call.
+/// Same layout as forces batch.
+#[unsafe(no_mangle)]
+pub extern "C" fn rc_world_apply_impulses_batch(
+    world: *mut RcWorldHandle,
+    body_handles: *const RcRigidBodyHandle,
+    impulses: *const f64,
+    count: u32,
+    wake_up: u8,
+) -> u32 {
+    let Some(world) = (unsafe { world.as_mut() }) else {
+        return 0;
+    };
+    if body_handles.is_null() || impulses.is_null() || count == 0 {
+        return 0;
+    }
+
+    let handles = unsafe { slice::from_raw_parts(body_handles, count as usize) };
+    let impulses = unsafe { slice::from_raw_parts(impulses, (count as usize) * 3) };
+    let wake = wake_up != 0;
+    let mut applied = 0u32;
+
+    for i in 0..count as usize {
+        let body_handle = crate::ffi::unpack_rigid_body_handle(handles[i]);
+        let Some(body) = world.inner.bodies.get_mut(body_handle) else {
+            continue;
+        };
+
+        let offset = i * 3;
+        let impulse = Vector::new(impulses[offset], impulses[offset + 1], impulses[offset + 2]);
+        body.apply_impulse(impulse, wake);
+        applied += 1;
+    }
+
+    applied
+}

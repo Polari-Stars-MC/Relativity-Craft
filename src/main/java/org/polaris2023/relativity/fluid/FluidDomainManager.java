@@ -3,6 +3,7 @@ package org.polaris2023.relativity.fluid;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
+import org.polaris2023.relativity.world.PhysicsCommandQueue;
 import net.minecraft.core.BlockPos;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.tags.FluidTags;
@@ -33,6 +34,12 @@ public final class FluidDomainManager {
     }
 
     public void applyFluidForces(ServerLevel level, RapierNativeWorld world, PhysicalizedVolumeEntity entity, double deltaSeconds) {
+    }
+
+    public void applyFluidForcesAsync(ServerLevel level, PhysicsCommandQueue commandQueue, PhysicalizedVolumeEntity entity, double deltaSeconds) {
+        // Async variant: computes fluid force on server thread, submits to physics thread via command queue.
+        // Currently a no-op like applyFluidForces; when fluid force calculation is implemented,
+        // it will submit PhysicsCommand.AddForce/ApplyImpulse instead of calling world directly.
     }
 
     public SurfaceSample surfaceSampleAt(ServerLevel level, BlockPos pos, long gameTime) {

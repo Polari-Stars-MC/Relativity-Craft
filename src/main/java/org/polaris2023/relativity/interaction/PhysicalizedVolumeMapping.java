@@ -173,7 +173,7 @@ public final class PhysicalizedVolumeMapping {
             }
             if (overlap < bestOverlap) {
                 bestOverlap = overlap;
-                bestAxis = worldAxis.scale(distance < 0.0 ? 1.0 : -1.0);
+                bestAxis = worldAxis.scale(distance < 0.0 ? -1.0 : 1.0);
             }
         }
 

@@ -22,6 +22,42 @@ public final class PhysicalizedVolumeLookup {
     private static final double QUERY_EPSILON = 1.0E-5;
     private static final Map<String, Int2ObjectOpenHashMap<PhysicalizedVolumeEntity>> TRACKED = new Object2ObjectOpenHashMap<>();
 
+    /**
+     * Returns a direct view of the tracked volumes for the given level.
+     * Zero allocation — returns the values collection of the internal map.
+     * Caller must handle removed/unusable entries gracefully.
+     */
+    public static Iterable<PhysicalizedVolumeEntity> trackedVolumesView(Level level) {
+        Int2ObjectOpenHashMap<PhysicalizedVolumeEntity> tracked = TRACKED.get(levelKey(level));
+        if (tracked == null || tracked.isEmpty()) {
+            return List.of();
+        }
+        return tracked.values();
+    }
+
+    /**
+     * Ultra-fast check: are there ANY tracked physicalized volumes whose bounding box
+     * intersects the given query box? This is called from getBlockCollisions for every
+     * entity every tick, so it must be O(tracked_volumes) with minimal overhead.
+     * Returns false immediately if no volumes are tracked in this level.
+     */
+    public static boolean hasAnyNearby(Object levelObj, AABB queryBox) {
+        if (!(levelObj instanceof Level level)) {
+            return false;
+        }
+        Int2ObjectOpenHashMap<PhysicalizedVolumeEntity> tracked = TRACKED.get(levelKey(level));
+        if (tracked == null || tracked.isEmpty()) {
+            return false;
+        }
+        for (PhysicalizedVolumeEntity volume : tracked.values()) {
+            if (volume.level() == level && !volume.isRemoved()
+                    && volume.getBoundingBox().intersects(queryBox)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     private PhysicalizedVolumeLookup() {
     }
 

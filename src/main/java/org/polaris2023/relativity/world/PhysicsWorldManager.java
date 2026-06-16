@@ -5,6 +5,7 @@ import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.fluid.FluidDomainManager;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
+import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
 import net.minecraft.world.phys.Vec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
@@ -31,6 +32,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.locks.ReentrantReadWriteLock;
 import java.util.function.Consumer;
 
 public final class PhysicsWorldManager {
@@ -41,6 +43,7 @@ public final class PhysicsWorldManager {
     private static final double GRAVITY_Y = -0.04 * 20.0 * 20.0;
     private static final double PHYSICS_SUBSTEP_SECONDS = 1.0 / 60.0;
     private static final int SUBSTEPS_PER_SERVER_TICK = 2;
+    private static final double PHYSICS_SECONDS_PER_SERVER_TICK = PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK;
     private static final int SNAPSHOT_STRIDE = 8;
     private static final int TERRAIN_MARGIN_BLOCKS = 8;
     private static final double PISTON_PUSH_VELOCITY = 2.0;
@@ -136,6 +139,52 @@ public final class PhysicsWorldManager {
         }
     }
 
+    public boolean hasObbCollision(
+            ServerLevel level,
+            double centerX,
+            double centerY,
+            double centerZ,
+            double halfX,
+            double halfY,
+            double halfZ,
+            double qx,
+            double qy,
+            double qz,
+            double qw
+    ) {
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return false;
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        return state != null && state.hasObbCollision(centerX, centerY, centerZ, halfX, halfY, halfZ, qx, qy, qz, qw);
+    }
+
+    public List<PhysicalizedVolumeEntity> queryObbVolumes(
+            ServerLevel level,
+            double centerX,
+            double centerY,
+            double centerZ,
+            double halfX,
+            double halfY,
+            double halfZ,
+            double qx,
+            double qy,
+            double qz,
+            double qw
+    ) {
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return Collections.emptyList();
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        return state == null
+                ? Collections.emptyList()
+                : state.queryObbVolumes(level, centerX, centerY, centerZ, halfX, halfY, halfZ, qx, qy, qz, qw);
+    }
+
     public void wakeBodiesInAabb(ServerLevel level, AABB box) {
         if (!RelativityCraft.isRapierAvailable()) {
             warnNativeUnavailableOnce();
@@ -177,6 +226,11 @@ public final class PhysicsWorldManager {
         }
 
         LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
+        // For large volumes, always defer to avoid blocking the server tick.
+        if (entity.snapshot().blockCount() > 500) {
+            state.deferRebuild(entity.getId(), wakeUp);
+            return true;
+        }
         return state.rebuildBodyShape(level, entity, wakeUp);
     }
 
@@ -246,8 +300,12 @@ public final class PhysicsWorldManager {
 
     private static final class LevelPhysicsState {
         private final RapierNativeWorld world = new RapierNativeWorld(0.0, GRAVITY_Y, 0.0);
-        private final WorldTerrainColliderManager terrain = new WorldTerrainColliderManager(world);
-        private final WaterSurfaceColliderManager waterSurfaces = new WaterSurfaceColliderManager(world);
+        private final ReentrantReadWriteLock worldLock = new ReentrantReadWriteLock();
+        private final PhysicsCommandQueue commandQueue = new PhysicsCommandQueue();
+        private final PhysicsSnapshotBuffer snapshotBuffer = new PhysicsSnapshotBuffer();
+        private final PhysicsTickerThread physicsTicker;
+        private final WorldTerrainColliderManager terrain;
+        private final WaterSurfaceColliderManager waterSurfaces;
         private final Int2LongOpenHashMap bodyByEntityId = new Int2LongOpenHashMap();
         private final Long2IntOpenHashMap entityIdByBody = new Long2IntOpenHashMap();
         private final Object2LongOpenHashMap<String> bodyByVolumeId = new Object2LongOpenHashMap<>();
@@ -260,12 +318,21 @@ public final class PhysicsWorldManager {
         private final ArrayDeque<TerrainBuildJob> backgroundTerrainJobs = new ArrayDeque<>();
         private final ArrayDeque<TerrainBuildJob> priorityTerrainJobs = new ArrayDeque<>();
         private final Int2LongOpenHashMap supportReleaseTickByEntityId = new Int2LongOpenHashMap();
+        private final it.unimi.dsi.fastutil.ints.Int2BooleanOpenHashMap deferredRebuilds = new it.unimi.dsi.fastutil.ints.Int2BooleanOpenHashMap();
 
         private LevelPhysicsState() {
             bodyByEntityId.defaultReturnValue(0L);
             entityIdByBody.defaultReturnValue(Integer.MIN_VALUE);
             bodyByVolumeId.defaultReturnValue(0L);
             supportReleaseTickByEntityId.defaultReturnValue(Long.MIN_VALUE);
+            terrain = new WorldTerrainColliderManager(commandQueue);
+            waterSurfaces = new WaterSurfaceColliderManager(world, commandQueue);
+            physicsTicker = new PhysicsTickerThread(world, worldLock, commandQueue, snapshotBuffer);
+            physicsTicker.start();
+        }
+
+        void deferRebuild(int entityId, boolean wakeUp) {
+            deferredRebuilds.put(entityId, wakeUp);
         }
 
         private FluidDomainManager fluids(ServerLevel level) {
@@ -306,18 +373,27 @@ public final class PhysicsWorldManager {
 
         boolean rebuildBodyShape(ServerLevel level, PhysicalizedVolumeEntity entity, boolean wakeUp) {
             long oldBody = entity.nativeBodyHandle();
-            Vec3 linearVelocity = oldBody == 0L || !wakeUp ? Vec3.ZERO : world.getBodyLinearVelocity(oldBody);
-            Vec3 angularVelocity = oldBody == 0L || !wakeUp ? Vec3.ZERO : world.getBodyAngularVelocity(oldBody);
-            boolean wasSleeping = oldBody != 0L && world.isBodySleeping(oldBody);
+            Vec3 linearVelocity = Vec3.ZERO;
+            Vec3 angularVelocity = Vec3.ZERO;
+            boolean wasSleeping = false;
+            if (oldBody != 0L && wakeUp && worldLock.readLock().tryLock()) {
+                try {
+                    linearVelocity = world.getBodyLinearVelocity(oldBody);
+                    angularVelocity = world.getBodyAngularVelocity(oldBody);
+                    wasSleeping = world.isBodySleeping(oldBody);
+                } finally {
+                    worldLock.readLock().unlock();
+                }
+            }
             if (oldBody != 0L) {
                 untrackBody(level, entity, oldBody);
-                world.removeBody(oldBody);
+                commandQueue.submit(new PhysicsCommand.RemoveBody(oldBody));
                 entity.setNativeBodyHandle(0L);
             } else {
                 long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != 0L) {
                     untrackBody(level, entity, removed);
-                    world.removeBody(removed);
+                    commandQueue.submit(new PhysicsCommand.RemoveBody(removed));
                 }
             }
 
@@ -333,14 +409,16 @@ public final class PhysicsWorldManager {
             }
 
             trackBody(entity, nextBody);
-            world.setBodyLinearVelocity(nextBody, linearVelocity, wakeUp);
-            world.setBodyAngularVelocity(nextBody, angularVelocity, wakeUp);
+            commandQueue.submit(new PhysicsCommand.SetLinearVelocity(
+                    nextBody, linearVelocity.x, linearVelocity.y, linearVelocity.z, wakeUp));
+            commandQueue.submit(new PhysicsCommand.SetAngularVelocity(
+                    nextBody, angularVelocity.x, angularVelocity.y, angularVelocity.z, wakeUp));
             if (!wakeUp || wasSleeping) {
                 zeroBodyMotion(nextBody);
             }
             requestTerrainAroundBody(level, nextBody, terrainBounds, false, false);
             if (wakeUp) {
-                world.wakeUp(nextBody);
+                commandQueue.submit(new PhysicsCommand.WakeUp(nextBody));
             }
             return true;
         }
@@ -351,44 +429,64 @@ public final class PhysicsWorldManager {
                 long removed = bodyByEntityId.remove(entity.getId());
                 if (removed != 0L) {
                     untrackBody(level, entity, removed);
-                    world.removeBody(removed);
+                    commandQueue.submit(new PhysicsCommand.RemoveBody(removed));
                 }
                 return;
             }
 
             untrackBody(level, entity, body);
-            world.removeBody(body);
+            commandQueue.submit(new PhysicsCommand.RemoveBody(body));
         }
 
         private long insertBody(PhysicalizedVolumeEntity entity, Vec3 linearVelocity) {
             DynamicBodyShape shape = dynamicBodyShape(entity);
-            List<RapierNativeWorld.BoxCollider> colliders = shape.colliders();
+            List<RapierNativeWorld.ObbCollider> colliders = shape.colliders();
             if (colliders.isEmpty()) {
                 return 0L;
             }
             Vec3 physicsCenter = entity.physicsCenter();
-            return world.addDynamicBoxes(
-                    physicsCenter.x,
-                    physicsCenter.y,
-                    physicsCenter.z,
-                    entity.rotationQx(),
-                    entity.rotationQy(),
-                    entity.rotationQz(),
-                    entity.rotationQw(),
+
+            // Pack colliders into flat array for the command
+            double[] cuboids = new double[colliders.size() * 6];
+            int count = 0;
+            for (RapierNativeWorld.ObbCollider obb : colliders) {
+                int offset = count * 6;
+                cuboids[offset] = obb.centerX();
+                cuboids[offset + 1] = obb.centerY();
+                cuboids[offset + 2] = obb.centerZ();
+                cuboids[offset + 3] = obb.halfX();
+                cuboids[offset + 4] = obb.halfY();
+                cuboids[offset + 5] = obb.halfZ();
+                count++;
+            }
+
+            // Submit insertion to physics thread and wait for handle
+            var future = new java.util.concurrent.CompletableFuture<Long>();
+            commandQueue.submit(new PhysicsCommand.InsertBody(
+                    entity.getId(),
+                    entity.volumeIdString(),
+                    physicsCenter.x, physicsCenter.y, physicsCenter.z,
+                    entity.rotationQx(), entity.rotationQy(), entity.rotationQz(), entity.rotationQw(),
                     linearVelocity,
-                    colliders,
-                    shape.density(),
-                    0.75,
-                    0.05
-            );
+                    cuboids, count,
+                    shape.density(), 0.75, 0.05,
+                    future
+            ));
+
+            try {
+                // Wait at most 100ms for physics thread to process (typically <16ms)
+                return future.get(100, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                return 0L;
+            }
         }
 
         private void zeroBodyMotion(long body) {
             if (body == 0L) {
                 return;
             }
-            world.setBodyLinearVelocity(body, Vec3.ZERO, false);
-            world.setBodyAngularVelocity(body, Vec3.ZERO, false);
+            commandQueue.submit(new PhysicsCommand.SetLinearVelocity(body, 0, 0, 0, false));
+            commandQueue.submit(new PhysicsCommand.SetAngularVelocity(body, 0, 0, 0, false));
         }
 
         private void anchorBodyToEntity(long body, PhysicalizedVolumeEntity volume) {
@@ -396,16 +494,11 @@ public final class PhysicsWorldManager {
                 return;
             }
             Vec3 physicsCenter = volume.physicsCenter();
-            world.setBodyPose(
+            commandQueue.submit(new PhysicsCommand.SetPose(
                     body,
-                    physicsCenter.x,
-                    physicsCenter.y,
-                    physicsCenter.z,
-                    volume.rotationQx(),
-                    volume.rotationQy(),
-                    volume.rotationQz(),
-                    volume.rotationQw()
-            );
+                    physicsCenter.x, physicsCenter.y, physicsCenter.z,
+                    volume.rotationQx(), volume.rotationQy(), volume.rotationQz(), volume.rotationQw()
+            ));
             zeroBodyMotion(body);
         }
 
@@ -461,17 +554,40 @@ public final class PhysicsWorldManager {
         }
 
         void tick(ServerLevel level) {
-            drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
+            // Process at most one deferred rebuild per tick to spread cost
+            if (!deferredRebuilds.isEmpty()) {
+                var iter = deferredRebuilds.int2BooleanEntrySet().iterator();
+                if (iter.hasNext()) {
+                    var entry = iter.next();
+                    int entityId = entry.getIntKey();
+                    boolean wakeUp = entry.getBooleanValue();
+                    iter.remove();
+                    Entity entity = level.getEntity(entityId);
+                    if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                        rebuildBodyShape(level, volume, wakeUp);
+                    }
+                }
+            }
+            // Priority terrain: limited budget per tick. Terrain builds spread across ticks.
+            long priorityBudget = priorityTerrainJobs.size() > 20
+                    ? System.nanoTime() + 5_000_000L  // large queue: cap at 5ms
+                    : Long.MAX_VALUE;                  // small queue: finish immediately
+            drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, priorityBudget);
+            drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
             drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
             if ((level.getGameTime() & 7L) == 0L) {
                 updateWaterSurfaceColliders(level);
             }
-            applyFluidForces(level, PHYSICS_SUBSTEP_SECONDS * SUBSTEPS_PER_SERVER_TICK);
-            for (int i = 0; i < SUBSTEPS_PER_SERVER_TICK; i++) {
-                world.step(PHYSICS_SUBSTEP_SECONDS);
-            }
+            // Submit fluid forces to the command queue (processed by physics thread)
+            applyFluidForces(level, PHYSICS_SECONDS_PER_SERVER_TICK);
 
-            double[] snapshot = world.snapshot();
+            // Physics stepping happens on PhysicsTickerThread at 60Hz.
+            // Read the latest snapshot published by the physics thread.
+            double[] snapshot = snapshotBuffer.consume();
+            applySnapshot(level, snapshot);
+        }
+
+        private void applySnapshot(ServerLevel level, double[] snapshot) {
             for (int i = 0; i + SNAPSHOT_STRIDE <= snapshot.length; i += SNAPSHOT_STRIDE) {
                 long body = (long) snapshot[i];
                 int entityId = entityIdByBody.get(body);
@@ -492,7 +608,7 @@ public final class PhysicsWorldManager {
                     }
                     mappingByBody.remove(body);
                     terrainFootprintsByBody.remove(body);
-                    world.removeBody(body);
+                    commandQueue.submit(new PhysicsCommand.RemoveBody(body));
                     continue;
                 }
 
@@ -531,7 +647,8 @@ public final class PhysicsWorldManager {
                 if (entity instanceof PhysicalizedVolumeEntity volume
                         && !volume.isRemoved()
                         && !volume.isPhysicsEditIsolated(level.getGameTime())) {
-                    fluids(level).applyFluidForces(level, world, volume, deltaSeconds);
+                    // Fluid forces are computed on server thread, submitted via command queue
+                    fluids(level).applyFluidForcesAsync(level, commandQueue, volume, deltaSeconds);
                 }
             }
         }
@@ -555,7 +672,24 @@ public final class PhysicsWorldManager {
         }
 
         List<PhysicalizedVolumeEntity> queryVolumes(ServerLevel level, AABB box) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            long[] bodies;
+            if (!worldLock.readLock().tryLock()) {
+                // Physics thread is stepping; fall back to entity bounding box check
+                List<PhysicalizedVolumeEntity> result = new ArrayList<>();
+                for (Long2IntMap.Entry entry : entityIdByBody.long2IntEntrySet()) {
+                    Entity entity = level.getEntity(entry.getIntValue());
+                    if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()
+                            && volume.getBoundingBox().intersects(box)) {
+                        result.add(volume);
+                    }
+                }
+                return result;
+            }
+            try {
+                bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            } finally {
+                worldLock.readLock().unlock();
+            }
             if (bodies.length == 0) {
                 return Collections.emptyList();
             }
@@ -576,7 +710,23 @@ public final class PhysicsWorldManager {
         }
 
         void forEachVolume(ServerLevel level, AABB box, Consumer<PhysicalizedVolumeEntity> visitor) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            long[] bodies;
+            if (!worldLock.readLock().tryLock()) {
+                // Physics thread is stepping; fall back to entity bounding box check
+                for (Long2IntMap.Entry entry : entityIdByBody.long2IntEntrySet()) {
+                    Entity entity = level.getEntity(entry.getIntValue());
+                    if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()
+                            && volume.getBoundingBox().intersects(box)) {
+                        visitor.accept(volume);
+                    }
+                }
+                return;
+            }
+            try {
+                bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            } finally {
+                worldLock.readLock().unlock();
+            }
             for (long body : bodies) {
                 int entityId = entityIdByBody.get(body);
                 if (entityId == Integer.MIN_VALUE) {
@@ -590,42 +740,114 @@ public final class PhysicsWorldManager {
             }
         }
 
-        void wakeBodiesInAabb(ServerLevel level, AABB box) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+        boolean hasObbCollision(
+                double centerX,
+                double centerY,
+                double centerZ,
+                double halfX,
+                double halfY,
+                double halfZ,
+                double qx,
+                double qy,
+                double qz,
+                double qw
+        ) {
+            if (halfX <= 0.0 || halfY <= 0.0 || halfZ <= 0.0) {
+                return false;
+            }
+            if (!worldLock.readLock().tryLock()) {
+                return false; // Physics stepping; conservatively report no collision
+            }
+            try {
+                return world.queryObbColliders(centerX, centerY, centerZ, halfX, halfY, halfZ, qx, qy, qz, qw).length > 0;
+            } finally {
+                worldLock.readLock().unlock();
+            }
+        }
+
+        List<PhysicalizedVolumeEntity> queryObbVolumes(
+                ServerLevel level,
+                double centerX,
+                double centerY,
+                double centerZ,
+                double halfX,
+                double halfY,
+                double halfZ,
+                double qx,
+                double qy,
+                double qz,
+                double qw
+        ) {
+            if (halfX <= 0.0 || halfY <= 0.0 || halfZ <= 0.0) {
+                return Collections.emptyList();
+            }
+            long[] bodies;
+            if (!worldLock.readLock().tryLock()) {
+                return Collections.emptyList(); // Physics stepping; skip this frame
+            }
+            try {
+                bodies = world.queryObbRigidBodies(centerX, centerY, centerZ, halfX, halfY, halfZ, qx, qy, qz, qw);
+            } finally {
+                worldLock.readLock().unlock();
+            }
+            if (bodies.length == 0) {
+                return Collections.emptyList();
+            }
+
+            List<PhysicalizedVolumeEntity> result = new ArrayList<>(bodies.length);
             for (long body : bodies) {
-                if (entityIdByBody.containsKey(body)) {
-                    int entityId = entityIdByBody.get(body);
-                    Entity entity = entityId == Integer.MIN_VALUE ? null : level.getEntity(entityId);
-                    if (entity instanceof PhysicalizedVolumeEntity volume
-                            && volume.isPhysicsEditIsolated(level.getGameTime())) {
-                        continue;
-                    }
-                    world.wakeUp(body);
+                int entityId = entityIdByBody.get(body);
+                if (entityId == Integer.MIN_VALUE) {
+                    continue;
                 }
+                Entity entity = level.getEntity(entityId);
+                if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
+                    result.add(volume);
+                }
+            }
+            return result;
+        }
+
+        void wakeBodiesInAabb(ServerLevel level, AABB box) {
+            // Use entity lookup instead of Rapier spatial query to avoid blocking on physics lock.
+            for (Long2IntMap.Entry entry : entityIdByBody.long2IntEntrySet()) {
+                int entityId = entry.getIntValue();
+                if (entityId == Integer.MIN_VALUE) continue;
+                Entity entity = level.getEntity(entityId);
+                if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) continue;
+                if (!volume.getBoundingBox().intersects(box)) continue;
+                if (volume.isPhysicsEditIsolated(level.getGameTime())) continue;
+                commandQueue.submit(new PhysicsCommand.WakeUp(entry.getLongKey()));
             }
         }
 
         void wakeBody(PhysicalizedVolumeEntity entity) {
             long body = entity.nativeBodyHandle();
             if (body != 0L && bodyByEntityId.get(entity.getId()) == body) {
-                world.wakeUp(body);
+                commandQueue.submit(new PhysicsCommand.WakeUp(body));
             }
         }
 
         private void releaseUnsupportedBodiesNear(ServerLevel level, AABB box) {
-            long[] bodies = world.queryAabb(box.minX, box.minY, box.minZ, box.maxX, box.maxY, box.maxZ);
+            // Use entity lookup instead of Rapier spatial query to avoid blocking on physics lock.
             int released = 0;
-            for (long body : bodies) {
+            for (Long2IntMap.Entry entry : entityIdByBody.long2IntEntrySet()) {
                 if (released >= MAX_SUPPORT_RELEASES_PER_BLOCK_CHANGE) {
                     return;
                 }
-                int entityId = entityIdByBody.get(body);
+                int entityId = entry.getIntValue();
                 if (entityId == Integer.MIN_VALUE || supportReleaseTickByEntityId.get(entityId) == level.getGameTime()) {
                     continue;
                 }
 
                 Entity entity = level.getEntity(entityId);
-                if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved() || volume.hasWorldSupport()) {
+                if (!(entity instanceof PhysicalizedVolumeEntity volume) || volume.isRemoved()) {
+                    continue;
+                }
+                if (!volume.getBoundingBox().intersects(box)) {
+                    continue;
+                }
+                if (volume.hasWorldSupport()) {
                     continue;
                 }
 
@@ -680,12 +902,13 @@ public final class PhysicsWorldManager {
                 double centerX = physicsCenter.x + dx;
                 double centerY = physicsCenter.y + dy;
                 double centerZ = physicsCenter.z + dz;
-                if (!world.setBodyTranslation(body, centerX, centerY, centerZ)) {
-                    continue;
-                }
-
-                world.setBodyLinearVelocity(body, Vec3.ZERO, false);
-                world.setBodyAngularVelocity(body, Vec3.ZERO, false);
+                // Submit pose change via command queue — non-blocking
+                commandQueue.submit(new PhysicsCommand.SetPose(
+                        body, centerX, centerY, centerZ,
+                        volume.rotationQx(), volume.rotationQy(), volume.rotationQz(), volume.rotationQw()
+                ));
+                commandQueue.submit(new PhysicsCommand.SetLinearVelocity(body, 0, 0, 0, false));
+                commandQueue.submit(new PhysicsCommand.SetAngularVelocity(body, 0, 0, 0, false));
                 volume.applyNativeSnapshot(
                         centerX,
                         centerY,
@@ -725,6 +948,7 @@ public final class PhysicsWorldManager {
                 return;
             }
             terrainFootprintsByBody.put(body, footprint);
+            // Normal movement: use background queue to avoid flooding priority queue
             requestTerrainAround(level, footprint, refreshExisting, prioritize);
         }
 
@@ -751,24 +975,29 @@ public final class PhysicsWorldManager {
                 for (int sz = footprint.minSectionZ(); sz <= footprint.maxSectionZ(); sz++) {
                     for (int sx = footprint.minSectionX(); sx <= footprint.maxSectionX(); sx++) {
                         ChunkSectionKey key = new ChunkSectionKey(footprint.dimensionId(), sx, sy, sz);
-                        if (refreshExisting || requestedTerrainSections.add(key)) {
+                        boolean known = requestedTerrainSections.contains(key);
+                        if (refreshExisting || !known) {
                             requestedTerrainSections.add(key);
                             if (refreshExisting) {
-                                terrain.removeSection(key);
                                 cancelQueuedBuild(key);
                             }
                             if (prioritize) {
-                                if (priorityQueuedSections.add(key)) {
-                                    backgroundQueuedSections.remove(key);
-                                    backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
-                                    priorityTerrainJobs.add(new TerrainBuildJob(key));
-                                }
+                                enqueuePriorityTerrainBuild(key);
                             } else if (backgroundQueuedSections.add(key)) {
                                 backgroundTerrainJobs.add(new TerrainBuildJob(key));
                             }
+                        } else if (prioritize && backgroundQueuedSections.remove(key)) {
+                            backgroundTerrainJobs.removeIf(job -> job.key().equals(key));
+                            enqueuePriorityTerrainBuild(key);
                         }
                     }
                 }
+            }
+        }
+
+        private void enqueuePriorityTerrainBuild(ChunkSectionKey key) {
+            if (priorityQueuedSections.add(key)) {
+                priorityTerrainJobs.add(new TerrainBuildJob(key));
             }
         }
 
@@ -828,7 +1057,12 @@ public final class PhysicsWorldManager {
         }
 
         void close() {
-            world.close();
+            physicsTicker.shutdown();
+            try {
+                physicsTicker.join(2000);
+            } catch (InterruptedException ignored) {
+            }
+            // World is closed by the physics ticker thread on exit
         }
     }
 
@@ -941,24 +1175,52 @@ public final class PhysicsWorldManager {
             return DynamicBodyShape.EMPTY;
         }
 
+        // Cap collider count for performance. Too many colliders make Rapier step() slow.
+        // If over the limit, use the occupied bounding box as a single collider.
+        final int MAX_COLLIDERS = 256;
+        if (parts.size() > MAX_COLLIDERS) {
+            AABB bounds = snapshot.occupiedLocalBounds();
+            double originX = entity.centerOfMassLocalX();
+            double originY = entity.centerOfMassLocalY();
+            double originZ = entity.centerOfMassLocalZ();
+            double sizeX = bounds.maxX - bounds.minX;
+            double sizeY = bounds.maxY - bounds.minY;
+            double sizeZ = bounds.maxZ - bounds.minZ;
+            List<RapierNativeWorld.ObbCollider> single = List.of(new RapierNativeWorld.ObbCollider(
+                    (bounds.minX + bounds.maxX) * 0.5 - originX,
+                    (bounds.minY + bounds.maxY) * 0.5 - originY,
+                    (bounds.minZ + bounds.maxZ) * 0.5 - originZ,
+                    sizeX * 0.5,
+                    sizeY * 0.5,
+                    sizeZ * 0.5,
+                    0.75
+            ));
+            double density = Math.max(0.05, entity.estimatedPhysicsMass() / Math.max(1.0, snapshot.blockCount()));
+            return new DynamicBodyShape(single, density);
+        }
+
+        double[] frictions = snapshot.physicsCollisionFrictions();
         double originX = entity.centerOfMassLocalX();
         double originY = entity.centerOfMassLocalY();
         double originZ = entity.centerOfMassLocalZ();
-        List<RapierNativeWorld.BoxCollider> colliders = new ArrayList<>(parts.size());
-        for (AABB part : parts) {
+        List<RapierNativeWorld.ObbCollider> colliders = new ArrayList<>(parts.size());
+        for (int i = 0; i < parts.size(); i++) {
+            AABB part = parts.get(i);
             double sizeX = part.maxX - part.minX;
             double sizeY = part.maxY - part.minY;
             double sizeZ = part.maxZ - part.minZ;
             if (sizeX <= 1.0E-5 || sizeY <= 1.0E-5 || sizeZ <= 1.0E-5) {
                 continue;
             }
-            colliders.add(new RapierNativeWorld.BoxCollider(
+            double friction = (i < frictions.length) ? frictions[i] : 0.75;
+            colliders.add(new RapierNativeWorld.ObbCollider(
                     (part.minX + part.maxX) * 0.5 - originX,
                     (part.minY + part.maxY) * 0.5 - originY,
                     (part.minZ + part.maxZ) * 0.5 - originZ,
                     sizeX * 0.5,
                     sizeY * 0.5,
-                    sizeZ * 0.5
+                    sizeZ * 0.5,
+                    friction
             ));
         }
         if (colliders.isEmpty()) {
@@ -968,7 +1230,7 @@ public final class PhysicsWorldManager {
         return new DynamicBodyShape(colliders, density);
     }
 
-    private record DynamicBodyShape(List<RapierNativeWorld.BoxCollider> colliders, double density) {
+    private record DynamicBodyShape(List<RapierNativeWorld.ObbCollider> colliders, double density) {
         private static final DynamicBodyShape EMPTY = new DynamicBodyShape(List.of(), 0.05);
     }
 

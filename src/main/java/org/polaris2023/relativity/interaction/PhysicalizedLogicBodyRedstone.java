@@ -69,10 +69,12 @@ final class PhysicalizedLogicBodyRedstone {
     private static final Direction[] DIRECTIONS = Direction.values();
 
     private final Map<String, LogicBody> bodies = new Object2ObjectOpenHashMap<>();
+    private final LogicBody[] bodiesBySlot = new LogicBody[PhysicalizedLogicBodyMapping.SLOT_COUNT];
     private final Map<String, Integer> slotsByVolumeId = new Object2ObjectOpenHashMap<>();
     private final BitSet usedSlots = new BitSet(PhysicalizedLogicBodyMapping.SLOT_COUNT);
     private final Long2IntOpenHashMap logicBodyChunkRefs = new Long2IntOpenHashMap();
     private final Long2ObjectOpenHashMap<String> logicBodyOriginByPackedChunk = new Long2ObjectOpenHashMap<>();
+    private final Map<String, PhysicalizedVolumeEntity> entityByVolumeId = new Object2ObjectOpenHashMap<>();
     private final Map<BlockPos, ProjectionIndexEntry> projectedLinksByWorldPos = new ConcurrentHashMap<>();
     private final Map<String, Set<BlockPos>> projectedKeysByVolumeId = new ConcurrentHashMap<>();
     private boolean applyingLogicBody;
@@ -130,9 +132,11 @@ final class PhysicalizedLogicBodyRedstone {
             return;
         }
 
+        entityByVolumeId.put(entity.volumeIdString(), entity);
         LogicBody body = bodies.computeIfAbsent(entity.volumeIdString(), ignored -> createBody(entity));
         body.updateWorldLevel(worldLevel);
         body.ensureForced(logicLevel, entity.snapshot());
+        body.keepForced(logicLevel);
         boolean snapshotChanged = body.snapshot != entity.snapshot();
 
         if (snapshotChanged) {
@@ -140,6 +144,7 @@ final class PhysicalizedLogicBodyRedstone {
             try {
                 body.writeSnapshot(logicLevel, entity.snapshot());
                 body.snapshot = entity.snapshot();
+                body.forceNextFullRead();
             } finally {
                 applyingLogicBody = false;
             }
@@ -149,6 +154,7 @@ final class PhysicalizedLogicBodyRedstone {
 
     void removeBody(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {
         LogicBody body = bodies.remove(entity.volumeIdString());
+        entityByVolumeId.remove(entity.volumeIdString());
         if (body == null) {
             return;
         }
@@ -181,6 +187,7 @@ final class PhysicalizedLogicBodyRedstone {
 
         BlockPos changed = body.bodyPosOf(localX, localY, localZ);
         BlockState state = logicLevel.getBlockState(changed);
+        body.markDirtyCell(localX, localY, localZ);
         logicLevel.updateNeighborsAt(changed, state.getBlock());
         for (Direction direction : DIRECTIONS) {
             BlockPos neighbor = changed.relative(direction);
@@ -237,6 +244,7 @@ final class PhysicalizedLogicBodyRedstone {
             if (!bodies.containsKey(entity.volumeIdString()) && !needsLogicBodyTick(entity.snapshot())) {
                 continue;
             }
+            entityByVolumeId.put(entity.volumeIdString(), entity);
             ensureBody(worldLevel, entity);
             syncFromLogicBody(worldLevel, entity);
         }
@@ -310,6 +318,7 @@ final class PhysicalizedLogicBodyRedstone {
             logicLevel.removeBlockEntity(pos);
         }
         body.includeWrittenCell(localX, localY, localZ);
+        body.markDirtyCell(localX, localY, localZ);
     }
 
     InteractionResult useMappedBlock(ServerLevel worldLevel, ServerPlayer player, InteractionHand hand, PhysicalizedHit hit) {
@@ -337,6 +346,10 @@ final class PhysicalizedLogicBodyRedstone {
             result = beforeState.useWithoutItem(logicLevel, player, bodyHit);
         }
         if (result.consumesAction()) {
+            PhysicalizedLogicBodyMapping.LocalPos localPos = body.localPosOfBodyPos(bodyHit.getBlockPos());
+            if (localPos != null) {
+                body.markDirtyCell(localPos.x(), localPos.y(), localPos.z());
+            }
             syncFromLogicBody(worldLevel, hit.entity());
             playMappedInteractionSound(worldLevel, worldPos, beforeState, logicLevel.getBlockState(bodyHit.getBlockPos()));
         }
@@ -436,6 +449,7 @@ final class PhysicalizedLogicBodyRedstone {
             try {
                 body.clearUnshiftedReadCells(logicLevel, read);
                 body.writeSnapshot(logicLevel, next);
+                body.forceNextFullRead();
             } finally {
                 applyingLogicBody = false;
             }
@@ -507,24 +521,43 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private LogicBodyQuery logicBodyQueryAt(ServerLevel queryLevel, BlockPos logicPos) {
-        for (Map.Entry<String, LogicBody> entry : bodies.entrySet()) {
-            LogicBody body = entry.getValue();
-            PhysicalizedLogicBodyMapping.LocalPos local = body.localPosOfBodyPos(logicPos);
-            if (local == null) {
-                continue;
-            }
-
-            ServerLevel worldLevel = body.worldLevel(queryLevel);
-            if (worldLevel == null) {
-                continue;
-            }
-            PhysicalizedVolumeEntity entity = PhysicalizedVolumeLookup.findByVolumeId(worldLevel, entry.getKey());
-            if (entity == null || entity.isRemoved()) {
-                continue;
-            }
-            return new LogicBodyQuery(worldLevel, ProjectionTransform.from(entity), body.mapping(), local);
+        LogicBody body = logicBodyAt(logicPos);
+        if (body == null) {
+            return null;
         }
-        return null;
+        PhysicalizedLogicBodyMapping.LocalPos local = body.localPosOfBodyPos(logicPos);
+        if (local == null) {
+            return null;
+        }
+
+        ServerLevel worldLevel = body.worldLevel(queryLevel);
+        if (worldLevel == null) {
+            return null;
+        }
+        PhysicalizedVolumeEntity entity = entityByVolumeId.get(body.volumeId());
+        if (entity == null || entity.isRemoved() || entity.level() != worldLevel) {
+            entity = PhysicalizedVolumeLookup.findByVolumeId(worldLevel, body.volumeId());
+            if (entity == null || entity.isRemoved()) {
+                entityByVolumeId.remove(body.volumeId());
+                return null;
+            }
+            entityByVolumeId.put(body.volumeId(), entity);
+        }
+        return new LogicBodyQuery(worldLevel, ProjectionTransform.from(entity), body.mapping(), local);
+    }
+
+    private LogicBody logicBodyAt(BlockPos logicPos) {
+        int slot = logicBodySlotAt(logicPos);
+        return slot < 0 ? null : bodiesBySlot[slot];
+    }
+
+    private static int logicBodySlotAt(BlockPos logicPos) {
+        int gridX = Math.floorDiv(PhysicalizedLogicBodyMapping.BODY_GRID_ORIGIN_X - logicPos.getX(), PhysicalizedLogicBodyMapping.BODY_SLOT_STRIDE);
+        int gridZ = Math.floorDiv(PhysicalizedLogicBodyMapping.BODY_GRID_ORIGIN_Z - logicPos.getZ(), PhysicalizedLogicBodyMapping.BODY_SLOT_STRIDE);
+        if (gridX < 0 || gridX >= PhysicalizedLogicBodyMapping.GRID_SIZE || gridZ < 0 || gridZ >= PhysicalizedLogicBodyMapping.GRID_SIZE) {
+            return -1;
+        }
+        return gridZ * PhysicalizedLogicBodyMapping.GRID_SIZE + gridX;
     }
 
     private void rebuildProjectionIndex(
@@ -663,7 +696,9 @@ final class PhysicalizedLogicBodyRedstone {
 
     private LogicBody createBody(PhysicalizedVolumeEntity entity) {
         int slot = allocateSlot(entity.volumeIdString());
-        return new LogicBody(PhysicalizedLogicBodyMapping.create(slot));
+        LogicBody body = new LogicBody(entity.volumeIdString(), PhysicalizedLogicBodyMapping.create(slot));
+        bodiesBySlot[slot] = body;
+        return body;
     }
 
     private int allocateSlot(String volumeId) {
@@ -689,6 +724,7 @@ final class PhysicalizedLogicBodyRedstone {
         if (current != null && current == slot) {
             slotsByVolumeId.remove(volumeId);
             usedSlots.clear(slot);
+            bodiesBySlot[slot] = null;
         }
     }
 
@@ -815,6 +851,7 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private final class LogicBody {
+        private final String volumeId;
         private final PhysicalizedLogicBodyMapping mapping;
         private final LongSet chunks = new LongOpenHashSet();
         private final LongSet writtenLocalCells = new LongOpenHashSet();
@@ -823,8 +860,13 @@ final class PhysicalizedLogicBodyRedstone {
         private ProjectionTopology projectedTopology = ProjectionTopology.EMPTY;
         private ProjectionTransform projectedTransform = ProjectionTransform.identity();
 
-        private LogicBody(PhysicalizedLogicBodyMapping mapping) {
+        private LogicBody(String volumeId, PhysicalizedLogicBodyMapping mapping) {
+            this.volumeId = volumeId;
             this.mapping = mapping;
+        }
+
+        String volumeId() {
+            return volumeId;
         }
 
         int slot() {
@@ -898,6 +940,12 @@ final class PhysicalizedLogicBodyRedstone {
                 level.setChunkForced(chunkX, chunkZ, true);
                 logicBodyChunkRefs.put(packed, logicBodyChunkRefs.get(packed) + 1);
                 logicBodyOriginByPackedChunk.put(packed, mapping.bodyOrigin().toShortString());
+            }
+        }
+
+        void keepForced(ServerLevel level) {
+            for (long packed : chunks) {
+                level.setChunkForced(ChunkPos.getX(packed), ChunkPos.getZ(packed), true);
             }
         }
 
@@ -1026,7 +1074,10 @@ final class PhysicalizedLogicBodyRedstone {
                 addReadCandidate(candidates, unpackLocalX(packed), unpackLocalY(packed), unpackLocalZ(packed));
             }
             for (PhysicalizedBlockSnapshot cell : template.cells()) {
-                addReadCandidate(candidates, cell.localX(), cell.localY(), cell.localZ());
+                candidates.add(new BlockPos(cell.localX(), cell.localY(), cell.localZ()));
+                if (isProjectedRedstoneState(cell.state())) {
+                    addReadCandidate(candidates, cell.localX(), cell.localY(), cell.localZ());
+                }
             }
             return candidates;
         }
@@ -1061,6 +1112,13 @@ final class PhysicalizedLogicBodyRedstone {
             if (localX >= 0 && localY >= 0 && localZ >= 0) {
                 writtenLocalCells.add(packLocal(localX, localY, localZ));
             }
+        }
+
+        private void markDirtyCell(int localX, int localY, int localZ) {
+            includeWrittenCell(localX, localY, localZ);
+        }
+
+        private void forceNextFullRead() {
         }
 
         private void rememberWrittenCells(PhysicalizedVolumeSnapshot next) {

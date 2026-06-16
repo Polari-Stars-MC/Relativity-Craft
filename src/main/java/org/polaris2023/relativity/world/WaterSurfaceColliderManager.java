@@ -15,6 +15,9 @@ import it.unimi.dsi.fastutil.longs.LongArrayList;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.TimeUnit;
+
 public final class WaterSurfaceColliderManager {
     private static final int TILE_SIZE = 4;
     private static final int MAX_REBUILDS_PER_TICK = 3;
@@ -23,13 +26,19 @@ public final class WaterSurfaceColliderManager {
     private static final double WATER_SHELL_HALF_HEIGHT = 0.16;
 
     private final RapierNativeWorld world;
+    private final PhysicsCommandQueue commandQueue;
     private final Long2ObjectOpenHashMap<SurfaceBody> bodies = new Long2ObjectOpenHashMap<>();
     private final Long2ObjectOpenHashMap<SurfaceRequest> queuedRequests = new Long2ObjectOpenHashMap<>();
     private final LongArrayFIFOQueue queue = new LongArrayFIFOQueue();
     private final LongSet queuedChunks = new LongOpenHashSet();
 
     public WaterSurfaceColliderManager(RapierNativeWorld world) {
+        this(world, null);
+    }
+
+    public WaterSurfaceColliderManager(RapierNativeWorld world, PhysicsCommandQueue commandQueue) {
         this.world = world;
+        this.commandQueue = commandQueue;
     }
 
     public void requestAround(ServerLevel level, AABB box, long gameTime) {
@@ -122,16 +131,39 @@ public final class WaterSurfaceColliderManager {
 
                 double halfX = Math.min(TILE_SIZE, 16 - localX) * 0.5;
                 double halfZ = Math.min(TILE_SIZE, 16 - localZ) * 0.5;
-                long handle = world.addStaticTerrainBox(
-                        centerX,
-                        surfaceY - WATER_SHELL_HALF_HEIGHT + 0.02,
-                        centerZ,
-                        halfX,
-                        WATER_SHELL_HALF_HEIGHT,
-                        halfZ,
-                        0.04,
-                        0.0
-                );
+                long handle;
+                if (commandQueue != null) {
+                    // Fire-and-forget: we don't track individual water surface handles precisely
+                    // The removal path will batch-remove by chunk key
+                    var future = new CompletableFuture<Long>();
+                    commandQueue.submit(new PhysicsCommand.InsertStaticBox(
+                            centerX,
+                            surfaceY - WATER_SHELL_HALF_HEIGHT + 0.02,
+                            centerZ,
+                            halfX,
+                            WATER_SHELL_HALF_HEIGHT,
+                            halfZ,
+                            0.04, 0.0,
+                            future
+                    ));
+                    // Non-blocking: use getNow with default, actual handle assigned async
+                    handle = future.getNow(0L);
+                    if (handle == 0L) {
+                        // Future not yet complete — skip this tile (will be rebuilt next cycle)
+                        continue;
+                    }
+                } else {
+                    handle = world.addStaticTerrainBox(
+                            centerX,
+                            surfaceY - WATER_SHELL_HALF_HEIGHT + 0.02,
+                            centerZ,
+                            halfX,
+                            WATER_SHELL_HALF_HEIGHT,
+                            halfZ,
+                            0.04,
+                            0.0
+                    );
+                }
                 if (handle != 0L) {
                     handles.add(handle);
                 }
@@ -160,8 +192,14 @@ public final class WaterSurfaceColliderManager {
     }
 
     private void removeHandles(SurfaceBody body) {
-        for (long handle : body.handles()) {
-            world.removeBody(handle);
+        if (commandQueue != null) {
+            for (long handle : body.handles()) {
+                commandQueue.submit(new PhysicsCommand.RemoveBody(handle));
+            }
+        } else {
+            for (long handle : body.handles()) {
+                world.removeBody(handle);
+            }
         }
     }
 
