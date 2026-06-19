@@ -127,6 +127,12 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     void ensureBody(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {
+        // Fast path: non-redstone volumes don't need logic body at all.
+        // Skip the entire logic body machinery to avoid O(n) snapshot scans.
+        if (!entity.snapshot().hasRedstoneComponents()) {
+            return;
+        }
+
         ServerLevel logicLevel = logicLevel(worldLevel);
         if (logicLevel == null) {
             removeProjectionIndex(worldLevel, entity.volumeIdString());
@@ -148,9 +154,6 @@ final class PhysicalizedLogicBodyRedstone {
         if (snapshotChanged) {
             applyingLogicBody = true;
             try {
-                // Suppress projected signal queries during the entire write+propagation
-                // so that vanilla redstone cascading on the logic level does not re-enter
-                // the mod's signal lookup code (which caused StackOverflow).
                 PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
                     if (body.snapshot != null) {
                         // Incremental path: only write cells that actually changed.
@@ -227,6 +230,29 @@ final class PhysicalizedLogicBodyRedstone {
         }
         body.markDirtyCell(localX, localY, localZ);
         body.forceNextFullRead();
+    }
+
+    /**
+     * Mark a cell as dirty without calling ensureBody.
+     * Used by the batched notify path to avoid O(n) ensureBody per cell.
+     */
+    void markCellDirty(ServerLevel worldLevel, PhysicalizedVolumeEntity entity, int localX, int localY, int localZ) {
+        LogicBody body = bodies.get(entity.volumeIdString());
+        if (body == null) {
+            return;
+        }
+        body.markDirtyCell(localX, localY, localZ);
+        body.forceNextFullRead();
+    }
+
+    /**
+     * Combined ensureBody + syncToEntity in a single call.
+     * Avoids duplicate O(n) incrementalDiff scans that would occur
+     * if ensureBody and syncBodyToEntity were called separately.
+     */
+    void ensureAndSyncBody(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {
+        ensureBody(worldLevel, entity);
+        syncBodyToEntity(worldLevel, entity);
     }
 
     void syncChangedCells(ServerLevel worldLevel, PhysicalizedVolumeEntity entity, List<PhysicalizedBlockSnapshot> updates) {
@@ -307,7 +333,8 @@ final class PhysicalizedLogicBodyRedstone {
                 removeBody(worldLevel, entity);
                 continue;
             }
-            if (!bodies.containsKey(entity.volumeIdString()) && !needsLogicBodyTick(entity.snapshot())) {
+            // Skip non-redstone volumes entirely — they don't need logic body ticks
+            if (!needsLogicBodyTick(entity.snapshot())) {
                 continue;
             }
             entityByVolumeId.put(entity.volumeIdString(), entity);

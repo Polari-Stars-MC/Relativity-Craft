@@ -617,14 +617,18 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             return state.modelMesh;
         }
         // First-frame fallback: if no valid mesh exists at all but cells are available,
-        // build a synchronous mesh for a limited subset (first 500 cells) to ensure
-        // the entity is immediately visible rather than transparent.
-        // For very large volumes (>4096 blocks), skip the fallback entirely — the
-        // async build will complete in 1-2 frames, which is far better than blocking
-        // the render thread for 500ms+ processing 100k blocks.
-        if (state.modelMesh.isEmpty() && state.lastValidModelMesh.isEmpty() && !state.cells.isEmpty()
-                && state.blockCount <= FULL_DETAIL_MAX_BLOCKS) {
-            PhysicalizedVolumeRenderState.CachedModelMesh fallback = buildCachedModelMesh(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves);
+        // build a synchronous mesh for a limited subset to ensure the entity is
+        // immediately visible rather than transparent.
+        // For very large volumes, use only the first 500 shell cells to avoid
+        // blocking the render thread. The full async build completes in 1-2 frames.
+        if (state.modelMesh.isEmpty() && state.lastValidModelMesh.isEmpty() && !state.cells.isEmpty()) {
+            PhysicalizedVolumeRenderState.CachedModelMesh fallback;
+            if (state.blockCount > FULL_DETAIL_MAX_BLOCKS) {
+                // Large volume: build with only first 500 shell cells for instant visibility
+                fallback = buildCachedModelMeshSubset(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves, 500);
+            } else {
+                fallback = buildCachedModelMesh(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves);
+            }
             if (!fallback.isEmpty()) {
                 state.modelMesh = fallback;
                 state.lastValidModelMesh = fallback;
@@ -685,6 +689,72 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                 ));
             };
             blockRenderer.tesselateBlock(output, 0.0F, 0.0F, 0.0F, renderLevel, localPos, blockState, model, seed);
+        }
+
+        Map<ChunkSectionLayer, List<PhysicalizedVolumeRenderState.CachedQuad>> immutableLayers = new EnumMap<>(ChunkSectionLayer.class);
+        for (Map.Entry<ChunkSectionLayer, List<PhysicalizedVolumeRenderState.CachedQuad>> entry : layers.entrySet()) {
+            immutableLayers.put(entry.getKey(), List.copyOf(entry.getValue()));
+        }
+        return new PhysicalizedVolumeRenderState.CachedModelMesh(Map.copyOf(immutableLayers));
+    }
+
+    /**
+     * Synchronous mesh build using a limited subset of shell cells.
+     * Used as a first-frame fallback for large volumes to prevent transparency.
+     * Only processes the first {@code maxCells} shell cells — enough to show
+     * the outline of the volume without blocking the render thread.
+     */
+    private static PhysicalizedVolumeRenderState.CachedModelMesh buildCachedModelMeshSubset(
+            PhysicalizedVolumeRenderState state,
+            Minecraft minecraft,
+            Quaternionf rotation,
+            float centerYOffset,
+            boolean ambientOcclusion,
+            boolean cutoutLeaves,
+            int maxCells
+    ) {
+        ModelBlockRenderer blockRenderer = new ModelBlockRenderer(
+                ambientOcclusion,
+                true,
+                minecraft.getBlockColors()
+        );
+        BlockStateModelSetAccess modelSet = new BlockStateModelSetAccess(minecraft);
+        SnapshotRenderLevel renderLevel = new SnapshotRenderLevel(state, rotation, centerYOffset);
+        Map<ChunkSectionLayer, List<PhysicalizedVolumeRenderState.CachedQuad>> layers = new EnumMap<>(ChunkSectionLayer.class);
+
+        List<PhysicalizedBlockSnapshot> cellsToRender = state.blockCount > SHELL_RENDER_THRESHOLD
+                ? state.renderSnapshot.shellCells()
+                : state.cells;
+
+        int count = 0;
+        for (PhysicalizedBlockSnapshot cell : cellsToRender) {
+            if (count >= maxCells) break;
+            BlockState blockState = cell.state();
+            if (blockState.isAir() || !shouldRenderModel(blockState)) {
+                continue;
+            }
+            if (isFullyOccludedByNeighbors(state.cellsByKey, cell, state.renderSnapshot)) {
+                continue;
+            }
+
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            BlockStateModel model = modelSet.get(blockState);
+            boolean forceSolid = ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState);
+            long seed = blockState.getSeed(rotatedTintPos(state, cell, rotation, centerYOffset));
+            long cellKey = pack(cell.localX(), cell.localY(), cell.localZ());
+            BlockQuadOutput output = (x, y, z, quad, instance) -> {
+                ChunkSectionLayer layer = forceSolid ? ChunkSectionLayer.SOLID : quad.materialInfo().layer();
+                layers.computeIfAbsent(layer, ignored -> new ArrayList<>()).add(new PhysicalizedVolumeRenderState.CachedQuad(
+                        cellKey,
+                        cell.localX() + x,
+                        cell.localY() + y,
+                        cell.localZ() + z,
+                        quad,
+                        copyQuadInstance(instance)
+                ));
+            };
+            blockRenderer.tesselateBlock(output, 0.0F, 0.0F, 0.0F, renderLevel, localPos, blockState, model, seed);
+            count++;
         }
 
         Map<ChunkSectionLayer, List<PhysicalizedVolumeRenderState.CachedQuad>> immutableLayers = new EnumMap<>(ChunkSectionLayer.class);

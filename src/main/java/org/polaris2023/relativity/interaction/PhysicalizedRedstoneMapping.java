@@ -91,8 +91,11 @@ public final class PhysicalizedRedstoneMapping {
         if (!PhysicalizedLogicBodyRedstone.global().needsLogicBodyTick(entity)) {
             return;
         }
-        PhysicalizedLogicBodyRedstone.global().ensureBody(level, entity);
-        PhysicalizedLogicBodyRedstone.global().notifyCellChanged(level, entity, localX, localY, localZ);
+        // Fast path: defer ensureBody to syncBodyAfterCellChanges.
+        // Calling ensureBody per-cell causes O(n) incrementalDiff scans for every
+        // block broken on large redstone volumes. Instead, just mark the cell dirty
+        // and let the single syncBodyAfterCellChanges call handle the full sync.
+        PhysicalizedLogicBodyRedstone.global().markCellDirty(level, entity, localX, localY, localZ);
     }
 
     public void syncBodyAfterCellChanges(ServerLevel level, PhysicalizedVolumeEntity entity) {
@@ -102,7 +105,8 @@ public final class PhysicalizedRedstoneMapping {
         if (!PhysicalizedLogicBodyRedstone.global().needsLogicBodyTick(entity)) {
             return;
         }
-        PhysicalizedLogicBodyRedstone.global().syncBodyToEntity(level, entity);
+        // ensureBody + syncToEntity in a single call to avoid duplicate O(n) scans
+        PhysicalizedLogicBodyRedstone.global().ensureAndSyncBody(level, entity);
     }
 
     public void tick(ServerLevel level) {
