@@ -2,11 +2,14 @@ package org.polaris2023.relativity;
 
 import com.mojang.logging.LogUtils;
 import org.polaris2023.relativity.command.RelativityCommands;
+import org.polaris2023.relativity.entity.EnclaveEntity;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
+import org.polaris2023.relativity.enclave.Enclave;
 import org.polaris2023.relativity.fluid.WpoFiniteWaterPhysics;
 import org.polaris2023.relativity.interaction.PhysicalizedCollisionShapes;
 import org.polaris2023.relativity.interaction.PhysicalizedRedstoneMapping;
 import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
+import org.polaris2023.relativity.network.EnclaveNetwork;
 import org.polaris2023.relativity.network.PhysicalizedInteractionNetwork;
 import org.polaris2023.relativity.physicalization.BlockRemovalQueue;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
@@ -58,6 +61,7 @@ public final class RelativityCraft {
         ModCreativeTabs.register(modBus);
         modBus.addListener(this::addCreativeTabItems);
         modBus.addListener(PhysicalizedInteractionNetwork::registerPayloads);
+        modBus.addListener(EnclaveNetwork::registerPayloads);
         NeoForge.EVENT_BUS.register(this);
     }
 
@@ -127,6 +131,9 @@ public final class RelativityCraft {
             if (event.getLevel() instanceof ServerLevel level) {
                 PhysicalizedRedstoneMapping.global().removeBody(level, entity);
             }
+        }
+        if (event.getEntity() instanceof EnclaveEntity entity) {
+            PhysicsWorldManager.global().unregisterEnclave(entity);
         }
     }
 

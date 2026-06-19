@@ -2,6 +2,7 @@ package org.polaris2023.relativity.client;
 
 import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.registry.ModEntityTypes;
+import org.polaris2023.relativity.render.EnclaveRenderer;
 import org.polaris2023.relativity.render.PhysicalizedVolumeRenderer;
 import net.neoforged.api.distmarker.Dist;
 import net.neoforged.bus.api.SubscribeEvent;
@@ -16,5 +17,6 @@ public final class RelativityCraftClient {
     @SubscribeEvent
     public static void registerEntityRenderers(EntityRenderersEvent.RegisterRenderers event) {
         event.registerEntityRenderer(ModEntityTypes.PHYSICALIZED_VOLUME.get(), PhysicalizedVolumeRenderer::new);
+        event.registerEntityRenderer(ModEntityTypes.ENCLAVE.get(), EnclaveRenderer::new);
     }
 }

@@ -168,6 +168,8 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         }
     }
 
+    private static final int MAX_COLLISION_BOX_SOURCE_BLOCKS = 512;
+
     public List<AABB> minecraftCollisionBoxes() {
         PhysicalizedVolumeSnapshot current = this.currentSnapshot();
         if (current.blockCount() <= 0) {
@@ -183,6 +185,27 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
                 && cachedMinecraftCollisionBoxesQy == this.rotationQy()
                 && cachedMinecraftCollisionBoxesQz == this.rotationQz()
                 && cachedMinecraftCollisionBoxesQw == this.rotationQw()) {
+            return cachedMinecraftCollisionBoxes;
+        }
+
+        // For large volumes (>512 blocks), use a single rotated bounding box
+        // instead of computing per-block collision boxes. This prevents O(n)
+        // collision box generation from freezing the server tick.
+        if (current.blockCount() > MAX_COLLISION_BOX_SOURCE_BLOCKS) {
+            AABB worldBounds = this.getBoundingBox();
+            if (worldBounds == null) {
+                worldBounds = this.makeBoundingBox(this.position());
+            }
+            cachedMinecraftCollisionBoxes = List.of(worldBounds);
+            cachedMinecraftCollisionBoxesGameTime = gameTime;
+            cachedMinecraftCollisionBoxesSnapshot = current;
+            cachedMinecraftCollisionBoxesX = this.getX();
+            cachedMinecraftCollisionBoxesY = this.getY();
+            cachedMinecraftCollisionBoxesZ = this.getZ();
+            cachedMinecraftCollisionBoxesQx = this.rotationQx();
+            cachedMinecraftCollisionBoxesQy = this.rotationQy();
+            cachedMinecraftCollisionBoxesQz = this.rotationQz();
+            cachedMinecraftCollisionBoxesQw = this.rotationQw();
             return cachedMinecraftCollisionBoxes;
         }
 
@@ -225,6 +248,18 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     public void updateSnapshotAtEntityCenter(PhysicalizedVolumeSnapshot snapshot, Vec3 localOrigin, Vec3 entityCenter) {
         this.setSnapshotAtEntityCenter(snapshot, true, localOrigin, entityCenter);
+    }
+
+    public void updateSnapshotCellsAtEntityCenter(
+            PhysicalizedVolumeSnapshot snapshot,
+            List<PhysicalizedBlockSnapshot> updates,
+            Vec3 localOrigin,
+            Vec3 entityCenter
+    ) {
+        this.setSnapshotAtEntityCenter(snapshot, false, localOrigin, entityCenter);
+        if (!this.level().isClientSide()) {
+            PhysicalizedInteractionNetwork.sendCellUpdates(this, updates);
+        }
     }
 
     public void receiveSnapshot(PhysicalizedVolumeSnapshot snapshot) {
@@ -477,6 +512,27 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public int worldSupportContactCount() {
         PhysicalizedVolumeSnapshot current = this.currentSnapshot();
         if (this.level().isClientSide() || this.isRemoved() || this.noPhysics || current.blockCount() <= 0) {
+            return 0;
+        }
+
+        if (current.blockCount() > 256) {
+            AABB worldBox = this.getBoundingBox();
+            if (worldBox == null || worldBox.getSize() <= SUPPORT_CONTACT_EPSILON) {
+                worldBox = this.makeBoundingBox(this.position());
+            }
+            AABB supportQuery = new AABB(
+                    worldBox.minX,
+                    worldBox.minY - SUPPORT_SCAN_DEPTH,
+                    worldBox.minZ,
+                    worldBox.maxX,
+                    worldBox.minY + SUPPORT_CONTACT_EPSILON,
+                    worldBox.maxZ
+            ).inflate(SUPPORT_HORIZONTAL_EPSILON, 0.0, SUPPORT_HORIZONTAL_EPSILON);
+            for (VoxelShape collision : this.level().getBlockCollisions(this, supportQuery)) {
+                if (!collision.isEmpty()) {
+                    return 1;
+                }
+            }
             return 0;
         }
 
@@ -1107,6 +1163,15 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     }
 
     private void recomputeCenterOfMass() {
+        // For large volumes (>256 blocks), the physics uses bounding-box approximation
+        // so precise center of mass doesn't matter. Skip the O(n) mass computation.
+        if (snapshot.blockCount() > 256) {
+            centerOfMassLocalX = snapshot.occupiedCenterX();
+            centerOfMassLocalY = snapshot.occupiedCenterY();
+            centerOfMassLocalZ = snapshot.occupiedCenterZ();
+            estimatedPhysicsMass = Math.max(1.0, snapshot.blockCount());
+            return;
+        }
         centerOfMassLocalX = snapshot.centerOfMassLocalX();
         centerOfMassLocalY = snapshot.centerOfMassLocalY();
         centerOfMassLocalZ = snapshot.centerOfMassLocalZ();

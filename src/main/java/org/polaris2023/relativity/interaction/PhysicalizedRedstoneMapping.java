@@ -51,6 +51,20 @@ public final class PhysicalizedRedstoneMapping {
         }
     }
 
+    static <T> T withProjectedSignalQueriesSuppressedResult(java.util.function.Supplier<T> query) {
+        PROJECTED_SIGNAL_QUERY_DEPTH.set(PROJECTED_SIGNAL_QUERY_DEPTH.get() + 1);
+        try {
+            return query.get();
+        } finally {
+            int depth = PROJECTED_SIGNAL_QUERY_DEPTH.get() - 1;
+            if (depth <= 0) {
+                PROJECTED_SIGNAL_QUERY_DEPTH.remove();
+            } else {
+                PROJECTED_SIGNAL_QUERY_DEPTH.set(depth);
+            }
+        }
+    }
+
     public boolean isLogicBodyLevel(Level level) {
         return PhysicalizedLogicBodyRedstone.global().isLogicBodyLevel(level);
     }
@@ -79,6 +93,15 @@ public final class PhysicalizedRedstoneMapping {
         }
         PhysicalizedLogicBodyRedstone.global().ensureBody(level, entity);
         PhysicalizedLogicBodyRedstone.global().notifyCellChanged(level, entity, localX, localY, localZ);
+    }
+
+    public void syncBodyAfterCellChanges(ServerLevel level, PhysicalizedVolumeEntity entity) {
+        if (PhysicalizedLogicBodyRedstone.global().isApplyingLogicBody()) {
+            return;
+        }
+        if (!PhysicalizedLogicBodyRedstone.global().needsLogicBodyTick(entity)) {
+            return;
+        }
         PhysicalizedLogicBodyRedstone.global().syncBodyToEntity(level, entity);
     }
 
@@ -121,6 +144,8 @@ public final class PhysicalizedRedstoneMapping {
         return refreshWireConnections(state, pos, new StateMapBlockGetter(states, snapshot.sizeY()));
     }
 
+    private static final int MAX_NEIGHBOR_SHAPE_ITERATIONS = 64;
+
     public static PhysicalizedVolumeSnapshot refreshVanillaNeighborShapes(
             Level backingLevel,
             PhysicalizedVolumeSnapshot snapshot,
@@ -134,6 +159,7 @@ public final class PhysicalizedRedstoneMapping {
 
         PhysicalizedVolumeSnapshot current = snapshot;
         boolean changed;
+        int iterations = 0;
         do {
             changed = false;
             PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, backingLevel);
@@ -165,7 +191,8 @@ public final class PhysicalizedRedstoneMapping {
                     break;
                 }
             }
-        } while (changed && current.blockCount() > 0);
+            iterations++;
+        } while (changed && current.blockCount() > 0 && iterations < MAX_NEIGHBOR_SHAPE_ITERATIONS);
 
         return current;
     }

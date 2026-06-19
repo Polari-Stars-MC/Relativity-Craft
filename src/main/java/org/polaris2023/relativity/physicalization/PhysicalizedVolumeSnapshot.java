@@ -61,10 +61,18 @@ public final class PhysicalizedVolumeSnapshot {
     private volatile List<AABB> physicsCollisionBoxes;
     private volatile double[] physicsCollisionFrictions;
     private final boolean hasBlockEntityNbt;
-    private final double centerOfMassLocalX;
-    private final double centerOfMassLocalY;
-    private final double centerOfMassLocalZ;
-    private final double estimatedPhysicsMass;
+    private final boolean hasRedstoneComponents;
+    // Mass properties are computed lazily since they're O(n) and not needed
+    // immediately on snapshot creation. This is critical for 100k+ block volumes
+    // where creating a new snapshot (for block placement) was the main TPS bottleneck.
+    private volatile MassProperties massProperties;
+    // O(1) position-to-index mapping for fast cell removal (Phase 2).
+    // Maps packed position -> index in the cells list.
+    private final Map<Long, Integer> cellPositionIndex;
+    // Shell cells (only blocks with at least one air/non-opaque neighbor).
+    // Computed lazily for >10K block volumes to skip interior blocks during rendering.
+    private volatile List<PhysicalizedBlockSnapshot> shellCells;
+    private static final int SHELL_COMPUTE_THRESHOLD = 10000;
 
     public PhysicalizedVolumeSnapshot(int sizeX, int sizeY, int sizeZ, List<PhysicalizedBlockSnapshot> cells) {
         this.sizeX = Math.max(1, sizeX);
@@ -84,6 +92,7 @@ public final class PhysicalizedVolumeSnapshot {
         int maxY = Integer.MIN_VALUE;
         int maxZ = Integer.MIN_VALUE;
         boolean hasNbt = false;
+        boolean hasRedstone = false;
         for (PhysicalizedBlockSnapshot cell : cells) {
             int localX = cell.localX();
             int localY = cell.localY();
@@ -99,6 +108,9 @@ public final class PhysicalizedVolumeSnapshot {
             if (cell.hasBlockEntityNbt()) {
                 hasNbt = true;
             }
+            if (!hasRedstone && PhysicalizedBlockSnapshot.isRedstoneRelevant(cell.state())) {
+                hasRedstone = true;
+            }
             if (denseIndex != null) {
                 denseIndex[denseIndex(localX, localY, localZ)] = cell;
             }
@@ -113,6 +125,14 @@ public final class PhysicalizedVolumeSnapshot {
         this.cellIndex = Collections.unmodifiableMap(index);
         this.denseCellIndex = denseIndex;
         this.hasBlockEntityNbt = hasNbt;
+        this.hasRedstoneComponents = hasRedstone;
+        // Build O(1) position-to-index mapping for fast cell removal
+        Map<Long, Integer> posIndex = new HashMap<>(this.cells.size() * 2);
+        for (int i = 0; i < this.cells.size(); i++) {
+            PhysicalizedBlockSnapshot cell = this.cells.get(i);
+            posIndex.put(pack(cell.localX(), cell.localY(), cell.localZ()), i);
+        }
+        this.cellPositionIndex = Collections.unmodifiableMap(posIndex);
         if (this.cells.isEmpty()) {
             // Match the legacy empty-volume behaviour: min = 0, max = size - 1.
             this.occupiedMinX = 0;
@@ -137,11 +157,9 @@ public final class PhysicalizedVolumeSnapshot {
                 this.occupiedMaxY + 1.0,
                 this.occupiedMaxZ + 1.0
         );
-        MassProperties massProperties = computeMassProperties(this.cells);
-        this.centerOfMassLocalX = massProperties.centerX();
-        this.centerOfMassLocalY = massProperties.centerY();
-        this.centerOfMassLocalZ = massProperties.centerZ();
-        this.estimatedPhysicsMass = massProperties.mass();
+        // Mass properties computed lazily on first access to avoid O(n) cost
+        // during snapshot creation (critical for 100k+ block volumes).
+        this.massProperties = null;
         // Collision boxes are built lazily on first access (expensive for large volumes).
         this.localCollisionBoxes = null;
         this.physicsCollisionBoxes = null;
@@ -356,20 +374,38 @@ public final class PhysicalizedVolumeSnapshot {
         return hasBlockEntityNbt;
     }
 
+    public boolean hasRedstoneComponents() {
+        return hasRedstoneComponents;
+    }
+
     public double centerOfMassLocalX() {
-        return centerOfMassLocalX;
+        return ensureMassProperties().centerX();
     }
 
     public double centerOfMassLocalY() {
-        return centerOfMassLocalY;
+        return ensureMassProperties().centerY();
     }
 
     public double centerOfMassLocalZ() {
-        return centerOfMassLocalZ;
+        return ensureMassProperties().centerZ();
     }
 
     public double estimatedPhysicsMass() {
-        return estimatedPhysicsMass;
+        return ensureMassProperties().mass();
+    }
+
+    private MassProperties ensureMassProperties() {
+        MassProperties result = this.massProperties;
+        if (result == null) {
+            synchronized (this) {
+                result = this.massProperties;
+                if (result == null) {
+                    result = computeMassProperties(this.cells);
+                    this.massProperties = result;
+                }
+            }
+        }
+        return result;
     }
 
     public List<PhysicalizedBlockSnapshot> cells() {
@@ -396,13 +432,93 @@ public final class PhysicalizedVolumeSnapshot {
 
     public PhysicalizedVolumeSnapshot withoutCell(PhysicalizedBlockSnapshot removedCell) {
         long removedKey = pack(removedCell.localX(), removedCell.localY(), removedCell.localZ());
-        List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size());
+        // O(1) position lookup using precomputed index
+        Integer removeIndex = cellPositionIndex.get(removedKey);
+        if (removeIndex == null) {
+            return this; // Cell not found, no change
+        }
+        List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size() - 1);
+        next.addAll(cells.subList(0, removeIndex));
+        next.addAll(cells.subList(removeIndex + 1, cells.size()));
+        return new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next);
+    }
+
+    /**
+     * Batch removal of multiple cells in a single pass through the cells list.
+     * Much faster than calling withoutCell() repeatedly for large volumes.
+     */
+    public PhysicalizedVolumeSnapshot withoutCells(java.util.Collection<PhysicalizedBlockSnapshot> toRemove) {
+        if (toRemove.isEmpty()) {
+            return this;
+        }
+        LongOpenHashSet removeKeys = new LongOpenHashSet(toRemove.size());
+        for (PhysicalizedBlockSnapshot cell : toRemove) {
+            removeKeys.add(pack(cell.localX(), cell.localY(), cell.localZ()));
+        }
+        List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size() - toRemove.size());
         for (PhysicalizedBlockSnapshot cell : cells) {
-            if (pack(cell.localX(), cell.localY(), cell.localZ()) != removedKey) {
+            if (!removeKeys.contains(pack(cell.localX(), cell.localY(), cell.localZ()))) {
                 next.add(cell);
             }
         }
-        return new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next);
+        return next.size() == cells.size() ? this
+                : new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next);
+    }
+
+    /**
+     * Returns the shell cells (blocks with at least one air or non-opaque neighbor).
+     * Computed lazily for volumes >10K blocks. Used by the renderer to skip interior
+     * blocks that are never visible.
+     */
+    public List<PhysicalizedBlockSnapshot> shellCells() {
+        List<PhysicalizedBlockSnapshot> result = this.shellCells;
+        if (result == null && blockCount() > SHELL_COMPUTE_THRESHOLD) {
+            synchronized (this) {
+                result = this.shellCells;
+                if (result == null) {
+                    result = computeShellCells();
+                    this.shellCells = result;
+                }
+            }
+        }
+        return result == null ? cells : result;
+    }
+
+    private List<PhysicalizedBlockSnapshot> computeShellCells() {
+        List<PhysicalizedBlockSnapshot> shell = new ArrayList<>(cells.size() / 8);
+        for (PhysicalizedBlockSnapshot cell : cells) {
+            if (isShellCell(cell)) {
+                shell.add(cell);
+            }
+        }
+        return List.copyOf(shell);
+    }
+
+    private boolean isShellCell(PhysicalizedBlockSnapshot cell) {
+        int x = cell.localX();
+        int y = cell.localY();
+        int z = cell.localZ();
+        // Boundary cells are always on the shell
+        if (x == occupiedMinX || x == occupiedMaxX
+                || y == occupiedMinY || y == occupiedMaxY
+                || z == occupiedMinZ || z == occupiedMaxZ) {
+            return true;
+        }
+        // Check if any neighbor is missing or non-opaque
+        return !isOpaqueNeighbor(x + 1, y, z)
+                || !isOpaqueNeighbor(x - 1, y, z)
+                || !isOpaqueNeighbor(x, y + 1, z)
+                || !isOpaqueNeighbor(x, y - 1, z)
+                || !isOpaqueNeighbor(x, y, z + 1)
+                || !isOpaqueNeighbor(x, y, z - 1);
+    }
+
+    private boolean isOpaqueNeighbor(int x, int y, int z) {
+        PhysicalizedBlockSnapshot neighbor = cellAtOrNull(x, y, z);
+        if (neighbor == null) {
+            return false;
+        }
+        return !neighbor.state().isAir() && neighbor.state().isSolidRender();
     }
 
     public ExpandedPlacement withCellExpanded(int localX, int localY, int localZ, BlockState state, CompoundTag nbt) {
@@ -417,13 +533,40 @@ public final class PhysicalizedVolumeSnapshot {
         int nextSizeZ = Math.max(sizeZ + shiftZ, placedZ + 1);
         long placedKey = pack(placedX, placedY, placedZ);
 
+        // Fast path: no shift needed and size doesn't change (common case for placing
+        // within existing bounds). Avoid copying all cells — just append or replace.
+        if (shiftX == 0 && shiftY == 0 && shiftZ == 0) {
+            boolean exists = cellIndex.containsKey(placedKey);
+            List<PhysicalizedBlockSnapshot> next;
+            if (exists) {
+                // Replace existing cell at this position
+                next = new ArrayList<>(cells.size());
+                for (PhysicalizedBlockSnapshot cell : cells) {
+                    if (pack(cell.localX(), cell.localY(), cell.localZ()) != placedKey) {
+                        next.add(cell);
+                    }
+                }
+            } else {
+                // New position: just copy and append (no per-element check needed)
+                next = new ArrayList<>(cells.size() + 1);
+                next.addAll(cells);
+            }
+            if (!state.isAir()) {
+                next.add(new PhysicalizedBlockSnapshot(placedX, placedY, placedZ, Block.getId(state), nbt));
+            }
+            return new ExpandedPlacement(new PhysicalizedVolumeSnapshot(nextSizeX, nextSizeY, nextSizeZ, next), 0, 0, 0);
+        }
+
+        // Slow path: shift is needed, must relocate all cells
         List<PhysicalizedBlockSnapshot> next = new ArrayList<>(cells.size() + 1);
         for (PhysicalizedBlockSnapshot cell : cells) {
             int nextX = cell.localX() + shiftX;
             int nextY = cell.localY() + shiftY;
             int nextZ = cell.localZ() + shiftZ;
             if (pack(nextX, nextY, nextZ) != placedKey) {
-                next.add(new PhysicalizedBlockSnapshot(nextX, nextY, nextZ, cell.stateId(), cell.blockEntityNbt()));
+                next.add(shiftX == 0 && shiftY == 0 && shiftZ == 0
+                        ? cell
+                        : new PhysicalizedBlockSnapshot(nextX, nextY, nextZ, cell.stateId(), cell.blockEntityNbt()));
             }
         }
         if (!state.isAir()) {
@@ -446,10 +589,18 @@ public final class PhysicalizedVolumeSnapshot {
             return this;
         }
 
+        int nextSizeX = sizeX;
+        int nextSizeY = sizeY;
+        int nextSizeZ = sizeZ;
         Map<Long, PhysicalizedBlockSnapshot> replacements = new HashMap<>(updates.size() * 2);
         for (PhysicalizedBlockSnapshot update : updates) {
-            if (isInside(update.localX(), update.localY(), update.localZ())) {
+            if (update.localX() >= 0 && update.localY() >= 0 && update.localZ() >= 0) {
                 replacements.put(pack(update.localX(), update.localY(), update.localZ()), update);
+                if (!update.state().isAir()) {
+                    nextSizeX = Math.max(nextSizeX, update.localX() + 1);
+                    nextSizeY = Math.max(nextSizeY, update.localY() + 1);
+                    nextSizeZ = Math.max(nextSizeZ, update.localZ() + 1);
+                }
             }
         }
         if (replacements.isEmpty()) {
@@ -477,7 +628,7 @@ public final class PhysicalizedVolumeSnapshot {
                 changed = true;
             }
         }
-        return changed ? new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, next) : this;
+        return changed ? new PhysicalizedVolumeSnapshot(nextSizeX, nextSizeY, nextSizeZ, next) : this;
     }
 
     public PhysicalizedVolumeSnapshot withCellState(PhysicalizedBlockSnapshot target, BlockState state, CompoundTag nbt) {

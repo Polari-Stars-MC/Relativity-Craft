@@ -47,13 +47,17 @@ import net.minecraft.world.phys.shapes.VoxelShape;
 import it.unimi.dsi.fastutil.objects.Object2FloatOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
+import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 import java.util.Optional;
 import java.util.UUID;
 
 public final class PhysicalizedInteractionHandler {
+    private static final int LARGE_VOLUME_FAST_PLACE_THRESHOLD = 4096;
     private static final int CREATIVE_EDIT_PHYSICS_ISOLATION_TICKS = 40;
     private static final long CREATIVE_PLACE_COOLDOWN_TICKS = 2L;
     private static final double PLACEMENT_COLLISION_EPSILON = 1.0E-5;
@@ -232,9 +236,9 @@ public final class PhysicalizedInteractionHandler {
             return InteractionResult.PASS;
         }
 
-        if (player.gameMode.isCreative()) {
+        if (player.gameMode.isCreative() && hit.entity().snapshot().blockCount() <= LARGE_VOLUME_FAST_PLACE_THRESHOLD) {
             InteractionResult mappedPlacement = placeCreativeBlockThroughVanillaPipeline(level, player, hand, stack, blockItem, hit);
-            if (mappedPlacement.consumesAction()) {
+            if (mappedPlacement.consumesAction() && mappedPlacement != InteractionResult.FAIL) {
                 return mappedPlacement;
             }
         }
@@ -318,14 +322,39 @@ public final class PhysicalizedInteractionHandler {
                 placedY,
                 placedZ
         );
-        UnsupportedRemoval unsupportedPlacementRemoval = removeUnsupportedPhysicalizedCells(level, entity, refreshedSnapshot);
-        refreshedSnapshot = unsupportedPlacementRemoval.snapshot();
+        // Only do unsupported removal for redstone volumes.
+        UnsupportedRemoval unsupportedPlacementRemoval;
+        if (refreshedSnapshot.hasRedstoneComponents()) {
+            unsupportedPlacementRemoval = removeUnsupportedPhysicalizedCellsAround(
+                    level,
+                    entity,
+                    refreshedSnapshot,
+                    placedX,
+                    placedY,
+                    placedZ
+            );
+            refreshedSnapshot = unsupportedPlacementRemoval.snapshot();
+        } else {
+            unsupportedPlacementRemoval = new UnsupportedRemoval(refreshedSnapshot, List.of());
+        }
         if (refreshedSnapshot.blockCount() <= 0
                 || refreshedSnapshot.cellAt(placedX, placedY, placedZ).isEmpty()) {
             return InteractionResult.FAIL;
         }
 
-        entity.updateSnapshotAtEntityCenter(refreshedSnapshot, nextOrigin, nextCenter);
+        List<PhysicalizedBlockSnapshot> changedCells = changedCellsForPlacement(
+                entity.snapshot(),
+                refreshedSnapshot,
+                placedX,
+                placedY,
+                placedZ,
+                unsupportedPlacementRemoval.removedCells()
+        );
+        if (canSendPlacementAsCellUpdates(entity.snapshot(), refreshedSnapshot, placement, changedCells)) {
+            entity.updateSnapshotCellsAtEntityCenter(refreshedSnapshot, changedCells, nextOrigin, nextCenter);
+        } else {
+            entity.updateSnapshotAtEntityCenter(refreshedSnapshot, nextOrigin, nextCenter);
+        }
         boolean creative = player.gameMode.isCreative();
         if (!creative) {
             entity.resolveWorldCollisionAfterShapeChange();
@@ -351,11 +380,84 @@ public final class PhysicalizedInteractionHandler {
         if (!creative) {
             PhysicsWorldManager.global().wakeBodiesInAabb(level, entity.getBoundingBox().inflate(0.5));
         }
-        PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, placedX, placedY, placedZ);
-        for (PhysicalizedBlockSnapshot removedCell : unsupportedPlacementRemoval.removedCells()) {
-            PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, removedCell.localX(), removedCell.localY(), removedCell.localZ());
-        }
+        PhysicalizedLogicBodyRedstone.global().syncChangedCells(level, entity, changedCells);
         return InteractionResult.SUCCESS;
+    }
+
+    private static boolean canSendPlacementAsCellUpdates(
+            PhysicalizedVolumeSnapshot previous,
+            PhysicalizedVolumeSnapshot next,
+            PhysicalizedVolumeSnapshot.ExpandedPlacement placement,
+            List<PhysicalizedBlockSnapshot> changedCells
+    ) {
+        return placement.shiftX() == 0
+                && placement.shiftY() == 0
+                && placement.shiftZ() == 0
+                && previous.sizeX() <= next.sizeX()
+                && previous.sizeY() <= next.sizeY()
+                && previous.sizeZ() <= next.sizeZ()
+                && !changedCells.isEmpty()
+                && changedCells.size() <= 16;
+    }
+
+    private static List<PhysicalizedBlockSnapshot> changedCellsForPlacement(
+            PhysicalizedVolumeSnapshot previous,
+            PhysicalizedVolumeSnapshot next,
+            int placedX,
+            int placedY,
+            int placedZ,
+            List<PhysicalizedBlockSnapshot> removedCells
+    ) {
+        List<PhysicalizedBlockSnapshot> changed = new ArrayList<>();
+        LongOpenHashSet visited = new LongOpenHashSet();
+        addChangedCell(previous, next, changed, visited, placedX, placedY, placedZ);
+        for (Direction direction : Direction.values()) {
+            addChangedCell(
+                    previous,
+                    next,
+                    changed,
+                    visited,
+                    placedX + direction.getStepX(),
+                    placedY + direction.getStepY(),
+                    placedZ + direction.getStepZ()
+            );
+        }
+        for (PhysicalizedBlockSnapshot removedCell : removedCells) {
+            addChangedCell(previous, next, changed, visited, removedCell.localX(), removedCell.localY(), removedCell.localZ());
+        }
+        return changed;
+    }
+
+    private static void addChangedCell(
+            PhysicalizedVolumeSnapshot previous,
+            PhysicalizedVolumeSnapshot next,
+            List<PhysicalizedBlockSnapshot> changed,
+            LongOpenHashSet visited,
+            int localX,
+            int localY,
+            int localZ
+    ) {
+        if (localX < 0 || localY < 0 || localZ < 0) {
+            return;
+        }
+        long key = packLocal(localX, localY, localZ);
+        if (!visited.add(key)) {
+            return;
+        }
+
+        PhysicalizedBlockSnapshot oldCell = previous.cellAtOrNull(localX, localY, localZ);
+        PhysicalizedBlockSnapshot nextCell = next.cellAtOrNull(localX, localY, localZ);
+        if (nextCell == null) {
+            if (oldCell != null) {
+                changed.add(new PhysicalizedBlockSnapshot(localX, localY, localZ, Block.getId(Blocks.AIR.defaultBlockState()), null));
+            }
+            return;
+        }
+        if (oldCell == null
+                || oldCell.stateId() != nextCell.stateId()
+                || !Objects.equals(oldCell.blockEntityNbt(), nextCell.blockEntityNbt())) {
+            changed.add(nextCell);
+        }
     }
 
     public static boolean canPlacePhysicalizedState(PhysicalizedBlockPlaceContext context, BlockState state) {
@@ -455,7 +557,17 @@ public final class PhysicalizedInteractionHandler {
         LAST_CREATIVE_PLACE_TICK.put(cooldownKey, gameTime);
         BlockState beforeBodyState = logicLevel.getBlockState(bodyTarget);
         int originalCount = stack.getCount();
-        InteractionResult result = blockItem.place(new BlockPlaceContext(logicLevel, player, hand, stack, bodyHit));
+        // Suppress projected signal queries during vanilla placement to prevent
+        // cascading neighbor updates on the logic level from re-entering the mod's
+        // signal lookup code (which adds stack frames and causes StackOverflow).
+        InteractionResult result;
+        PhysicalizedLogicBodyRedstone.global().setApplyingLogicBody(true);
+        try {
+            result = PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressedResult(
+                    () -> blockItem.place(new BlockPlaceContext(logicLevel, player, hand, stack, bodyHit)));
+        } finally {
+            PhysicalizedLogicBodyRedstone.global().setApplyingLogicBody(false);
+        }
         if (player.hasInfiniteMaterials()) {
             stack.setCount(originalCount);
         }
@@ -803,13 +915,13 @@ public final class PhysicalizedInteractionHandler {
         }
 
         List<PhysicalizedBlockSnapshot> removedCells = coupledBreakCells(entity, cell);
-        PhysicalizedVolumeSnapshot nextSnapshot = entity.snapshot();
+        // Use batch withoutCells() for O(n) single-pass removal (Phase 2)
+        PhysicalizedVolumeSnapshot nextSnapshot = entity.snapshot().withoutCells(removedCells);
         for (PhysicalizedBlockSnapshot removedCell : removedCells) {
             if (removedCell != cell) {
                 BlockPos removedPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(removedCell);
                 level.levelEvent(player, 2001, removedPos, Block.getId(removedCell.state()));
             }
-            nextSnapshot = nextSnapshot.withoutCell(removedCell);
             PhysicalizedRedstoneMapping.global().clearCell(level, entity, removedCell);
         }
 
@@ -822,16 +934,39 @@ public final class PhysicalizedInteractionHandler {
                     removedCell.localZ()
             );
         }
-        UnsupportedRemoval unsupportedRemoval = removeUnsupportedPhysicalizedCells(level, entity, nextSnapshot);
-        nextSnapshot = unsupportedRemoval.snapshot();
+        // Only do unsupported removal for redstone volumes. Non-redstone volumes
+        // don't need support checks and the BFS is expensive for large volumes.
+        UnsupportedRemoval unsupportedRemoval;
+        if (entity.snapshot().hasRedstoneComponents()) {
+            unsupportedRemoval = removeUnsupportedPhysicalizedCells(level, entity, nextSnapshot);
+            nextSnapshot = unsupportedRemoval.snapshot();
+        } else {
+            unsupportedRemoval = new UnsupportedRemoval(nextSnapshot, List.of());
+        }
 
-        entity.updateSnapshot(nextSnapshot);
+        // For volumes >256 blocks, use incremental cell updates instead
+        // of full snapshot sync to avoid serializing 100k cells over the network
+        // on every block break. This is the primary TPS killer for large volumes.
+        if (entity.snapshot().blockCount() > 256) {
+            List<PhysicalizedBlockSnapshot> allChanges = new ArrayList<>(removedCells.size() + unsupportedRemoval.removedCells().size() + 7);
+            for (PhysicalizedBlockSnapshot removedCell : removedCells) {
+                allChanges.add(new PhysicalizedBlockSnapshot(
+                        removedCell.localX(), removedCell.localY(), removedCell.localZ(),
+                        Block.getId(Blocks.AIR.defaultBlockState()), null));
+            }
+            for (PhysicalizedBlockSnapshot removedCell : unsupportedRemoval.removedCells()) {
+                allChanges.add(new PhysicalizedBlockSnapshot(
+                        removedCell.localX(), removedCell.localY(), removedCell.localZ(),
+                        Block.getId(Blocks.AIR.defaultBlockState()), null));
+            }
+            entity.updateSnapshotCells(nextSnapshot, allChanges);
+        } else {
+            entity.updateSnapshot(nextSnapshot);
+        }
         for (PhysicalizedBlockSnapshot removedCell : removedCells) {
             PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, removedCell.localX(), removedCell.localY(), removedCell.localZ());
         }
-        for (PhysicalizedBlockSnapshot removedCell : unsupportedRemoval.removedCells()) {
-            PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity, removedCell.localX(), removedCell.localY(), removedCell.localZ());
-        }
+        PhysicalizedRedstoneMapping.global().syncBodyAfterCellChanges(level, entity);
         if (entity.snapshot().blockCount() <= 0) {
             entity.discard();
         } else {
@@ -883,6 +1018,101 @@ public final class PhysicalizedInteractionHandler {
                 && state.getValue(PistonBaseBlock.EXTENDED);
     }
 
+    private static final int MAX_UNSUPPORTED_REMOVALS_PER_CALL = 64;
+    private static final int MAX_UNSUPPORTED_SCAN_CELLS = 8192;
+
+    /**
+     * Budgeted unsupported-cell removal called from PhysicsWorldManager's tick loop.
+     * Spreads the BFS across multiple ticks with a time budget to prevent TPS freezes.
+     */
+    public static void removeUnsupportedCellsBudgeted(
+            ServerLevel level,
+            PhysicalizedVolumeEntity entity,
+            PhysicalizedVolumeSnapshot snapshot,
+            long deadlineNanos
+    ) {
+        // This is a lightweight version that only removes a few cells per call.
+        // The full BFS is done in removeUnsupportedPhysicalizedCells() but called
+        // from the deferred queue instead of synchronously during interaction.
+        PhysicalizedVolumeSnapshot current = entity.snapshot();
+        List<PhysicalizedBlockSnapshot> removed = new ArrayList<>();
+        PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, level);
+        LongOpenHashSet queued = new LongOpenHashSet();
+        ArrayDeque<PhysicalizedBlockSnapshot> candidates = new ArrayDeque<>();
+
+        // Quick scan: find obviously unsupported cells (bottom 25% of volume)
+        int bottomThreshold = current.occupiedMinY() + (current.occupiedSizeY() / 4);
+        for (PhysicalizedBlockSnapshot cell : current.cells()) {
+            if (System.nanoTime() >= deadlineNanos) {
+                break;
+            }
+            BlockState cellState = cell.state();
+            if (cellState.isAir()) continue;
+            if (cell.localY() > bottomThreshold) continue;
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            if (!localLevel.canSurvive(cellState, localPos)) {
+                candidates.addLast(cell);
+                queued.add(packLocal(cell.localX(), cell.localY(), cell.localZ()));
+            }
+        }
+
+        int removals = 0;
+        while (!candidates.isEmpty() && current.blockCount() > 0
+                && removals < MAX_UNSUPPORTED_REMOVALS_PER_CALL
+                && System.nanoTime() < deadlineNanos) {
+            PhysicalizedBlockSnapshot candidate = candidates.removeFirst();
+            PhysicalizedBlockSnapshot live = current.cellAtOrNull(candidate.localX(), candidate.localY(), candidate.localZ());
+            if (live == null || live.state().isAir()) continue;
+
+            localLevel = PhysicalizedBodyLevelReader.of(current, level);
+            BlockPos localPos = new BlockPos(live.localX(), live.localY(), live.localZ());
+            if (localLevel.canSurvive(live.state(), localPos)) continue;
+
+            BlockPos dropPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(live);
+            BlockEntity blockEntity = live.hasLoadableBlockEntityNbt()
+                    ? BlockEntity.loadStatic(dropPos, live.state(), live.blockEntityNbt(), level.registryAccess())
+                    : null;
+            Block.dropResources(live.state(), level, dropPos, blockEntity);
+            PhysicalizedRedstoneMapping.global().clearCell(level, entity, live);
+            removed.add(live);
+            removals++;
+
+            for (Direction direction : Direction.values()) {
+                int nx = live.localX() + direction.getStepX();
+                int ny = live.localY() + direction.getStepY();
+                int nz = live.localZ() + direction.getStepZ();
+                if (nx < 0 || ny < 0 || nz < 0) continue;
+                if (queued.add(packLocal(nx, ny, nz))) {
+                    PhysicalizedBlockSnapshot neighbor = current.cellAtOrNull(nx, ny, nz);
+                    if (neighbor != null && !neighbor.state().isAir()) {
+                        candidates.addLast(neighbor);
+                    }
+                }
+            }
+        }
+
+        if (!removed.isEmpty()) {
+            PhysicalizedVolumeSnapshot nextSnapshot = current.withoutCells(removed);
+            for (PhysicalizedBlockSnapshot removedCell : removed) {
+                PhysicalizedRedstoneMapping.global().notifyCellChanged(level, entity,
+                        removedCell.localX(), removedCell.localY(), removedCell.localZ());
+            }
+            PhysicalizedRedstoneMapping.global().syncBodyAfterCellChanges(level, entity);
+            if (nextSnapshot.blockCount() <= 0) {
+                entity.discard();
+            } else {
+                entity.updateSnapshot(nextSnapshot);
+                entity.resolveWorldCollisionAfterShapeChange();
+                PhysicsWorldManager.global().rebuildBodyShape(level, entity, true);
+            }
+        }
+
+        // If there are still more unsupported cells, re-queue for next tick
+        if (!candidates.isEmpty() && !entity.isRemoved()) {
+            PhysicsWorldManager.global().queueDeferredUnsupportedCheck(level, entity, current);
+        }
+    }
+
     private static UnsupportedRemoval removeUnsupportedPhysicalizedCells(
             ServerLevel level,
             PhysicalizedVolumeEntity entity,
@@ -890,30 +1120,139 @@ public final class PhysicalizedInteractionHandler {
     ) {
         PhysicalizedVolumeSnapshot current = snapshot;
         List<PhysicalizedBlockSnapshot> removed = new ArrayList<>();
-        boolean changed;
-        do {
-            changed = false;
-            PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, level);
-            for (PhysicalizedBlockSnapshot candidate : current.cells()) {
-                BlockState candidateState = candidate.state();
-                BlockPos localPos = new BlockPos(candidate.localX(), candidate.localY(), candidate.localZ());
-                if (candidateState.isAir() || localLevel.canSurvive(candidateState, localPos)) {
+
+        // For very large volumes (>8192 cells), limit the initial scan to cells
+        // near the bottom of the volume. Full BFS through 100k cells takes too long.
+        boolean limitedScan = snapshot.blockCount() > MAX_UNSUPPORTED_SCAN_CELLS;
+
+        // Queue-based: first pass identifies all unsupported cells, then removes
+        // them iteratively while checking neighbors of removed cells.
+        ArrayDeque<PhysicalizedBlockSnapshot> candidates = new ArrayDeque<>();
+        LongOpenHashSet queued = new LongOpenHashSet();
+
+        // Initial scan: find all currently unsupported cells
+        PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, level);
+        for (PhysicalizedBlockSnapshot cell : current.cells()) {
+            BlockState cellState = cell.state();
+            if (cellState.isAir()) {
+                continue;
+            }
+            // For limited scan, only check cells in the bottom 25% of the volume
+            // (they're most likely to be unsupported). Full scan is too expensive.
+            if (limitedScan && cell.localY() > snapshot.occupiedMinY() + (snapshot.occupiedSizeY() / 4)) {
+                continue;
+            }
+            BlockPos localPos = new BlockPos(cell.localX(), cell.localY(), cell.localZ());
+            if (!localLevel.canSurvive(cellState, localPos)) {
+                candidates.addLast(cell);
+                queued.add(packLocal(cell.localX(), cell.localY(), cell.localZ()));
+            }
+        }
+
+        // Process queue: remove unsupported cells, enqueue their neighbors for re-check
+        int removals = 0;
+        while (!candidates.isEmpty() && current.blockCount() > 0 && removals < MAX_UNSUPPORTED_REMOVALS_PER_CALL) {
+            PhysicalizedBlockSnapshot candidate = candidates.removeFirst();
+            // Re-check: the cell may have been removed already or may now be supported
+            PhysicalizedBlockSnapshot live = current.cellAtOrNull(candidate.localX(), candidate.localY(), candidate.localZ());
+            if (live == null || live.state().isAir()) {
+                continue;
+            }
+            localLevel = PhysicalizedBodyLevelReader.of(current, level);
+            BlockPos localPos = new BlockPos(live.localX(), live.localY(), live.localZ());
+            if (localLevel.canSurvive(live.state(), localPos)) {
+                continue;
+            }
+
+            BlockPos dropPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(live);
+            BlockEntity blockEntity = live.hasLoadableBlockEntityNbt()
+                    ? BlockEntity.loadStatic(dropPos, live.state(), live.blockEntityNbt(), level.registryAccess())
+                    : null;
+            Block.dropResources(live.state(), level, dropPos, blockEntity);
+            PhysicalizedRedstoneMapping.global().clearCell(level, entity, live);
+            removed.add(live);
+            current = current.withoutCell(live);
+            removals++;
+
+            // Enqueue neighbors for re-check (they may have lost support)
+            for (Direction direction : Direction.values()) {
+                int nx = live.localX() + direction.getStepX();
+                int ny = live.localY() + direction.getStepY();
+                int nz = live.localZ() + direction.getStepZ();
+                if (nx < 0 || ny < 0 || nz < 0) {
                     continue;
                 }
-
-                BlockPos dropPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(candidate);
-                BlockEntity blockEntity = candidate.hasLoadableBlockEntityNbt()
-                        ? BlockEntity.loadStatic(dropPos, candidateState, candidate.blockEntityNbt(), level.registryAccess())
-                        : null;
-                Block.dropResources(candidateState, level, dropPos, blockEntity);
-                PhysicalizedRedstoneMapping.global().clearCell(level, entity, candidate);
-                removed.add(candidate);
-                current = current.withoutCell(candidate);
-                changed = true;
-                break;
+                if (queued.add(packLocal(nx, ny, nz))) {
+                    PhysicalizedBlockSnapshot neighbor = current.cellAtOrNull(nx, ny, nz);
+                    if (neighbor != null && !neighbor.state().isAir()) {
+                        candidates.addLast(neighbor);
+                    }
+                }
             }
-        } while (changed && current.blockCount() > 0);
+        }
         return new UnsupportedRemoval(current, List.copyOf(removed));
+    }
+
+    private static UnsupportedRemoval removeUnsupportedPhysicalizedCellsAround(
+            ServerLevel level,
+            PhysicalizedVolumeEntity entity,
+            PhysicalizedVolumeSnapshot snapshot,
+            int localX,
+            int localY,
+            int localZ
+    ) {
+        PhysicalizedVolumeSnapshot current = snapshot;
+        List<PhysicalizedBlockSnapshot> removed = new ArrayList<>();
+        ArrayDeque<BlockPos> queue = new ArrayDeque<>();
+        LongOpenHashSet queued = new LongOpenHashSet();
+        for (Direction direction : Direction.values()) {
+            enqueueLocal(queue, queued, localX + direction.getStepX(), localY + direction.getStepY(), localZ + direction.getStepZ());
+        }
+
+        int removals = 0;
+        while (!queue.isEmpty() && current.blockCount() > 0 && removals < MAX_UNSUPPORTED_REMOVALS_PER_CALL) {
+            BlockPos pos = queue.removeFirst();
+            PhysicalizedBlockSnapshot candidate = current.cellAtOrNull(pos.getX(), pos.getY(), pos.getZ());
+            if (candidate == null || candidate.state().isAir()) {
+                continue;
+            }
+
+            PhysicalizedBodyLevelReader localLevel = PhysicalizedBodyLevelReader.of(current, level);
+            if (localLevel.canSurvive(candidate.state(), pos)) {
+                continue;
+            }
+
+            BlockPos dropPos = PhysicalizedVolumeMapping.current(entity).visualBlockPos(candidate);
+            BlockEntity blockEntity = candidate.hasLoadableBlockEntityNbt()
+                    ? BlockEntity.loadStatic(dropPos, candidate.state(), candidate.blockEntityNbt(), level.registryAccess())
+                    : null;
+            Block.dropResources(candidate.state(), level, dropPos, blockEntity);
+            PhysicalizedRedstoneMapping.global().clearCell(level, entity, candidate);
+            removed.add(candidate);
+            current = current.withoutCell(candidate);
+            removals++;
+
+            for (Direction direction : Direction.values()) {
+                enqueueLocal(
+                        queue,
+                        queued,
+                        pos.getX() + direction.getStepX(),
+                        pos.getY() + direction.getStepY(),
+                        pos.getZ() + direction.getStepZ()
+                );
+            }
+        }
+
+        return new UnsupportedRemoval(current, List.copyOf(removed));
+    }
+
+    private static void enqueueLocal(ArrayDeque<BlockPos> queue, LongOpenHashSet queued, int localX, int localY, int localZ) {
+        if (localX < 0 || localY < 0 || localZ < 0) {
+            return;
+        }
+        if (queued.add(packLocal(localX, localY, localZ))) {
+            queue.addLast(new BlockPos(localX, localY, localZ));
+        }
     }
 
     public static boolean canPlacePhysicalizedState(
@@ -1126,6 +1465,10 @@ public final class PhysicalizedInteractionHandler {
             }
         }
         return false;
+    }
+
+    private static long packLocal(int x, int y, int z) {
+        return ((long) x & 0x1FFFFFL) | (((long) y & 0x1FFFFFL) << 21) | (((long) z & 0x1FFFFFL) << 42);
     }
 
     private static boolean isAllowedGroundContact(AABB worldPart, AABB obstacle) {

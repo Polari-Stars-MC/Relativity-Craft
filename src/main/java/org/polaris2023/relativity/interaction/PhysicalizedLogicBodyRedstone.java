@@ -66,6 +66,8 @@ final class PhysicalizedLogicBodyRedstone {
     );
     private static final int UPDATE_FLAGS = Block.UPDATE_ALL | Block.UPDATE_KNOWN_SHAPE;
     private static final int SILENT_UPDATE_FLAGS = Block.UPDATE_CLIENTS | Block.UPDATE_KNOWN_SHAPE | Block.UPDATE_SUPPRESS_DROPS;
+    // Write flags: skip neighbor notification during bulk write; notify explicitly afterwards.
+    private static final int WRITE_FLAGS = Block.UPDATE_CLIENTS;
     private static final Direction[] DIRECTIONS = Direction.values();
 
     private final Map<String, LogicBody> bodies = new Object2ObjectOpenHashMap<>();
@@ -90,6 +92,10 @@ final class PhysicalizedLogicBodyRedstone {
 
     boolean isApplyingLogicBody() {
         return applyingLogicBody;
+    }
+
+    void setApplyingLogicBody(boolean value) {
+        this.applyingLogicBody = value;
     }
 
     boolean needsLogicBodyTick(PhysicalizedVolumeEntity entity) {
@@ -142,7 +148,22 @@ final class PhysicalizedLogicBodyRedstone {
         if (snapshotChanged) {
             applyingLogicBody = true;
             try {
-                body.writeSnapshot(logicLevel, entity.snapshot());
+                // Suppress projected signal queries during the entire write+propagation
+                // so that vanilla redstone cascading on the logic level does not re-enter
+                // the mod's signal lookup code (which caused StackOverflow).
+                PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
+                    if (body.snapshot != null) {
+                        // Incremental path: only write cells that actually changed.
+                        List<PhysicalizedBlockSnapshot> diff = incrementalDiff(body.snapshot, entity.snapshot());
+                        if (!diff.isEmpty()) {
+                            body.writeCells(logicLevel, diff);
+                        }
+                    } else {
+                        // First-time creation: full write
+                        body.writeSnapshot(logicLevel, entity.snapshot());
+                    }
+                    return 0;
+                });
                 body.snapshot = entity.snapshot();
                 body.forceNextFullRead();
             } finally {
@@ -150,6 +171,30 @@ final class PhysicalizedLogicBodyRedstone {
             }
         }
         body.updateProjectionIndex(worldLevel, entity, entity.snapshot());
+    }
+
+    private static List<PhysicalizedBlockSnapshot> incrementalDiff(
+            PhysicalizedVolumeSnapshot previous,
+            PhysicalizedVolumeSnapshot next
+    ) {
+        List<PhysicalizedBlockSnapshot> diff = new ArrayList<>();
+        // New or modified cells
+        for (PhysicalizedBlockSnapshot cell : next.cells()) {
+            PhysicalizedBlockSnapshot old = previous.cellAtOrNull(cell.localX(), cell.localY(), cell.localZ());
+            if (old == null || old.stateId() != cell.stateId()
+                    || !sameNbt(old.blockEntityNbt(), cell.blockEntityNbt())) {
+                diff.add(cell);
+            }
+        }
+        // Removed cells → write as air so logic dimension reflects removal
+        int airId = net.minecraft.world.level.block.Block.getId(
+                net.minecraft.world.level.block.Blocks.AIR.defaultBlockState());
+        for (PhysicalizedBlockSnapshot cell : previous.cells()) {
+            if (next.cellAtOrNull(cell.localX(), cell.localY(), cell.localZ()) == null) {
+                diff.add(new PhysicalizedBlockSnapshot(cell.localX(), cell.localY(), cell.localZ(), airId, null));
+            }
+        }
+        return diff;
     }
 
     void removeBody(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {
@@ -180,19 +225,40 @@ final class PhysicalizedLogicBodyRedstone {
         if (body == null) {
             return;
         }
+        body.markDirtyCell(localX, localY, localZ);
+        body.forceNextFullRead();
+    }
+
+    void syncChangedCells(ServerLevel worldLevel, PhysicalizedVolumeEntity entity, List<PhysicalizedBlockSnapshot> updates) {
+        if (updates == null || updates.isEmpty()) {
+            return;
+        }
         ServerLevel logicLevel = logicLevel(worldLevel);
-        if (logicLevel == null) {
+        if (logicLevel == null || entity.isRemoved() || entity.snapshot().blockCount() <= 0) {
+            return;
+        }
+        // Only sync if the volume actually uses redstone logic body simulation
+        if (!bodies.containsKey(entity.volumeIdString()) && !needsLogicBodyTick(entity)) {
             return;
         }
 
-        BlockPos changed = body.bodyPosOf(localX, localY, localZ);
-        BlockState state = logicLevel.getBlockState(changed);
-        body.markDirtyCell(localX, localY, localZ);
-        logicLevel.updateNeighborsAt(changed, state.getBlock());
-        for (Direction direction : DIRECTIONS) {
-            BlockPos neighbor = changed.relative(direction);
-            logicLevel.updateNeighborsAt(neighbor, state.getBlock());
+        entityByVolumeId.put(entity.volumeIdString(), entity);
+        LogicBody body = bodies.computeIfAbsent(entity.volumeIdString(), ignored -> createBody(entity));
+        body.updateWorldLevel(worldLevel);
+        body.ensureForced(logicLevel, entity.snapshot());
+        body.keepForced(logicLevel);
+
+        applyingLogicBody = true;
+        try {
+            PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
+                body.writeCells(logicLevel, updates);
+                return 0;
+            });
+            body.snapshot = entity.snapshot();
+        } finally {
+            applyingLogicBody = false;
         }
+        body.updateProjectionIndex(worldLevel, entity, entity.snapshot());
     }
 
     void syncBodyToEntity(ServerLevel worldLevel, PhysicalizedVolumeEntity entity) {
@@ -270,7 +336,9 @@ final class PhysicalizedLogicBodyRedstone {
         if (state.isAir()) {
             return 0;
         }
-        return Math.min(15, direct ? state.getDirectSignal(logicLevel, bodyPos, bodyDirection) : state.getSignal(logicLevel, bodyPos, bodyDirection));
+        return Math.min(15, PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> direct
+                ? state.getDirectSignal(logicLevel, bodyPos, bodyDirection)
+                : state.getSignal(logicLevel, bodyPos, bodyDirection)));
     }
 
     int projectedControlInputSignal(Level worldLevel, BlockPos projectedPos, Direction direction, boolean onlyDiodes) {
@@ -288,7 +356,8 @@ final class PhysicalizedLogicBodyRedstone {
 
         Direction localDirection = hit.mapping().worldFaceToLocal(direction);
         BlockPos bodyPos = hit.body().bodyPosOf(hit.cell());
-        return Math.min(15, logicLevel.getControlInputSignal(bodyPos, hit.body().preserveLocalDirection(localDirection), onlyDiodes));
+        return Math.min(15, PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(
+                () -> logicLevel.getControlInputSignal(bodyPos, hit.body().preserveLocalDirection(localDirection), onlyDiodes)));
     }
 
     BlockPos projectedLogicBodyPos(PhysicalizedVolumeEntity entity, PhysicalizedBlockSnapshot cell) {
@@ -447,8 +516,11 @@ final class PhysicalizedLogicBodyRedstone {
             ));
             applyingLogicBody = true;
             try {
-                body.clearUnshiftedReadCells(logicLevel, read);
-                body.writeSnapshot(logicLevel, next);
+                PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
+                    body.clearUnshiftedReadCells(logicLevel, read);
+                    body.writeSnapshot(logicLevel, next);
+                    return 0;
+                });
                 body.forceNextFullRead();
             } finally {
                 applyingLogicBody = false;
@@ -688,10 +760,13 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private static void notifyProjectedNeighborhood(ServerLevel level, BlockPos pos, BlockState state) {
-        level.updateNeighborsAt(pos, state.getBlock());
-        for (Direction direction : DIRECTIONS) {
-            level.updateNeighborsAt(pos.relative(direction), state.getBlock());
-        }
+        PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
+            level.updateNeighborsAt(pos, state.getBlock());
+            for (Direction direction : DIRECTIONS) {
+                level.updateNeighborsAt(pos.relative(direction), state.getBlock());
+            }
+            return 0;
+        });
     }
 
     private LogicBody createBody(PhysicalizedVolumeEntity entity) {
@@ -752,10 +827,18 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private static boolean sameCollisionGeometry(PhysicalizedVolumeSnapshot first, PhysicalizedVolumeSnapshot second) {
-        return first.sizeX() == second.sizeX()
-                && first.sizeY() == second.sizeY()
-                && first.sizeZ() == second.sizeZ()
-                && sameAabbs(first.localCollisionBoxes(), second.localCollisionBoxes())
+        if (first.sizeX() != second.sizeX()
+                || first.sizeY() != second.sizeY()
+                || first.sizeZ() != second.sizeZ()) {
+            return false;
+        }
+        // For large volumes, avoid triggering the expensive O(n) greedy merge
+        // in physicsCollisionBoxes(). Block count + size comparison is sufficient
+        // to detect structural changes that affect the collision shape.
+        if (first.blockCount() > 512 || second.blockCount() > 512) {
+            return first.blockCount() == second.blockCount();
+        }
+        return sameAabbs(first.localCollisionBoxes(), second.localCollisionBoxes())
                 && sameAabbs(first.physicsCollisionBoxes(), second.physicsCollisionBoxes());
     }
 
@@ -813,12 +896,7 @@ final class PhysicalizedLogicBodyRedstone {
     }
 
     private static boolean needsLogicBodyTick(PhysicalizedVolumeSnapshot snapshot) {
-        for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
-            if (isProjectedRedstoneState(cell.state())) {
-                return true;
-            }
-        }
-        return false;
+        return snapshot.hasRedstoneComponents();
     }
 
     private static ProjectionTopology topologyOf(PhysicalizedVolumeSnapshot snapshot) {
@@ -855,6 +933,7 @@ final class PhysicalizedLogicBodyRedstone {
         private final PhysicalizedLogicBodyMapping mapping;
         private final LongSet chunks = new LongOpenHashSet();
         private final LongSet writtenLocalCells = new LongOpenHashSet();
+        private final LongSet pendingNotifyCells = new LongOpenHashSet();
         private ResourceKey<Level> worldDimension;
         private PhysicalizedVolumeSnapshot snapshot = PhysicalizedVolumeSnapshot.EMPTY;
         private ProjectionTopology projectedTopology = ProjectionTopology.EMPTY;
@@ -917,14 +996,17 @@ final class PhysicalizedLogicBodyRedstone {
         }
 
         void notifyAllCells(ServerLevel level) {
-            for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
-                BlockPos pos = bodyPosOf(cell);
-                BlockState state = level.getBlockState(pos);
-                level.updateNeighborsAt(pos, state.getBlock());
-                for (Direction direction : DIRECTIONS) {
-                    level.updateNeighborsAt(pos.relative(direction), state.getBlock());
+            PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
+                for (PhysicalizedBlockSnapshot cell : snapshot.cells()) {
+                    BlockPos pos = bodyPosOf(cell);
+                    BlockState state = level.getBlockState(pos);
+                    level.updateNeighborsAt(pos, state.getBlock());
+                    for (Direction direction : DIRECTIONS) {
+                        level.updateNeighborsAt(pos.relative(direction), state.getBlock());
+                    }
                 }
-            }
+                return 0;
+            });
         }
 
         void ensureForced(ServerLevel level, PhysicalizedVolumeSnapshot nextSnapshot) {
@@ -988,13 +1070,23 @@ final class PhysicalizedLogicBodyRedstone {
             }
             writtenLocalCells.clear();
             writtenLocalCells.addAll(nextKeys);
+        }
 
-            for (PhysicalizedBlockSnapshot cell : next.cells()) {
-                BlockPos pos = bodyPosOf(cell);
-                BlockState state = level.getBlockState(pos);
-                level.updateNeighborsAt(pos, state.getBlock());
-                for (Direction direction : DIRECTIONS) {
-                    level.updateNeighborsAt(pos.relative(direction), state.getBlock());
+        void writeCells(ServerLevel level, List<PhysicalizedBlockSnapshot> updates) {
+            for (PhysicalizedBlockSnapshot cell : updates) {
+                BlockPos pos = bodyPosOf(cell.localX(), cell.localY(), cell.localZ());
+                BlockState state = cell.state();
+                if (state.isAir()) {
+                    level.removeBlock(pos, false);
+                } else {
+                    level.setBlock(pos, state, UPDATE_FLAGS);
+                    if (cell.hasLoadableBlockEntityNbt()) {
+                        BlockEntity blockEntity = BlockEntity.loadStatic(pos, state, cell.blockEntityNbt(), level.registryAccess());
+                        if (blockEntity != null) {
+                            level.setBlockEntity(blockEntity);
+                        }
+                    }
+                    includeWrittenCell(cell.localX(), cell.localY(), cell.localZ());
                 }
             }
         }
@@ -1116,6 +1208,30 @@ final class PhysicalizedLogicBodyRedstone {
 
         private void markDirtyCell(int localX, int localY, int localZ) {
             includeWrittenCell(localX, localY, localZ);
+            pendingNotifyCells.add(packLocal(localX, localY, localZ));
+        }
+
+        boolean hasDirtyCells() {
+            return !pendingNotifyCells.isEmpty();
+        }
+
+        void notifyDirtyCells(ServerLevel level) {
+            if (pendingNotifyCells.isEmpty()) {
+                return;
+            }
+            LongSet cells = new LongOpenHashSet(pendingNotifyCells);
+            pendingNotifyCells.clear();
+            for (long packed : cells) {
+                int lx = unpackLocalX(packed);
+                int ly = unpackLocalY(packed);
+                int lz = unpackLocalZ(packed);
+                BlockPos pos = bodyPosOf(lx, ly, lz);
+                BlockState state = level.getBlockState(pos);
+                level.updateNeighborsAt(pos, state.getBlock());
+                for (Direction direction : DIRECTIONS) {
+                    level.updateNeighborsAt(pos.relative(direction), state.getBlock());
+                }
+            }
         }
 
         private void forceNextFullRead() {

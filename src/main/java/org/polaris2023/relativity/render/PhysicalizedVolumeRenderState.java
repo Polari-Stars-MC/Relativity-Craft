@@ -14,6 +14,7 @@ import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.CompletableFuture;
 
 public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public float sizeX = 1.0F;
@@ -57,7 +58,10 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public float modelMeshSampleQz = Float.NaN;
     public float modelMeshSampleQw = Float.NaN;
     public CachedModelMesh modelMesh = CachedModelMesh.EMPTY;
+    public CachedModelMesh lastValidModelMesh = CachedModelMesh.EMPTY;
     public long lastMeshRebuildNanos;
+    public CompletableFuture<CachedModelMesh> pendingMeshFuture;
+    public PhysicalizedVolumeSnapshot pendingMeshBuildSnapshot;
     public ClientLevel clientLevel;
     public int breakLocalX = -1;
     public int breakLocalY = -1;

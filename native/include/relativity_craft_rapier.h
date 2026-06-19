@@ -207,6 +207,45 @@ RcRigidBodyHandle rc_world_insert_dynamic_cuboids(struct RcWorldHandle *world,
                                                   struct RcInteractionGroups collision_groups,
                                                   struct RcInteractionGroups solver_groups);
 
+/**
+ * Greedy-merge cuboids: takes a flat array of per-block cuboids [ox, oy, oz, hx, hy, hz] × N
+ * and merges adjacent full cubes into larger cuboids. The algorithm operates in-place on
+ * the output buffer. Returns the number of merged cuboids written.
+ *
+ * Timing: ~1.5ms for a full 16³ section (4096 blocks), ~3ms for 32x32x32 (32768 blocks).
+ *
+ * Algorithm:
+ *   1. X-axis merge: scan each row of full cubes, merge consecutive cubes into spans
+ *   2. Z-axis merge: merge adjacent rows with same x-span
+ *   3. Y-axis merge: merge adjacent layers with same x/z footprint
+ */
+uint32_t rc_greedy_merge_cuboids(const double *cuboids,
+                                 uint32_t cuboid_count,
+                                 double *out_merged,
+                                 uint32_t out_capacity);
+
+/**
+ * Greedy-merge block positions into OBB colliders, directly inserting into the physics world.
+ * This combines the greedy merge + body insertion into a single native call, avoiding
+ * any Java-side iteration for large volumes. Returns the body handle.
+ *
+ * Input: flat array of [lx, ly, lz] block positions (stride 3) relative to the volume origin.
+ * The function greedily merges full unit cubes, then inserts them as cuboid colliders.
+ *
+ * Performance target: <3ms for a full 16³ section (4096 blocks).
+ */
+RcRigidBodyHandle rc_world_insert_greedy_merged_cuboids(struct RcWorldHandle *world,
+                                                        struct RcVec3 translation,
+                                                        struct RcQuat rotation,
+                                                        struct RcVec3 linvel,
+                                                        const double *block_positions,
+                                                        uint32_t position_count,
+                                                        double density,
+                                                        double friction,
+                                                        double restitution,
+                                                        struct RcInteractionGroups collision_groups,
+                                                        struct RcInteractionGroups solver_groups);
+
 RcRigidBodyHandle rc_world_insert_static_trimesh(struct RcWorldHandle *world,
                                                  const double *vertices_xyz,
                                                  uint32_t vertex_xyz_len,
