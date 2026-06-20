@@ -328,6 +328,7 @@ final class PhysicalizedLogicBodyRedstone {
         if (logicLevel == null) {
             return;
         }
+        long gameTime = worldLevel.getGameTime();
         for (PhysicalizedVolumeEntity entity : PhysicalizedVolumeLookup.loadedVolumes(worldLevel)) {
             if (entity.isRemoved()) {
                 removeBody(worldLevel, entity);
@@ -339,7 +340,13 @@ final class PhysicalizedLogicBodyRedstone {
             }
             entityByVolumeId.put(entity.volumeIdString(), entity);
             ensureBody(worldLevel, entity);
-            syncFromLogicBody(worldLevel, entity);
+            // Throttle syncFromLogicBody for large volumes: only sync every 4 ticks
+            // for volumes >4096 blocks. Creating a full snapshot from the logic body
+            // is O(n) and causes TPS freezes / OOM for 100k+ block volumes.
+            // Redstone updates are slow enough that 5Hz sync is sufficient.
+            if (entity.snapshot().blockCount() <= 4096 || (gameTime & 3L) == 0L) {
+                syncFromLogicBody(worldLevel, entity);
+            }
         }
     }
 
@@ -528,6 +535,25 @@ final class PhysicalizedLogicBodyRedstone {
         if (next == current || (read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0 && sameSnapshot(current, next))) {
             body.snapshot = current;
             body.updateProjectionIndex(worldLevel, entity, current);
+            return;
+        }
+
+        // For volumes with non-redstone cells, merge instead of replace.
+        // readSnapshot only returns redstone-related cells from the logic body.
+        // If we replace the entity's snapshot with just those cells, all
+        // non-redstone blocks get deleted. Instead, compute which redstone
+        // cells changed and only update those.
+        boolean hasNonRedstoneCells = current.blockCount() > next.blockCount() + 64;
+        if (hasNonRedstoneCells && read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0) {
+            // Merge: update only the redstone cells that changed in the logic body.
+            // Non-redstone cells are preserved from the current snapshot.
+            List<PhysicalizedBlockSnapshot> changed = changedCells(current, next);
+            if (!changed.isEmpty()) {
+                entity.updateSnapshotCells(next, changed);
+            }
+            body.snapshot = next;
+            body.rememberWrittenCells(next);
+            body.updateProjectionIndex(worldLevel, entity, next);
             return;
         }
 
@@ -1131,7 +1157,6 @@ final class PhysicalizedLogicBodyRedstone {
 
         LogicBodySnapshotRead readSnapshot(ServerLevel level, PhysicalizedVolumeSnapshot template) {
             List<RawLogicCell> cells = new ArrayList<>();
-            LongOpenHashSet readPositions = new LongOpenHashSet();
             int minX = Integer.MAX_VALUE;
             int minY = Integer.MAX_VALUE;
             int minZ = Integer.MAX_VALUE;
@@ -1157,32 +1182,12 @@ final class PhysicalizedLogicBodyRedstone {
                     nbt = blockEntity.saveWithFullMetadata(level.registryAccess());
                 }
                 cells.add(new RawLogicCell(x, y, z, Block.getId(state), nbt));
-                readPositions.add(packLocal(x, y, z));
                 minX = Math.min(minX, x);
                 minY = Math.min(minY, y);
                 minZ = Math.min(minZ, z);
                 maxX = Math.max(maxX, x);
                 maxY = Math.max(maxY, y);
                 maxZ = Math.max(maxZ, z);
-            }
-
-            // Preserve non-redstone cells from the template that were NOT read
-            // from the logic body. The logic body only contains redstone-related
-            // blocks; without this, syncFromLogicBody would replace the entity's
-            // entire snapshot with only the redstone cells, deleting everything else.
-            for (PhysicalizedBlockSnapshot cell : template.cells()) {
-                long key = packLocal(cell.localX(), cell.localY(), cell.localZ());
-                if (!readPositions.contains(key) && !isProjectedRedstoneState(cell.state())) {
-                    cells.add(new RawLogicCell(cell.localX(), cell.localY(), cell.localZ(),
-                            cell.stateId(), cell.blockEntityNbt()));
-                    readPositions.add(key);
-                    minX = Math.min(minX, cell.localX());
-                    minY = Math.min(minY, cell.localY());
-                    minZ = Math.min(minZ, cell.localZ());
-                    maxX = Math.max(maxX, cell.localX());
-                    maxY = Math.max(maxY, cell.localY());
-                    maxZ = Math.max(maxZ, cell.localZ());
-                }
             }
 
             if (cells.isEmpty()) {
