@@ -1131,6 +1131,7 @@ final class PhysicalizedLogicBodyRedstone {
 
         LogicBodySnapshotRead readSnapshot(ServerLevel level, PhysicalizedVolumeSnapshot template) {
             List<RawLogicCell> cells = new ArrayList<>();
+            LongOpenHashSet readPositions = new LongOpenHashSet();
             int minX = Integer.MAX_VALUE;
             int minY = Integer.MAX_VALUE;
             int minZ = Integer.MAX_VALUE;
@@ -1156,12 +1157,32 @@ final class PhysicalizedLogicBodyRedstone {
                     nbt = blockEntity.saveWithFullMetadata(level.registryAccess());
                 }
                 cells.add(new RawLogicCell(x, y, z, Block.getId(state), nbt));
+                readPositions.add(packLocal(x, y, z));
                 minX = Math.min(minX, x);
                 minY = Math.min(minY, y);
                 minZ = Math.min(minZ, z);
                 maxX = Math.max(maxX, x);
                 maxY = Math.max(maxY, y);
                 maxZ = Math.max(maxZ, z);
+            }
+
+            // Preserve non-redstone cells from the template that were NOT read
+            // from the logic body. The logic body only contains redstone-related
+            // blocks; without this, syncFromLogicBody would replace the entity's
+            // entire snapshot with only the redstone cells, deleting everything else.
+            for (PhysicalizedBlockSnapshot cell : template.cells()) {
+                long key = packLocal(cell.localX(), cell.localY(), cell.localZ());
+                if (!readPositions.contains(key) && !isProjectedRedstoneState(cell.state())) {
+                    cells.add(new RawLogicCell(cell.localX(), cell.localY(), cell.localZ(),
+                            cell.stateId(), cell.blockEntityNbt()));
+                    readPositions.add(key);
+                    minX = Math.min(minX, cell.localX());
+                    minY = Math.min(minY, cell.localY());
+                    minZ = Math.min(minZ, cell.localZ());
+                    maxX = Math.max(maxX, cell.localX());
+                    maxY = Math.max(maxY, cell.localY());
+                    maxZ = Math.max(maxZ, cell.localZ());
+                }
             }
 
             if (cells.isEmpty()) {

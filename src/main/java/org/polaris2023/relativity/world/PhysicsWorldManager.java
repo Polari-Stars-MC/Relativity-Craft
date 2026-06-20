@@ -481,6 +481,13 @@ public final class PhysicsWorldManager {
         // processing initial insertions.
         private final long creationTimeNanos;
 
+        // Time when the last body was removed from this state.
+        // Used to prevent rapid shutdown-restart cycles when entities are created
+        // in quick succession (e.g., physicalize small entity, remove, physicalize large entity).
+        // The state stays alive for at least IDLE_AFTER_EMPTY_GRACE_NANOS after the
+        // last body is removed, giving the next entity time to register.
+        private long lastBodyRemovedNanos; // 0 = never had bodies, or currently has bodies
+
         private LevelPhysicsState() {
             bodyByEntityId.defaultReturnValue(0L);
             entityIdByBody.defaultReturnValue(Integer.MIN_VALUE);
@@ -814,6 +821,7 @@ public final class PhysicsWorldManager {
             bodyByEntityId.put(entity.getId(), body);
             entityIdByBody.put(body, entity.getId());
             entityByBody.put(body, new WeakReference<>(entity));
+            lastBodyRemovedNanos = 0L; // Reset idle countdown — we have bodies again
             String volumeId = entity.volumeIdString();
             if (!volumeId.isEmpty()) {
                 bodyByVolumeId.put(volumeId, body);
@@ -839,6 +847,12 @@ public final class PhysicsWorldManager {
             }
             mappingByBody.remove(body);
             terrainFootprintsByBody.remove(body);
+            // If this was the last body, start the idle grace period timer.
+            // The state won't be shut down until IDLE_AFTER_EMPTY_GRACE_NANOS
+            // has passed, giving the next entity time to register.
+            if (bodyByEntityId.isEmpty() && lastBodyRemovedNanos == 0L) {
+                lastBodyRemovedNanos = System.nanoTime();
+            }
         }
 
         private void removeVolumeBody(String volumeId, long body) {
@@ -1763,6 +1777,16 @@ public final class PhysicsWorldManager {
         // Default: 5 seconds.
         private static final long MIN_STATE_LIFETIME_NANOS = 5_000_000_000L;
 
+        // Grace period after the last body is removed before the state can be
+        // considered idle. Prevents shutdown-restart cycles when entities are
+        // created in quick succession (e.g., physicalizing a small volume,
+        // removing it, then physicalizing a large volume). Without this, the
+        // physics thread shuts down between the two physicalizations, and the
+        // second entity's insertBody() times out because the thread hasn't
+        // warmed up yet.
+        // Default: 3 seconds.
+        private static final long IDLE_AFTER_EMPTY_GRACE_NANOS = 3_000_000_000L;
+
         boolean isIdle() {
             // Don't consider the state idle if there are pending commands
             // that haven't been processed yet. Otherwise the physics ticker
@@ -1778,7 +1802,19 @@ public final class PhysicsWorldManager {
             if (System.nanoTime() - creationTimeNanos < MIN_STATE_LIFETIME_NANOS) {
                 return false;
             }
-            return bodyByEntityId.isEmpty();
+            if (!bodyByEntityId.isEmpty()) {
+                return false;
+            }
+            // State has no bodies. Don't shut down immediately — wait for the
+            // grace period in case a new entity is about to be registered.
+            // This prevents shutdown-restart cycles when entities are created
+            // in quick succession.
+            if (lastBodyRemovedNanos == 0L) {
+                // Never had any bodies; set the timer now.
+                lastBodyRemovedNanos = System.nanoTime();
+                return false;
+            }
+            return System.nanoTime() - lastBodyRemovedNanos >= IDLE_AFTER_EMPTY_GRACE_NANOS;
         }
 
         void close() {

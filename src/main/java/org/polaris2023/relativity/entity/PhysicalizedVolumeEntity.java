@@ -111,6 +111,7 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     public PhysicalizedVolumeEntity(EntityType<? extends PhysicalizedVolumeEntity> type, Level level) {
         super(type, level);
         this.blocksBuilding = true;
+        this.creationTick = level.getGameTime();
     }
 
     public void configure(UUID volumeId, BlockBox sourceBox, int blockCount) {
@@ -1077,6 +1078,16 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private boolean discardIfEmpty() {
         if (this.isRemoved() || this.currentSnapshot().blockCount() > 0) {
             return false;
+        }
+        // Grace period: don't discard newly-created entities before they've had
+        // time to receive snapshot data from the server (or spawn data on client).
+        // Without this, entities created during physics state transitions can be
+        // discarded on their first tick before the snapshot arrives.
+        if (this.creationTick != Long.MIN_VALUE) {
+            long age = this.level().getGameTime() - this.creationTick;
+            if (age < DISCARD_GRACE_TICKS) {
+                return false;
+            }
         }
         this.discard();
         return true;
