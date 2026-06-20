@@ -2,14 +2,13 @@ package org.polaris2023.relativity.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import org.polaris2023.relativity.celestial.CelestialBody;
+import org.polaris2023.relativity.celestial.CelestialBodyNetwork;
 import org.polaris2023.relativity.celestial.CelestialBodyRegistry;
 import org.polaris2023.relativity.enclave.Enclave;
-import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeHandle;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
-import org.polaris2023.relativity.registry.ModEntityTypes;
 import org.polaris2023.relativity.registry.ModItems;
 import org.polaris2023.relativity.selection.SelectionManager;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
@@ -20,7 +19,6 @@ import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
-import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.item.ItemStack;
 
 import java.util.UUID;
@@ -107,6 +105,11 @@ public final class RelativityCommands {
         body.setPos(selection.minX(), selection.minY(), selection.minZ());
         registry.register(body);
         PhysicsWorldManager.global().registerCelestialBody(level, body);
+
+        // 4b. Send the celestial body to the player so they can see it.
+        //     CelestialBody is not an Entity, so it doesn't get automatic
+        //     entity tracking. We must explicitly send init data to the player.
+        CelestialBodyNetwork.sendInit(player, body);
 
         // 5. Clean up the VirtualAirMask now that the body handles collision.
         //    The mask was needed during the window between block removal and entity
