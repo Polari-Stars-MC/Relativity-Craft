@@ -2,7 +2,6 @@ package org.polaris2023.relativity.command;
 
 import com.mojang.brigadier.CommandDispatcher;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
-import org.polaris2023.relativity.physicalization.BlockRemovalQueue;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeHandle;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
@@ -13,6 +12,7 @@ import org.polaris2023.relativity.selection.SelectionManager;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.core.BlockPos;
 import net.minecraft.core.registries.BuiltInRegistries;
 import net.minecraft.network.chat.Component;
 import net.minecraft.server.level.ServerLevel;
@@ -78,7 +78,21 @@ public final class RelativityCommands {
             return 0;
         }
 
+        // 1. Register virtual air mask BEFORE anything else — this tells the terrain
+        //    builder to skip blocks in this area so terrain colliders don't collide
+        //    with the entity's physics body.
         PhysicalizedVolumeHandle handle = VOLUMES.submit(dimensionId, selection, System.nanoTime());
+
+        // 2. Immediately remove old terrain sections that overlap with the selection.
+        //    This prevents the physics body from colliding with stale terrain meshes.
+        PhysicsWorldManager.global().removeTerrainInBox(level, selection);
+
+        // 3. Remove original blocks from the world immediately (not queued).
+        //    This is synchronous but necessary to prevent the entity from colliding
+        //    with its own blocks via Minecraft's getBlockCollisions().
+        removeBlocksNow(level, selection);
+
+        // 4. Create the entity and add it to the world.
         PhysicalizedVolumeEntity entity = ModEntityTypes.PHYSICALIZED_VOLUME.get().create(level, EntitySpawnReason.COMMAND);
         if (entity == null) {
             source.sendFailure(Component.literal("Failed to create physicalized volume entity."));
@@ -89,9 +103,25 @@ public final class RelativityCommands {
         entity.setPos(selection.centerX(), selection.minY(), selection.centerZ());
         level.addFreshEntity(entity);
         PhysicsWorldManager.global().register(entity);
-        BlockRemovalQueue.global().enqueue(dimensionId, selection, handle.id());
 
         return 1;
+    }
+
+    private static void removeBlocksNow(ServerLevel level, BlockBox box) {
+        BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
+        int removeFlags = net.minecraft.world.level.block.Block.UPDATE_CLIENTS
+                | net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
+                | net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
+        for (int y = box.minY(); y <= box.maxY(); y++) {
+            for (int z = box.minZ(); z <= box.maxZ(); z++) {
+                for (int x = box.minX(); x <= box.maxX(); x++) {
+                    pos.set(x, y, z);
+                    if (!level.getBlockState(pos).isAir()) {
+                        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), removeFlags);
+                    }
+                }
+            }
+        }
     }
 
     private static int saturatedVolume(BlockBox selection) {

@@ -256,10 +256,11 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             // For mid-distance large volumes, still render but use the cached mesh
             // (which may be simplified or built asynchronously)
             submitCapturedBlocks(state, poseStack, submitNodeCollector, camera, rotation, centerYOffset);
-        } else if (isLargeVolume && camDist > LOD_FAR_DISTANCE && !state.cells.isEmpty()) {
-            // Even for distant large volumes, render a bounding box wireframe so the
-            // entity is never completely invisible. This prevents the "large entities
-            // have no rendering" issue when the player is far away.
+        } else if ((isLargeVolume && camDist > LOD_FAR_DISTANCE && !state.cells.isEmpty())
+                || (isLargeVolume && state.cells.isEmpty())) {
+            // Render a bounding box wireframe for distant large volumes, AND for
+            // large volumes whose cells haven't arrived yet (spawn data still in
+            // transit). This prevents the entity from being completely invisible.
             renderBoundingBoxWireframe(state, poseStack, submitNodeCollector, rotation, centerYOffset);
         }
         poseStack.popPose();

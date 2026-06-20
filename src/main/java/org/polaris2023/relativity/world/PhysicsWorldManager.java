@@ -10,6 +10,7 @@ import org.polaris2023.relativity.nativeaccess.RapierNativeWorld;
 import org.polaris2023.relativity.nativeaccess.RelativityCraftRapier;
 import net.minecraft.world.phys.Vec3;
 import org.polaris2023.relativity.physicalization.ChunkSectionKey;
+import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import net.minecraft.core.BlockPos;
@@ -368,6 +369,21 @@ public final class PhysicsWorldManager {
 
     public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance) {
         pushBodies(level, sweptBox, direction, distance, null);
+    }
+
+    /**
+     * Immediately removes all terrain sections whose bounding boxes intersect the
+     * given BlockBox. Used before physicalizing a new volume to prevent the physics
+     * body from colliding with stale terrain that still contains the original blocks.
+     */
+    public void removeTerrainInBox(ServerLevel level, BlockBox box) {
+        if (!RelativityCraft.isRapierAvailable()) {
+            return;
+        }
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        if (state != null) {
+            state.removeTerrainInBox(level, box);
+        }
     }
 
     public void pushBodies(ServerLevel level, AABB sweptBox, Direction direction, double distance, PhysicalizedVolumeEntity excluded) {
@@ -1523,6 +1539,45 @@ public final class PhysicsWorldManager {
         private void buildTerrainImmediately(ServerLevel level, AABB box) {
             requestTerrainAround(level, box, true, true);
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, System.nanoTime() + PRIORITY_TERRAIN_BUILD_BUDGET_NANOS);
+            // Immediately remove any remaining old terrain sections that overlap with
+            // the box but weren't rebuilt yet (budget ran out). Without this, the old
+            // terrain colliders persist and the newly inserted physics body collides
+            // with them, causing the entity to sink into the ground or fly away.
+            // The new terrain meshes will be built in background drains on subsequent ticks.
+            removeTerrainInBox(level, box);
+        }
+
+        /**
+         * Immediately removes all terrain sections whose bounding boxes intersect the
+         * given BlockBox/AABB. Used before inserting a new physics body to prevent
+         * collision with stale terrain that hasn't been rebuilt yet.
+         */
+        void removeTerrainInBox(ServerLevel level, BlockBox box) {
+            removeTerrainInBox(level, new AABB(box.minX(), box.minY(), box.minZ(),
+                    box.maxX() + 1.0, box.maxY() + 1.0, box.maxZ() + 1.0));
+        }
+
+        private void removeTerrainInBox(ServerLevel level, AABB box) {
+            String dimensionId = PhysicsWorldManager.dimensionId(level);
+            int minSectionX = ChunkSectionKey.floorDiv16((int) Math.floor(box.minX));
+            int minSectionY = ChunkSectionKey.floorDiv16(Math.max(level.getMinY(), (int) Math.floor(box.minY)));
+            int minSectionZ = ChunkSectionKey.floorDiv16((int) Math.floor(box.minZ));
+            int maxSectionX = ChunkSectionKey.floorDiv16((int) Math.ceil(box.maxX));
+            int maxSectionY = ChunkSectionKey.floorDiv16(Math.min(level.getMaxY() - 1, (int) Math.ceil(box.maxY)));
+            int maxSectionZ = ChunkSectionKey.floorDiv16((int) Math.ceil(box.maxZ));
+            for (int sy = minSectionY; sy <= maxSectionY; sy++) {
+                for (int sz = minSectionZ; sz <= maxSectionZ; sz++) {
+                    for (int sx = minSectionX; sx <= maxSectionX; sx++) {
+                        ChunkSectionKey key = new ChunkSectionKey(dimensionId, sx, sy, sz);
+                        // Only remove sections that are NOT already being rebuilt
+                        // (those will be replaced by drainTerrainJobs).
+                        if (!priorityQueuedSections.contains(key)) {
+                            terrain.removeSection(key);
+                            requestedTerrainSections.remove(key);
+                        }
+                    }
+                }
+            }
         }
 
         private void cancelQueuedBuild(ChunkSectionKey key) {
