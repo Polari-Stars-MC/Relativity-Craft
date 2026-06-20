@@ -1,6 +1,7 @@
 package org.polaris2023.relativity.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import org.polaris2023.relativity.RelativityCraft;
 import org.polaris2023.relativity.celestial.CelestialBody;
 import org.polaris2023.relativity.celestial.CelestialBodyNetwork;
 import org.polaris2023.relativity.celestial.CelestialBodyRegistry;
@@ -8,7 +9,6 @@ import org.polaris2023.relativity.enclave.Enclave;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeHandle;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeManager;
-import org.polaris2023.relativity.physicalization.PhysicalizedVolumeSnapshot;
 import org.polaris2023.relativity.registry.ModItems;
 import org.polaris2023.relativity.selection.SelectionManager;
 import org.polaris2023.relativity.world.PhysicsWorldManager;
@@ -73,31 +73,26 @@ public final class RelativityCommands {
 
         ServerLevel level = source.getLevel();
         String dimensionId = level.dimension().identifier().toString();
-        PhysicalizedVolumeSnapshot snapshot;
-        try {
-            snapshot = PhysicalizedVolumeSnapshot.capture(level, selection);
-        } catch (IllegalArgumentException ex) {
-            source.sendFailure(Component.literal("Failed to physicalize selection: " + ex.getMessage()));
+
+        // 1. Capture blocks from the world BEFORE removing them.
+        //    Use Enclave.fromWorld for direct palette-compressed storage.
+        Enclave enclave = Enclave.fromWorld(level, selection);
+        if (enclave.blockCount() == 0) {
+            source.sendFailure(Component.literal("Selection contains no blocks."));
             return 0;
         }
+        RelativityCraft.LOGGER.info("Physicalizing {} blocks from {}...", enclave.blockCount(), selection);
 
-        // 1. Register virtual air mask BEFORE anything else — this tells the terrain
-        //    builder to skip blocks in this area so terrain colliders don't collide
-        //    with the entity's physics body.
+        // 2. Register virtual air mask.
         PhysicalizedVolumeHandle handle = VOLUMES.submit(dimensionId, selection, System.nanoTime());
 
-        // 2. Immediately remove old terrain sections that overlap with the selection.
-        //    This prevents the physics body from colliding with stale terrain meshes.
+        // 3. Remove old terrain sections.
         PhysicsWorldManager.global().removeTerrainInBox(level, selection);
 
-        // 3. Remove original blocks from the world immediately (not queued).
-        //    This is synchronous but necessary to prevent the entity from colliding
-        //    with its own blocks via Minecraft's getBlockCollisions().
+        // 4. Remove original blocks from the world.
         removeBlocksNow(level, selection);
 
-        // 4. Create the celestial body — the new standalone (non-Entity) architecture.
-        //    Uses Enclave for palette-compressed block storage and a single OBB collider.
-        Enclave enclave = Enclave.fromSnapshot(snapshot);
+        // 5. Create and register the celestial body.
         CelestialBodyRegistry registry = CelestialBodyRegistry.of(level);
         int celestialId = registry.nextId();
         UUID celestialUuid = handle.id();
@@ -106,16 +101,12 @@ public final class RelativityCommands {
         registry.register(body);
         PhysicsWorldManager.global().registerCelestialBody(level, body);
 
-        // 4b. Send the celestial body to the player so they can see it.
-        //     CelestialBody is not an Entity, so it doesn't get automatic
-        //     entity tracking. We must explicitly send init data to the player.
+        // 6. Send to the player.
         CelestialBodyNetwork.sendInit(player, body);
+        RelativityCraft.LOGGER.info("Created CelestialBody id={} with {} blocks, sent init to {}",
+                celestialId, body.blockCount(), player.getName().getString());
 
-        // 5. Clean up the VirtualAirMask now that the body handles collision.
-        //    The mask was needed during the window between block removal and entity
-        //    creation to prevent terrain colliders from being rebuilt with old blocks.
-        //    Once the entity exists and terrain is rebuilt around it, the mask is
-        //    no longer needed and must be removed to allow future terrain rebuilds.
+        // 7. Clean up VirtualAirMask.
         VOLUMES.virtualAirMask().remove(handle.id());
 
         return 1;
