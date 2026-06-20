@@ -108,24 +108,34 @@ public final class RelativityCommands {
     }
 
     private static void removeBlocksNow(ServerLevel level, BlockBox box) {
+        // Use direct chunk-level block setting for performance.
+        // level.setBlock() triggers lighting, neighbor updates, and chunk dirty
+        // marking for each call. For 100k blocks this is prohibitively slow.
+        // Instead, we directly manipulate the chunk's block storage and mark
+        // chunks as dirty in bulk at the end.
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        // Use UPDATE_SUPPRESS_DROPS | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS to avoid
-        // expensive drop calculations and block entity side effects.
-        // UPDATE_CLIENTS is NOT included — the client will receive chunk updates
-        // naturally when the chunks are re-sent. This avoids sending 100k individual
-        // block change packets.
-        int removeFlags = net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
-                | net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
-                | net.minecraft.world.level.block.Block.UPDATE_INVISIBLE;
+        net.minecraft.world.level.block.state.BlockState airState = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+        java.util.HashSet<net.minecraft.world.level.chunk.LevelChunk> dirtyChunks = new java.util.HashSet<>();
+
         for (int y = box.minY(); y <= box.maxY(); y++) {
             for (int z = box.minZ(); z <= box.maxZ(); z++) {
                 for (int x = box.minX(); x <= box.maxX(); x++) {
                     pos.set(x, y, z);
-                    if (!level.getBlockState(pos).isAir()) {
-                        level.setBlock(pos, net.minecraft.world.level.block.Blocks.AIR.defaultBlockState(), removeFlags);
+                    if (level.isOutsideBuildHeight(pos)) continue;
+                    net.minecraft.world.level.chunk.LevelChunk chunk = level.getChunkAt(pos);
+                    net.minecraft.world.level.block.state.BlockState current = chunk.getBlockState(pos);
+                    if (!current.isAir()) {
+                        // Set block directly in the chunk without triggering updates
+                        chunk.setBlockState(pos, airState, 0);
+                        dirtyChunks.add(chunk);
                     }
                 }
             }
+        }
+
+        // Mark all affected chunks as dirty so they get saved and synced to clients
+        for (net.minecraft.world.level.chunk.LevelChunk chunk : dirtyChunks) {
+            chunk.markUnsaved();
         }
     }
 

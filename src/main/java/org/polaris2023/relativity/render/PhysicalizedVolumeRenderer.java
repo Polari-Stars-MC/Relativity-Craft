@@ -167,7 +167,10 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         state.qy = visualPose.qy();
         state.qz = visualPose.qz();
         state.qw = visualPose.qw();
-        state.blockCount = renderSnapshot.blockCount();
+        // Use entity.blockCount() which comes from attached data and is synced
+        // separately from the snapshot. On the client, the snapshot may be empty
+        // (spawn data too large / not arrived yet) but blockCount is known.
+        state.blockCount = Math.max(renderSnapshot.blockCount(), entity.blockCount());
         state.volumeId = entity.volumeIdString();
         if (!state.volumeId.equals(state.blockEntityCacheVolumeId)) {
             state.blockEntityCache.clear();
