@@ -895,9 +895,25 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         this.snapshot.write(output);
     }
 
+    private static final int LARGE_SPAWN_THRESHOLD = 4096;
+
     @Override
     public void writeSpawnData(RegistryFriendlyByteBuf buffer) {
-        this.snapshot.write(buffer);
+        // For large volumes (>4096 blocks), the full snapshot would exceed
+        // Minecraft's ~2MB packet size limit, causing the spawn packet to be
+        // dropped and the entity to never appear on the client.
+        // Instead, write a compact header and send the snapshot separately
+        // via PhysicalizedInteractionNetwork.sendSnapshot().
+        if (this.snapshot.blockCount() > LARGE_SPAWN_THRESHOLD) {
+            buffer.writeBoolean(true); // isLargeSpawn flag
+            buffer.writeVarInt(0); // placeholder cell count
+            buffer.writeVarInt(this.snapshot.sizeX());
+            buffer.writeVarInt(this.snapshot.sizeY());
+            buffer.writeVarInt(this.snapshot.sizeZ());
+        } else {
+            buffer.writeBoolean(false); // isLargeSpawn flag
+            this.snapshot.write(buffer);
+        }
         buffer.writeFloat((float) this.localOriginX());
         buffer.writeFloat((float) this.localOriginY());
         buffer.writeFloat((float) this.localOriginZ());
@@ -913,7 +929,18 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public void readSpawnData(RegistryFriendlyByteBuf additionalData) {
-        PhysicalizedVolumeSnapshot snapshot = PhysicalizedVolumeSnapshot.read(additionalData);
+        boolean isLargeSpawn = additionalData.readBoolean();
+        PhysicalizedVolumeSnapshot snapshot;
+        if (isLargeSpawn) {
+            // Large entity: snapshot sent separately. Read placeholder.
+            int cellCount = additionalData.readVarInt(); // 0
+            int sizeX = additionalData.readVarInt();
+            int sizeY = additionalData.readVarInt();
+            int sizeZ = additionalData.readVarInt();
+            snapshot = new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, List.of());
+        } else {
+            snapshot = PhysicalizedVolumeSnapshot.read(additionalData);
+        }
         Vec3 localOrigin = new Vec3(additionalData.readFloat(), additionalData.readFloat(), additionalData.readFloat());
         Vec3 entityCenter = new Vec3(additionalData.readDouble(), additionalData.readDouble(), additionalData.readDouble());
         this.receiveSnapshotAtPose(

@@ -39,6 +39,7 @@ public final class PhysicalizedInteractionNetwork {
     public static void registerPayloads(RegisterPayloadHandlersEvent event) {
         event.registrar("1")
                 .playToClient(SnapshotPayload.TYPE, SnapshotPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleSnapshot)
+                .playToClient(SnapshotChunkPayload.TYPE, SnapshotChunkPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleSnapshotChunk)
                 .playToClient(CellUpdatesPayload.TYPE, CellUpdatesPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleCellUpdates)
                 .playToClient(BreakOverlayPayload.TYPE, BreakOverlayPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleBreakOverlay)
                 .playToClient(ContainerOpenPayload.TYPE, ContainerOpenPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handleContainerOpen)
@@ -47,25 +48,69 @@ public final class PhysicalizedInteractionNetwork {
                 .playToServer(PickCommandPayload.TYPE, PickCommandPayload.STREAM_CODEC, PhysicalizedInteractionNetwork::handlePickCommand);
     }
 
+    // Maximum cells per snapshot packet. For 100k blocks, we split into ~50 packets
+    // of 2000 cells each (~40KB per packet, well under the 2MB limit).
+    private static final int MAX_CELLS_PER_SNAPSHOT_PACKET = 2000;
+
     public static void sendSnapshot(PhysicalizedVolumeEntity entity) {
+        PhysicalizedVolumeSnapshot snapshot = entity.snapshot();
         Vec3 entityCenter = entity.entityCenter();
-        PacketDistributor.sendToPlayersTrackingEntityAndSelf(
-                entity,
-                new SnapshotPayload(
-                        entity.getId(),
-                        entity.snapshot(),
-                        entity.localOriginX(),
-                        entity.localOriginY(),
-                        entity.localOriginZ(),
-                        entityCenter.x,
-                        entityCenter.y,
-                        entityCenter.z,
-                        entity.rotationQx(),
-                        entity.rotationQy(),
-                        entity.rotationQz(),
-                        entity.rotationQw()
-                )
-        );
+        int totalCells = snapshot.blockCount();
+
+        // For large snapshots, split into multiple packets to avoid exceeding
+        // Minecraft's ~2MB packet size limit. Each chunk carries a subset of cells.
+        if (totalCells > MAX_CELLS_PER_SNAPSHOT_PACKET) {
+            List<PhysicalizedBlockSnapshot> allCells = snapshot.cells();
+            int totalChunks = (totalCells + MAX_CELLS_PER_SNAPSHOT_PACKET - 1) / MAX_CELLS_PER_SNAPSHOT_PACKET;
+            int sizeX = snapshot.sizeX();
+            int sizeY = snapshot.sizeY();
+            int sizeZ = snapshot.sizeZ();
+
+            for (int chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+                int fromIndex = chunkIndex * MAX_CELLS_PER_SNAPSHOT_PACKET;
+                int toIndex = Math.min(fromIndex + MAX_CELLS_PER_SNAPSHOT_PACKET, totalCells);
+                List<PhysicalizedBlockSnapshot> chunkCells = allCells.subList(fromIndex, toIndex);
+
+                PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                        entity,
+                        new SnapshotChunkPayload(
+                                entity.getId(),
+                                chunkIndex,
+                                totalChunks,
+                                sizeX, sizeY, sizeZ,
+                                List.copyOf(chunkCells),
+                                entity.localOriginX(),
+                                entity.localOriginY(),
+                                entity.localOriginZ(),
+                                entityCenter.x,
+                                entityCenter.y,
+                                entityCenter.z,
+                                entity.rotationQx(),
+                                entity.rotationQy(),
+                                entity.rotationQz(),
+                                entity.rotationQw()
+                        )
+                );
+            }
+        } else {
+            PacketDistributor.sendToPlayersTrackingEntityAndSelf(
+                    entity,
+                    new SnapshotPayload(
+                            entity.getId(),
+                            snapshot,
+                            entity.localOriginX(),
+                            entity.localOriginY(),
+                            entity.localOriginZ(),
+                            entityCenter.x,
+                            entityCenter.y,
+                            entityCenter.z,
+                            entity.rotationQx(),
+                            entity.rotationQy(),
+                            entity.rotationQz(),
+                            entity.rotationQw()
+                    )
+            );
+        }
     }
 
     public static void sendCellUpdates(PhysicalizedVolumeEntity entity, List<PhysicalizedBlockSnapshot> updates) {
@@ -103,6 +148,44 @@ public final class PhysicalizedInteractionNetwork {
                     payload.qy(),
                     payload.qz(),
                     payload.qw()
+            );
+        }
+    }
+
+    // Per-entity buffer for reassembling chunked snapshots on the client.
+    // Key: entityId, Value: list of cell batches received so far.
+    private static final java.util.Map<Integer, java.util.List<List<PhysicalizedBlockSnapshot>>> snapshotChunkBuffers = new java.util.HashMap<>();
+
+    private static void handleSnapshotChunk(SnapshotChunkPayload payload, IPayloadContext context) {
+        Entity entity = context.player().level().getEntity(payload.entityId());
+        if (!(entity instanceof PhysicalizedVolumeEntity volume)) {
+            return;
+        }
+
+        int entityId = payload.entityId();
+        java.util.List<List<PhysicalizedBlockSnapshot>> buffer = snapshotChunkBuffers.computeIfAbsent(
+                entityId, k -> new java.util.ArrayList<>(payload.totalChunks()));
+        // Ensure buffer is large enough
+        while (buffer.size() <= payload.chunkIndex()) {
+            buffer.add(null);
+        }
+        buffer.set(payload.chunkIndex(), payload.cells());
+
+        // Check if all chunks have arrived
+        if (buffer.size() == payload.totalChunks() && buffer.stream().allMatch(c -> c != null)) {
+            snapshotChunkBuffers.remove(entityId);
+            // Reassemble all cells into a single list
+            List<PhysicalizedBlockSnapshot> allCells = new java.util.ArrayList<>(payload.totalChunks() * 2000);
+            for (List<PhysicalizedBlockSnapshot> chunk : buffer) {
+                allCells.addAll(chunk);
+            }
+            PhysicalizedVolumeSnapshot snapshot = new PhysicalizedVolumeSnapshot(
+                    payload.sizeX(), payload.sizeY(), payload.sizeZ(), allCells);
+            volume.receiveSnapshotAtPose(
+                    snapshot,
+                    new Vec3(payload.localOriginX(), payload.localOriginY(), payload.localOriginZ()),
+                    new Vec3(payload.entityCenterX(), payload.entityCenterY(), payload.entityCenterZ()),
+                    payload.qx(), payload.qy(), payload.qz(), payload.qw()
             );
         }
     }
@@ -368,6 +451,93 @@ public final class PhysicalizedInteractionNetwork {
         private void write(RegistryFriendlyByteBuf buffer) {
             buffer.writeVarInt(entityId);
             snapshot.write(buffer);
+            buffer.writeDouble(localOriginX);
+            buffer.writeDouble(localOriginY);
+            buffer.writeDouble(localOriginZ);
+            buffer.writeDouble(entityCenterX);
+            buffer.writeDouble(entityCenterY);
+            buffer.writeDouble(entityCenterZ);
+            buffer.writeFloat(qx);
+            buffer.writeFloat(qy);
+            buffer.writeFloat(qz);
+            buffer.writeFloat(qw);
+        }
+
+        @Override
+        public Type<? extends CustomPacketPayload> type() {
+            return TYPE;
+        }
+    }
+
+    /**
+     * Chunked snapshot payload for large entities (>2000 cells).
+     * The full snapshot is split across multiple packets, each carrying
+     * a subset of cells. The client reassembles them into the full snapshot.
+     */
+    public record SnapshotChunkPayload(
+            int entityId,
+            int chunkIndex,
+            int totalChunks,
+            int sizeX,
+            int sizeY,
+            int sizeZ,
+            List<PhysicalizedBlockSnapshot> cells,
+            double localOriginX,
+            double localOriginY,
+            double localOriginZ,
+            double entityCenterX,
+            double entityCenterY,
+            double entityCenterZ,
+            float qx,
+            float qy,
+            float qz,
+            float qw
+    ) implements CustomPacketPayload {
+        public static final CustomPacketPayload.Type<SnapshotChunkPayload> TYPE = new CustomPacketPayload.Type<>(
+                Identifier.fromNamespaceAndPath(RelativityCraft.MOD_ID, "physicalized_snapshot_chunk")
+        );
+        public static final StreamCodec<RegistryFriendlyByteBuf, SnapshotChunkPayload> STREAM_CODEC = StreamCodec.of(
+                (buffer, payload) -> payload.write(buffer),
+                SnapshotChunkPayload::read
+        );
+
+        private static SnapshotChunkPayload read(RegistryFriendlyByteBuf buffer) {
+            int entityId = buffer.readVarInt();
+            int chunkIndex = buffer.readVarInt();
+            int totalChunks = buffer.readVarInt();
+            int sizeX = buffer.readVarInt();
+            int sizeY = buffer.readVarInt();
+            int sizeZ = buffer.readVarInt();
+            int count = buffer.readVarInt();
+            List<PhysicalizedBlockSnapshot> cells = new ArrayList<>(Math.min(count, 4096));
+            for (int i = 0; i < count; i++) {
+                cells.add(new PhysicalizedBlockSnapshot(
+                        buffer.readVarInt(), buffer.readVarInt(), buffer.readVarInt(),
+                        buffer.readVarInt(), buffer.readNbt()));
+            }
+            return new SnapshotChunkPayload(
+                    entityId, chunkIndex, totalChunks, sizeX, sizeY, sizeZ, cells,
+                    buffer.readDouble(), buffer.readDouble(), buffer.readDouble(),
+                    buffer.readDouble(), buffer.readDouble(), buffer.readDouble(),
+                    buffer.readFloat(), buffer.readFloat(), buffer.readFloat(), buffer.readFloat()
+            );
+        }
+
+        private void write(RegistryFriendlyByteBuf buffer) {
+            buffer.writeVarInt(entityId);
+            buffer.writeVarInt(chunkIndex);
+            buffer.writeVarInt(totalChunks);
+            buffer.writeVarInt(sizeX);
+            buffer.writeVarInt(sizeY);
+            buffer.writeVarInt(sizeZ);
+            buffer.writeVarInt(cells.size());
+            for (PhysicalizedBlockSnapshot cell : cells) {
+                buffer.writeVarInt(cell.localX());
+                buffer.writeVarInt(cell.localY());
+                buffer.writeVarInt(cell.localZ());
+                buffer.writeVarInt(cell.stateId());
+                buffer.writeNbt(cell.blockEntityNbt());
+            }
             buffer.writeDouble(localOriginX);
             buffer.writeDouble(localOriginY);
             buffer.writeDouble(localOriginZ);
