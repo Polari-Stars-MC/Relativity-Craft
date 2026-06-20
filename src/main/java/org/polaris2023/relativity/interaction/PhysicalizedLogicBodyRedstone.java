@@ -283,9 +283,29 @@ final class PhysicalizedLogicBodyRedstone {
         try {
             PhysicalizedRedstoneMapping.withProjectedSignalQueriesSuppressed(() -> {
                 body.writeCells(logicLevel, updates);
+                // Bug fix: ensure the logic body has a COMPLETE copy of the entity snapshot.
+                // writeCells() only writes the changed cells and adds them to writtenLocalCells.
+                // But writtenLocalCells may be missing cells that were added to the entity
+                // without going through this path (e.g., cells added by ensureBody's
+                // incremental diff). If we set body.snapshot = entity.snapshot() without
+                // writing the missing cells, the next readSnapshot() will only read from
+                // writtenLocalCells + redstone neighbors, causing non-redstone blocks to
+                // disappear from the entity when syncFromLogicBody replaces the snapshot.
+                PhysicalizedVolumeSnapshot entitySnapshot = entity.snapshot();
+                List<PhysicalizedBlockSnapshot> missing = new ArrayList<>();
+                for (PhysicalizedBlockSnapshot cell : entitySnapshot.cells()) {
+                    long packed = packLocal(cell.localX(), cell.localY(), cell.localZ());
+                    if (!body.writtenLocalCells.contains(packed)) {
+                        missing.add(cell);
+                    }
+                }
+                if (!missing.isEmpty()) {
+                    body.writeCells(logicLevel, missing);
+                }
                 return 0;
             });
             body.snapshot = entity.snapshot();
+            body.rememberWrittenCells(entity.snapshot());
         } finally {
             applyingLogicBody = false;
         }

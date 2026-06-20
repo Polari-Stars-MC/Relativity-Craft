@@ -1,6 +1,7 @@
 package org.polaris2023.relativity.world;
 
 import org.polaris2023.relativity.RelativityCraft;
+import org.polaris2023.relativity.celestial.CelestialBody;
 import org.polaris2023.relativity.entity.EnclaveEntity;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.fluid.FluidDomainManager;
@@ -293,6 +294,51 @@ public final class PhysicsWorldManager {
         LevelPhysicsState state = levels.get(dimensionId(level));
         if (state != null && entity.nativeHandle() != 0L) {
             state.commandQueue.submit(new PhysicsCommand.WakeUp(entity.nativeHandle()));
+        }
+    }
+
+    // ---- CelestialBody physics integration ----
+
+    public boolean registerCelestialBody(ServerLevel level, CelestialBody body) {
+        if (body.isRemoved()) return false;
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return false;
+        }
+
+        LevelPhysicsState state = levels.computeIfAbsent(dimensionId(level), ignored -> new LevelPhysicsState());
+        return state.registerCelestialBody(level, body);
+    }
+
+    public void unregisterCelestialBody(ServerLevel level, CelestialBody body) {
+        String dimId = dimensionId(level);
+        LevelPhysicsState state = levels.get(dimId);
+        if (state != null) {
+            state.unregisterCelestialBody(level, body);
+            closeIdleState(dimId, state);
+        }
+        body.setNativeHandle(0L);
+    }
+
+    public boolean rebuildCelestialBody(ServerLevel level, CelestialBody body, boolean wake) {
+        if (body.isRemoved()) return false;
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        if (state == null) return false;
+        return state.rebuildCelestialBody(level, body, wake);
+    }
+
+    /** Wake a celestial body's physics body. */
+    public void wakeBody(ServerLevel level, CelestialBody body) {
+        if (body.isRemoved()) return;
+        if (!RelativityCraft.isRapierAvailable()) {
+            warnNativeUnavailableOnce();
+            return;
+        }
+
+        LevelPhysicsState state = levels.get(dimensionId(level));
+        if (state != null && body.nativeHandle() != 0L) {
+            state.commandQueue.submit(new PhysicsCommand.WakeUp(body.nativeHandle()));
         }
     }
 
@@ -612,6 +658,99 @@ public final class PhysicsWorldManager {
                     "",
                     center.x, center.y, center.z,
                     entity.rotQx(), entity.rotQy(), entity.rotQz(), entity.rotQw(),
+                    Vec3.ZERO,
+                    cuboids, 1,
+                    density, 0.75, 0.05,
+                    future
+            ));
+
+            try {
+                return future.get(50L, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (Exception e) {
+                return 0L;
+            }
+        }
+
+        // ---- CelestialBody physics ----
+
+        boolean registerCelestialBody(ServerLevel level, CelestialBody body) {
+            long existing = bodyByEntityId.get(body.id());
+            if (existing != 0L) {
+                body.setNativeHandle(existing);
+                return true;
+            }
+
+            AABB bounds = body.getBoundingBox(level.getGameTime());
+            buildTerrainImmediately(level, bounds);
+
+            long handle = insertCelestialBody(body);
+            if (handle == 0L) return false;
+
+            bodyByEntityId.put(body.id(), handle);
+            entityIdByBody.put(handle, body.id());
+            body.setNativeHandle(handle);
+            mappingByBody.put(handle, RuntimeBodyMapping.dynamic(body.id(), "", handle));
+            updateBodyChunkIndex(handle, bounds, null);
+            zeroBodyMotion(handle);
+            requestTerrainAroundBody(level, handle, bounds, false, false);
+            return true;
+        }
+
+        void unregisterCelestialBody(ServerLevel level, CelestialBody body) {
+            long handle = body.nativeHandle();
+            if (handle == 0L) {
+                bodyByEntityId.remove(body.id());
+                return;
+            }
+            bodyByEntityId.remove(body.id());
+            entityIdByBody.remove(handle);
+            removeBodyFromChunkIndex(handle);
+            mappingByBody.remove(handle);
+            commandQueue.submit(new PhysicsCommand.RemoveBody(handle));
+        }
+
+        boolean rebuildCelestialBody(ServerLevel level, CelestialBody body, boolean wake) {
+            long oldBody = body.nativeHandle();
+            if (oldBody != 0L) {
+                bodyByEntityId.remove(body.id());
+                entityIdByBody.remove(oldBody);
+                removeBodyFromChunkIndex(oldBody);
+                mappingByBody.remove(oldBody);
+                commandQueue.submit(new PhysicsCommand.RemoveBody(oldBody));
+                body.setNativeHandle(0L);
+            }
+
+            AABB bounds = body.getBoundingBox(level.getGameTime());
+            buildTerrainImmediately(level, bounds);
+
+            long newBody = insertCelestialBody(body);
+            if (newBody == 0L) return false;
+
+            bodyByEntityId.put(body.id(), newBody);
+            entityIdByBody.put(newBody, body.id());
+            body.setNativeHandle(newBody);
+            mappingByBody.put(newBody, RuntimeBodyMapping.dynamic(body.id(), "", newBody));
+            updateBodyChunkIndex(newBody, bounds, null);
+            if (wake) commandQueue.submit(new PhysicsCommand.WakeUp(newBody));
+            requestTerrainAroundBody(level, newBody, bounds, false, false);
+            return true;
+        }
+
+        private long insertCelestialBody(CelestialBody body) {
+            Vec3 center = body.physicsCenter();
+            double hx = body.halfExtentX();
+            double hy = body.halfExtentY();
+            double hz = body.halfExtentZ();
+
+            double[] cuboids = {0.0, 0.0, 0.0, hx, hy, hz};
+            double density = Math.max(0.1, body.mass() / (hx * hy * hz * 8.0));
+
+            var future = new java.util.concurrent.CompletableFuture<Long>();
+            commandQueue.submit(new PhysicsCommand.InsertBody(
+                    body.id(),
+                    "",
+                    center.x, center.y, center.z,
+                    body.rotQx(), body.rotQy(), body.rotQz(), body.rotQw(),
                     Vec3.ZERO,
                     cuboids, 1,
                     density, 0.75, 0.05,

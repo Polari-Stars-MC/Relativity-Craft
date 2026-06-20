@@ -1,6 +1,9 @@
 package org.polaris2023.relativity.command;
 
 import com.mojang.brigadier.CommandDispatcher;
+import org.polaris2023.relativity.celestial.CelestialBody;
+import org.polaris2023.relativity.celestial.CelestialBodyRegistry;
+import org.polaris2023.relativity.enclave.Enclave;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
 import org.polaris2023.relativity.physicalization.BlockBox;
 import org.polaris2023.relativity.physicalization.PhysicalizedVolumeHandle;
@@ -19,6 +22,8 @@ import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.entity.EntitySpawnReason;
 import net.minecraft.world.item.ItemStack;
+
+import java.util.UUID;
 
 public final class RelativityCommands {
     private static final PhysicalizedVolumeManager VOLUMES = PhysicalizedVolumeManager.global();
@@ -92,17 +97,23 @@ public final class RelativityCommands {
         //    with its own blocks via Minecraft's getBlockCollisions().
         removeBlocksNow(level, selection);
 
-        // 4. Create the entity and add it to the world.
-        PhysicalizedVolumeEntity entity = ModEntityTypes.PHYSICALIZED_VOLUME.get().create(level, EntitySpawnReason.COMMAND);
-        if (entity == null) {
-            source.sendFailure(Component.literal("Failed to create physicalized volume entity."));
-            return 0;
-        }
+        // 4. Create the celestial body — the new standalone (non-Entity) architecture.
+        //    Uses Enclave for palette-compressed block storage and a single OBB collider.
+        Enclave enclave = Enclave.fromSnapshot(snapshot);
+        CelestialBodyRegistry registry = CelestialBodyRegistry.of(level);
+        int celestialId = registry.nextId();
+        UUID celestialUuid = handle.id();
+        CelestialBody body = CelestialBody.create(celestialId, celestialUuid, selection, enclave);
+        body.setPos(selection.minX(), selection.minY(), selection.minZ());
+        registry.register(body);
+        PhysicsWorldManager.global().registerCelestialBody(level, body);
 
-        entity.configure(handle.id(), selection, snapshot);
-        entity.setPos(selection.centerX(), selection.minY(), selection.centerZ());
-        level.addFreshEntity(entity);
-        PhysicsWorldManager.global().register(entity);
+        // 5. Clean up the VirtualAirMask now that the body handles collision.
+        //    The mask was needed during the window between block removal and entity
+        //    creation to prevent terrain colliders from being rebuilt with old blocks.
+        //    Once the entity exists and terrain is rebuilt around it, the mask is
+        //    no longer needed and must be removed to allow future terrain rebuilds.
+        VOLUMES.virtualAirMask().remove(handle.id());
 
         return 1;
     }
