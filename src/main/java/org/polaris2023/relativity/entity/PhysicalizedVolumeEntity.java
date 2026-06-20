@@ -84,6 +84,12 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
     private static final double SUPPORT_SCAN_DEPTH = 0.125;
     private static final double SUPPORT_CONTACT_EPSILON = 1.0E-4;
     private static final double SUPPORT_HORIZONTAL_EPSILON = 1.0E-3;
+    // Grace period (in ticks) for newly-created entities before discardIfEmpty() takes effect.
+    // This prevents the server from discarding an entity that hasn't yet received its snapshot
+    // data, or the client from discarding one whose spawn data hasn't been processed.
+    // A value of ~60 ticks (3 seconds) accounts for network latency and chunk loading delays.
+    private static final int DISCARD_GRACE_TICKS = 60;
+    private long creationTick = Long.MIN_VALUE;
     private long clientVisualStartNanos = Long.MIN_VALUE;
     private double clientVisualStartX;
     private double clientVisualStartY;
