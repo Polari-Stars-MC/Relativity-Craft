@@ -542,18 +542,29 @@ final class PhysicalizedLogicBodyRedstone {
         // readSnapshot only returns redstone-related cells from the logic body.
         // If we replace the entity's snapshot with just those cells, all
         // non-redstone blocks get deleted. Instead, compute which redstone
-        // cells changed and only update those.
+        // cells changed and only update those on top of the current snapshot.
         boolean hasNonRedstoneCells = current.blockCount() > next.blockCount() + 64;
         if (hasNonRedstoneCells && read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0) {
             // Merge: update only the redstone cells that changed in the logic body.
             // Non-redstone cells are preserved from the current snapshot.
             List<PhysicalizedBlockSnapshot> changed = changedCells(current, next);
+            // Also detect removals: cells in current that are redstone but absent from next
+            for (PhysicalizedBlockSnapshot cell : current.cells()) {
+                if (isProjectedRedstoneState(cell.state())) {
+                    PhysicalizedBlockSnapshot inNext = next.cellAtOrNull(cell.localX(), cell.localY(), cell.localZ());
+                    if (inNext == null) {
+                        changed.add(new PhysicalizedBlockSnapshot(cell.localX(), cell.localY(), cell.localZ(),
+                                net.minecraft.world.level.block.Block.getId(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()), null));
+                    }
+                }
+            }
             if (!changed.isEmpty()) {
-                entity.updateSnapshotCells(next, changed);
+                PhysicalizedVolumeSnapshot merged = current.withCellsUpdated(changed);
+                entity.updateSnapshot(merged);
             }
             body.snapshot = next;
             body.rememberWrittenCells(next);
-            body.updateProjectionIndex(worldLevel, entity, next);
+            body.updateProjectionIndex(worldLevel, entity, entity.snapshot());
             return;
         }
 

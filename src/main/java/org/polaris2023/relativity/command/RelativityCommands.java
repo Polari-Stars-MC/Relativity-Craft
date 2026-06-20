@@ -108,12 +108,15 @@ public final class RelativityCommands {
     }
 
     private static void removeBlocksNow(ServerLevel level, BlockBox box) {
+        // Use ServerLevel.setBlock with optimized flags.
+        // UPDATE_INVISIBLE: skip client sync (chunks re-sent naturally)
+        // UPDATE_SUPPRESS_DROPS: skip drop calculations
+        // UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS: skip BE side effects
+        // This is safe but slow for very large volumes (100k+ blocks).
+        // For acceptable performance, limit physicalize to reasonable sizes
+        // or use the Enclave system for truly massive volumes.
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
         net.minecraft.world.level.block.state.BlockState airState = net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
-        // Use UPDATE_INVISIBLE to skip client sync (chunks will be re-sent naturally).
-        // UPDATE_SUPPRESS_DROPS skips expensive drop calculations.
-        // UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS avoids block entity side effects.
-        // This is the fastest safe way to bulk-remove blocks.
         int flags = net.minecraft.world.level.block.Block.UPDATE_INVISIBLE
                 | net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
                 | net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
