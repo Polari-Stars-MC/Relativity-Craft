@@ -1206,7 +1206,8 @@ public final class PhysicalizedInteractionHandler {
         ArrayDeque<BlockPos> queue = new ArrayDeque<>();
         LongOpenHashSet queued = new LongOpenHashSet();
         for (Direction direction : Direction.values()) {
-            enqueueLocal(queue, queued, localX + direction.getStepX(), localY + direction.getStepY(), localZ + direction.getStepZ());
+            enqueueLocal(queue, queued, localX + direction.getStepX(), localY + direction.getStepY(), localZ + direction.getStepZ(),
+                    current.sizeX(), current.sizeY(), current.sizeZ());
         }
 
         int removals = 0;
@@ -1238,7 +1239,8 @@ public final class PhysicalizedInteractionHandler {
                         queued,
                         pos.getX() + direction.getStepX(),
                         pos.getY() + direction.getStepY(),
-                        pos.getZ() + direction.getStepZ()
+                        pos.getZ() + direction.getStepZ(),
+                        current.sizeX(), current.sizeY(), current.sizeZ()
                 );
             }
         }
@@ -1246,8 +1248,10 @@ public final class PhysicalizedInteractionHandler {
         return new UnsupportedRemoval(current, List.copyOf(removed));
     }
 
-    private static void enqueueLocal(ArrayDeque<BlockPos> queue, LongOpenHashSet queued, int localX, int localY, int localZ) {
-        if (localX < 0 || localY < 0 || localZ < 0) {
+    private static void enqueueLocal(ArrayDeque<BlockPos> queue, LongOpenHashSet queued, int localX, int localY, int localZ,
+                                      int sizeX, int sizeY, int sizeZ) {
+        if (localX < 0 || localY < 0 || localZ < 0
+                || localX >= sizeX || localY >= sizeY || localZ >= sizeZ) {
             return;
         }
         if (queued.add(packLocal(localX, localY, localZ))) {

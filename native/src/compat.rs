@@ -413,6 +413,8 @@ pub extern "C" fn rc_world_insert_static_trimesh(
     index_len: u32,
     friction: f64,
     restitution: f64,
+    collision_groups: RcInteractionGroups,
+    solver_groups: RcInteractionGroups,
 ) -> RcRigidBodyHandle {
     let Some(world) = (unsafe { world.as_mut() }) else {
         return 0;
@@ -444,7 +446,14 @@ pub extern "C" fn rc_world_insert_static_trimesh(
     let Ok(collider) = ColliderBuilder::trimesh(vertices, triangles) else {
         return 0;
     };
-    let collider = collider.friction(friction).restitution(restitution).build();
+    let cg = interaction_groups_to_rapier(collision_groups);
+    let sg = interaction_groups_to_rapier(solver_groups);
+    let collider = collider
+        .friction(friction)
+        .restitution(restitution)
+        .collision_groups(cg)
+        .solver_groups(sg)
+        .build();
     world
         .inner
         .colliders

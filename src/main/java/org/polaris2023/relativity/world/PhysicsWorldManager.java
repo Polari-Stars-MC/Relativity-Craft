@@ -470,6 +470,17 @@ public final class PhysicsWorldManager {
         // alongside the snapshot. Server thread consumes in tick().
         private final List<RebuildResult> pendingRebuildResults = new ArrayList<>();
 
+        // Cache of body bounding boxes for large volumes (>256 blocks).
+        // Used to detect when the bounding box changed and a full rebuild is needed
+        // (e.g., after block placement/removal), preventing the squeeze bug where
+        // old oversized colliders push the entity.
+        private final java.util.HashMap<Integer, AABB> bodyBoundsCache = new java.util.HashMap<>();
+
+        // Time when this state was created (System.nanoTime). Used by isIdle()
+        // to prevent premature shutdown while the physics ticker thread is still
+        // processing initial insertions.
+        private final long creationTimeNanos;
+
         private LevelPhysicsState() {
             bodyByEntityId.defaultReturnValue(0L);
             entityIdByBody.defaultReturnValue(Integer.MIN_VALUE);
@@ -479,6 +490,7 @@ public final class PhysicsWorldManager {
             waterSurfaces = new WaterSurfaceColliderManager(world, commandQueue);
             physicsTicker = new PhysicsTickerThread(world, worldLock, commandQueue, snapshotBuffer);
             physicsTicker.start();
+            creationTimeNanos = System.nanoTime();
         }
 
         void deferRebuild(int entityId, boolean wakeUp) {
@@ -644,6 +656,24 @@ public final class PhysicsWorldManager {
                     worldLock.readLock().unlock();
                 }
             }
+
+            AABB terrainBounds = entity.getBoundingBox();
+            if (oldBody == 0L) {
+                buildTerrainImmediately(level, terrainBounds);
+            } else {
+                requestTerrainAround(level, terrainBounds, false, true);
+            }
+
+            // Try to insert the new body FIRST. If it fails (timeout), keep the old body
+            // so the entity doesn't lose its physics representation.
+            long nextBody = insertBody(entity, linearVelocity);
+            if (nextBody == 0L) {
+                // Insertion timed out — async recovery will pick it up via processRebuildResults.
+                // Keep the old body for now; it will be replaced when the async result arrives.
+                return false;
+            }
+
+            // New body created successfully — now remove the old one
             if (oldBody != 0L) {
                 untrackBody(level, entity, oldBody);
                 commandQueue.submit(new PhysicsCommand.RemoveBody(oldBody));
@@ -654,17 +684,6 @@ public final class PhysicsWorldManager {
                     untrackBody(level, entity, removed);
                     commandQueue.submit(new PhysicsCommand.RemoveBody(removed));
                 }
-            }
-
-            AABB terrainBounds = entity.getBoundingBox();
-            if (oldBody == 0L) {
-                buildTerrainImmediately(level, terrainBounds);
-            } else {
-                requestTerrainAround(level, terrainBounds, false, true);
-            }
-            long nextBody = insertBody(entity, linearVelocity);
-            if (nextBody == 0L) {
-                return false;
             }
 
             trackBody(entity, nextBody);
@@ -740,18 +759,23 @@ public final class PhysicsWorldManager {
                 long timeoutMs = blockCount > 256 ? 10L : 50L;
                 return future.get(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS);
             } catch (Exception e) {
-                // For large volumes, if the physics thread is busy, don't block.
-                // The insertion future will complete eventually and the result
+                // If the physics thread is busy, don't block the server tick.
+                // Schedule async result processing for ALL entity sizes — the
+                // insertion future will complete eventually and the result
                 // will be picked up by processRebuildResults().
-                if (entity.snapshot().blockCount() > 256) {
-                    // Schedule async result processing via the future.
-                    // The result will be consumed in tick() -> processRebuildResults().
-                    future.thenAcceptAsync(handle -> {
-                        if (handle != 0L) {
+                //
+                // Also set a deferred rebuild flag so that subsequent register()
+                // calls skip re-insertion and wait for the async result instead.
+                // Without this, the entity tick would call register() again on
+                // the next tick, creating a duplicate body.
+                deferRebuild(entity.getId(), false);
+                future.thenAcceptAsync(handle -> {
+                    if (handle != 0L) {
+                        synchronized (pendingRebuildResults) {
                             pendingRebuildResults.add(new RebuildResult(entity.getId(), handle));
                         }
-                    });
-                }
+                    }
+                });
                 return 0L;
             }
         }
@@ -850,13 +874,34 @@ public final class PhysicsWorldManager {
                     if (entity instanceof PhysicalizedVolumeEntity volume && !volume.isRemoved()) {
                         int blockCount = volume.snapshot().blockCount();
                         if (blockCount > 256) {
-                            // Large body: use bounding-box approximation directly.
-                            // Do NOT call rebuildBodyShape() — it would just re-defer.
+                            // Large body: uses bounding-box approximation (single collider).
+                            // Rebuilding is O(1) — just update the bounding box.
+                            // We MUST rebuild (not just anchor) when blocks are added/removed,
+                            // otherwise the old oversized collider squeezes the entity.
                             long body = volume.nativeBodyHandle();
                             if (body != 0L) {
-                                anchorBodyToEntity(body, volume);
-                                if (wakeUp) {
-                                    commandQueue.submit(new PhysicsCommand.WakeUp(body));
+                                // Check if the body's bounding box is stale by comparing
+                                // with the current snapshot bounds
+                                AABB currentBounds = volume.snapshot().occupiedLocalBounds();
+                                AABB bodyBounds = bodyBoundsCache.get(entityId);
+                                boolean boundsChanged = bodyBounds == null
+                                        || Math.abs(bodyBounds.minX - currentBounds.minX) > 0.5
+                                        || Math.abs(bodyBounds.minY - currentBounds.minY) > 0.5
+                                        || Math.abs(bodyBounds.minZ - currentBounds.minZ) > 0.5
+                                        || Math.abs(bodyBounds.maxX - currentBounds.maxX) > 0.5
+                                        || Math.abs(bodyBounds.maxY - currentBounds.maxY) > 0.5
+                                        || Math.abs(bodyBounds.maxZ - currentBounds.maxZ) > 0.5;
+
+                                if (boundsChanged) {
+                                    // Bounds changed — full rebuild needed to prevent squeeze
+                                    rebuildBodyShape(level, volume, wakeUp);
+                                    bodyBoundsCache.put(entityId, currentBounds);
+                                } else {
+                                    // Bounds unchanged — just anchor
+                                    anchorBodyToEntity(body, volume);
+                                    if (wakeUp) {
+                                        commandQueue.submit(new PhysicsCommand.WakeUp(body));
+                                    }
                                 }
                             } else {
                                 // No body yet — register from scratch
@@ -1710,7 +1755,29 @@ public final class PhysicsWorldManager {
 
         private record RebuildResult(int entityId, long bodyHandle) {}
 
+        // Minimum time (in nanoseconds) that a newly created physics state must
+        // exist before it can be considered idle. This prevents rapid start/stop
+        // cycles where register() creates the state, insertBody() times out
+        // (because the physics thread hasn't processed the command yet), and
+        // tick() immediately shuts it down via isIdle().
+        // Default: 5 seconds.
+        private static final long MIN_STATE_LIFETIME_NANOS = 5_000_000_000L;
+
         boolean isIdle() {
+            // Don't consider the state idle if there are pending commands
+            // that haven't been processed yet. Otherwise the physics ticker
+            // gets shut down while insertBody futures are still in-flight,
+            // causing rapid start/stop cycles and lost body registrations.
+            if (!commandQueue.isEmpty()) {
+                return false;
+            }
+            // Don't shut down a newly created state. The physics thread needs
+            // time to process initial insertions. Without this, register()
+            // creates the state, insertBody() may time out because the thread
+            // hasn't warmed up yet, and tick() immediately shuts it all down.
+            if (System.nanoTime() - creationTimeNanos < MIN_STATE_LIFETIME_NANOS) {
+                return false;
+            }
             return bodyByEntityId.isEmpty();
         }
 

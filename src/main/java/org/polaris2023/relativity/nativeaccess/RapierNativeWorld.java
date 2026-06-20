@@ -295,7 +295,7 @@ public final class RapierNativeWorld implements AutoCloseable {
     }
 
     public long addStaticTriMesh(double[] vertices, int[] indices, double friction, double restitution) {
-        long handle = RelativityCraftRapier.worldInsertStaticTriMesh(world.handle(), vertices, indices, friction, restitution);
+        long handle = RelativityCraftRapier.worldInsertStaticTriMesh(world.handle(), vertices, indices, friction, restitution, STATIC_COLLISION_GROUPS, STATIC_COLLISION_GROUPS);
         if (handle != 0L) {
             allBodies.add(handle);
         }

@@ -2,7 +2,21 @@ package org.polaris2023.relativity.render;
 
 import net.minecraft.client.renderer.chunk.ChunkSectionLayer;
 import net.minecraft.client.renderer.entity.state.EntityRenderState;
+import net.minecraft.client.resources.model.geometry.BakedQuad;
+import net.minecraft.client.renderer.block.BlockQuadOutput;
+import com.mojang.blaze3d.vertex.QuadInstance;
 import org.polaris2023.relativity.enclave.EnclaveMirror;
+
+import net.minecraft.client.Minecraft;
+import net.minecraft.client.renderer.block.ModelBlockRenderer;
+import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
+import net.minecraft.core.BlockPos;
+import net.minecraft.world.level.block.RenderShape;
+import net.minecraft.world.level.block.entity.BlockEntity;
+import net.minecraft.world.level.block.state.BlockState;
+import net.minecraft.world.level.lighting.LevelLightEngine;
+import net.minecraft.world.level.material.FluidState;
+import org.jetbrains.annotations.Nullable;
 
 import it.unimi.dsi.fastutil.longs.Long2ObjectOpenHashMap;
 import java.util.ArrayList;
@@ -86,6 +100,7 @@ public final class EnclaveRenderState extends EntityRenderState {
 
     /**
      * Submits all sections for async mesh building.
+     * Each section is built in parallel using the shared thread pool.
      * Call from the render thread; results are merged in {@link #collectBuildResults}.
      */
     public void submitAsyncBuild() {
@@ -106,26 +121,35 @@ public final class EnclaveRenderState extends EntityRenderState {
         if (sections.isEmpty()) return;
 
         final EnclaveMirror buildMirror = mirror;
-        final int buildMirrorVersion = mirror.version();
-        final int originX = buildMirror.originX();
-        final int originY = buildMirror.originY();
-        final int originZ = buildMirror.originZ();
-        final int boundX = buildMirror.boundX();
-        final int boundY = buildMirror.boundY();
-        final int boundZ = buildMirror.boundZ();
 
-        pendingBuild = CompletableFuture.supplyAsync(() -> {
-            List<SectionMeshResult> results = new ArrayList<>(sections.size());
-            for (SectionBuildTask task : sections) {
-                SectionMeshResult result = buildSectionMesh(
+        // Build each section in parallel using the thread pool.
+        // Previously all sections were built on a single thread, which became
+        // a bottleneck for large enclaves with 100+ sections.
+        List<CompletableFuture<SectionMeshResult>> futures = new ArrayList<>(sections.size());
+        for (SectionBuildTask task : sections) {
+            futures.add(CompletableFuture.supplyAsync(() -> {
+                return buildSectionMesh(
                         task.key, task.sx, task.sy, task.sz, task.section,
-                        originX, originY, originZ, boundX, boundY, boundZ);
-                if (result != null) {
-                    results.add(result);
-                }
-            }
-            return results;
-        }, MESH_BUILDER);
+                        buildMirror);
+            }, MESH_BUILDER));
+        }
+
+        // Combine all futures into one
+        pendingBuild = CompletableFuture.allOf(futures.toArray(new CompletableFuture[0]))
+                .thenApply(v -> {
+                    List<SectionMeshResult> results = new ArrayList<>(futures.size());
+                    for (CompletableFuture<SectionMeshResult> f : futures) {
+                        try {
+                            SectionMeshResult result = f.get();
+                            if (result != null) {
+                                results.add(result);
+                            }
+                        } catch (Exception ignored) {
+                            // Individual section build failed; skip it
+                        }
+                    }
+                    return results;
+                });
     }
 
     /**
@@ -152,14 +176,33 @@ public final class EnclaveRenderState extends EntityRenderState {
 
     /**
      * Build a single section's mesh off-thread.
+     * <p>Now tessellates blocks into BakedQuads (with QuadInstances) and caches
+     * them so the renderer can write them directly without calling tesselateBlock()
+     * every frame.</p>
      */
     private static SectionMeshResult buildSectionMesh(
             long key, int sx, int sy, int sz,
             org.polaris2023.relativity.enclave.BlockSection section,
-            int originX, int originY, int originZ,
-            int boundX, int boundY, int boundZ
+            EnclaveMirror mirror
     ) {
         if (section.solidCount() == 0) return null;
+
+        org.polaris2023.relativity.enclave.BlockStorage storage = mirror.storage();
+        int originX = mirror.originX();
+        int originY = mirror.originY();
+        int originZ = mirror.originZ();
+        int boundX = mirror.boundX();
+        int boundY = mirror.boundY();
+        int boundZ = mirror.boundZ();
+
+        Minecraft minecraft = Minecraft.getInstance();
+        ModelBlockRenderer blockRenderer = new ModelBlockRenderer(
+                minecraft.options.ambientOcclusion().get(),
+                true,
+                minecraft.getBlockColors()
+        );
+        BlockStateModelSetAccess modelSet = new BlockStateModelSetAccess(minecraft);
+        boolean cutoutLeaves = minecraft.options.cutoutLeaves().get();
 
         int sectionMinX = sx << 4;
         int sectionMinY = sy << 4;
@@ -171,7 +214,6 @@ public final class EnclaveRenderState extends EntityRenderState {
         // Walk non-air blocks in this section
         section.walkNonAir((packed, lx, ly, lz, state, tag) -> {
             // Skip blocks that are fully occluded within the same section
-            // Neighbor check: if all 6 neighbors within this section are solid, skip
             boolean xpSolid = lx + 1 < 16 && !section.get(lx + 1, ly, lz).isAir()
                     && section.get(lx + 1, ly, lz).isSolidRender();
             boolean xnSolid = lx - 1 >= 0 && !section.get(lx - 1, ly, lz).isAir()
@@ -189,61 +231,123 @@ public final class EnclaveRenderState extends EntityRenderState {
                 return; // Fully interior block, skip
             }
 
-            // Boundary blocks: check if they face the volume boundary
+            // Also check cross-section occlusion if storage is available
             int globalX = sectionMinX + lx;
             int globalY = sectionMinY + ly;
             int globalZ = sectionMinZ + lz;
-            boolean atXMax = globalX >= boundX;
-            boolean atXMin = globalX <= originX;
-            boolean atYMax = globalY >= boundY;
-            boolean atYMin = globalY <= originY;
-            boolean atZMax = globalZ >= boundZ;
-            boolean atZMin = globalZ <= originZ;
 
-            // For each visible face direction, emit a quad
-            // We emit quads as SOLID layer for full-cube opaque blocks,
-            // CUTOUT for non-opaque blocks (glass, leaves, etc.)
-            ChunkSectionLayer defaultLayer = state.isSolidRender()
-                    ? ChunkSectionLayer.SOLID
-                    : ChunkSectionLayer.CUTOUT;
+            // Check if boundary neighbors are solid (cross-section)
+            boolean xpSolidAll = xpSolid;
+            if (lx + 1 >= 16 && storage != null) {
+                xpSolidAll = !storage.get(globalX + 1, globalY, globalZ).isAir()
+                        && storage.get(globalX + 1, globalY, globalZ).isSolidRender();
+            }
+            boolean xnSolidAll = xnSolid;
+            if (lx - 1 < 0 && storage != null) {
+                xnSolidAll = !storage.get(globalX - 1, globalY, globalZ).isAir()
+                        && storage.get(globalX - 1, globalY, globalZ).isSolidRender();
+            }
+            boolean ypSolidAll = ypSolid;
+            if (ly + 1 >= 16 && storage != null) {
+                ypSolidAll = !storage.get(globalX, globalY + 1, globalZ).isAir()
+                        && storage.get(globalX, globalY + 1, globalZ).isSolidRender();
+            }
+            boolean ynSolidAll = ynSolid;
+            if (ly - 1 < 0 && storage != null) {
+                ynSolidAll = !storage.get(globalX, globalY - 1, globalZ).isAir()
+                        && storage.get(globalX, globalY - 1, globalZ).isSolidRender();
+            }
+            boolean zpSolidAll = zpSolid;
+            if (lz + 1 >= 16 && storage != null) {
+                zpSolidAll = !storage.get(globalX, globalY, globalZ + 1).isAir()
+                        && storage.get(globalX, globalY, globalZ + 1).isSolidRender();
+            }
+            boolean znSolidAll = znSolid;
+            if (lz - 1 < 0 && storage != null) {
+                znSolidAll = !storage.get(globalX, globalY, globalZ - 1).isAir()
+                        && storage.get(globalX, globalY, globalZ - 1).isSolidRender();
+            }
 
-            // Emit face quads for visible directions
-            // +X face
-            if (lx + 1 >= 16 ? atXMax : !xpSolid && section.get(lx + 1, ly, lz).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX + 1, globalY, globalZ,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
+            if (xpSolidAll && xnSolidAll && ypSolidAll && ynSolidAll && zpSolidAll && znSolidAll) {
+                return; // Fully occluded even across sections
             }
-            // -X face
-            if (lx - 1 < 0 ? atXMin : !xnSolid && section.get(lx - 1, ly, lz).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX, globalY, globalZ,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
+
+            // Skip non-model blocks
+            if (state.getRenderShape() != RenderShape.MODEL) {
+                return;
             }
-            // +Y face
-            if (ly + 1 >= 16 ? atYMax : !ypSolid && section.get(lx, ly + 1, lz).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX, globalY + 1, globalZ,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
-            }
-            // -Y face
-            if (ly - 1 < 0 ? atYMin : !ynSolid && section.get(lx, ly - 1, lz).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX, globalY, globalZ,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
-            }
-            // +Z face
-            if (lz + 1 >= 16 ? atZMax : !zpSolid && section.get(lx, ly, lz + 1).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX, globalY, globalZ + 1,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
-            }
-            // -Z face
-            if (lz - 1 < 0 ? atZMin : !znSolid && section.get(lx, ly, lz - 1).isAir()) {
-                List<CachedQuad> list = layers.computeIfAbsent(defaultLayer, k -> new ArrayList<>());
-                list.add(new CachedQuad(key, globalX, globalY, globalZ,
-                        defaultLayer, state.getSeed(net.minecraft.core.BlockPos.ZERO)));
-            }
+
+            BlockPos localPos = new BlockPos(globalX, globalY, globalZ);
+            BlockStateModel model = modelSet.get(state);
+            boolean forceSolid = ModelBlockRenderer.forceOpaque(cutoutLeaves, state);
+            long seed = state.getSeed(localPos);
+
+            // Build a BlockAndTintGetter that can answer neighbor queries
+            // across sections by falling back to the parent storage
+            final var finalStorage = storage;
+            var blockView = new net.minecraft.client.renderer.block.BlockAndTintGetter() {
+                @Override
+                public BlockState getBlockState(BlockPos pos) {
+                    int bx = pos.getX(), by = pos.getY(), bz = pos.getZ();
+                    // Check intra-section first
+                    int relX = bx - sectionMinX;
+                    int relY = by - sectionMinY;
+                    int relZ = bz - sectionMinZ;
+                    if (relX >= 0 && relX < 16 && relY >= 0 && relY < 16 && relZ >= 0 && relZ < 16) {
+                        return section.get(relX, relY, relZ);
+                    }
+                    // Cross-section query
+                    if (finalStorage != null) {
+                        return finalStorage.get(bx, by, bz);
+                    }
+                    return net.minecraft.world.level.block.Blocks.AIR.defaultBlockState();
+                }
+                @Override
+                public FluidState getFluidState(BlockPos pos) {
+                    return getBlockState(pos).getFluidState();
+                }
+                @Override
+                public int getHeight() { return boundY - originY + 1; }
+                @Override
+                public int getMinY() { return originY; }
+                @Override
+                public net.minecraft.world.level.CardinalLighting cardinalLighting() {
+                    return net.minecraft.world.level.CardinalLighting.DEFAULT;
+                }
+                @Override
+                public @Nullable LevelLightEngine getLightEngine() {
+                    return LevelLightEngine.EMPTY;
+                }
+                @Override
+                public @Nullable BlockEntity getBlockEntity(BlockPos pos) { return null; }
+                @Override
+                public int getBlockTint(BlockPos pos, net.minecraft.world.level.ColorResolver resolver) { return -1; }
+                @Override
+                public int getBrightness(net.minecraft.world.level.LightLayer layer, BlockPos pos) {
+                    if (layer == net.minecraft.world.level.LightLayer.SKY) return 15;
+                    BlockState st = getBlockState(pos);
+                    return st.getLightEmission();
+                }
+                @Override
+                public int getRawBrightness(BlockPos pos, int darkening) {
+                    int sky = 15 - darkening;
+                    int block = getBlockState(pos).getLightEmission();
+                    return Math.max(sky, block);
+                }
+            };
+
+            // Tessellate the block and capture BakedQuads
+            BlockQuadOutput output = (x, y, z, quad, instance) -> {
+                ChunkSectionLayer quadLayer = forceSolid
+                        ? ChunkSectionLayer.SOLID
+                        : quad.materialInfo().layer();
+                layers.computeIfAbsent(quadLayer, ignored -> new ArrayList<>())
+                        .add(new CachedQuad(key, globalX + x, globalY + y, globalZ + z,
+                                quad, copyQuadInstance(instance)));
+            };
+
+            blockRenderer.tesselateBlock(output, 0.0F, 0.0F, 0.0F,
+                    blockView, localPos, state, model, seed);
         });
 
         // Convert to immutable
@@ -256,6 +360,16 @@ public final class EnclaveRenderState extends EntityRenderState {
         if (immutableLayers.isEmpty()) return null;
 
         return new SectionMeshResult(key, new SectionMeshCache(immutableLayers));
+    }
+
+    private static QuadInstance copyQuadInstance(QuadInstance instance) {
+        QuadInstance copy = new QuadInstance();
+        for (int vertex = 0; vertex < 4; vertex++) {
+            copy.setColor(vertex, instance.getColor(vertex));
+            copy.setLightCoords(vertex, instance.getLightCoords(vertex));
+        }
+        copy.setOverlayCoords(instance.overlayCoords());
+        return copy;
     }
 
     // ---- cached mesh types ----
@@ -280,7 +394,16 @@ public final class EnclaveRenderState extends EntityRenderState {
     record SectionBuildTask(long key, int sx, int sy, int sz,
                             org.polaris2023.relativity.enclave.BlockSection section) {}
 
-    /** A single cached quad for section rendering. */
+    /** A single cached quad for section rendering. Stores the actual BakedQuad
+     *  and QuadInstance so the renderer can write them directly without
+     *  calling tesselateBlock() every frame. */
     public record CachedQuad(long sectionKey, float x, float y, float z,
-                             ChunkSectionLayer layer, long seed) {}
+                             BakedQuad quad, QuadInstance instance) {}
+
+    /** Lightweight accessor for the block state model set. */
+    private record BlockStateModelSetAccess(Minecraft minecraft) {
+        BlockStateModel get(BlockState state) {
+            return minecraft.getModelManager().getBlockStateModelSet().get(state);
+        }
+    }
 }

@@ -133,8 +133,10 @@ public final class WaterSurfaceColliderManager {
                 double halfZ = Math.min(TILE_SIZE, 16 - localZ) * 0.5;
                 long handle;
                 if (commandQueue != null) {
-                    // Fire-and-forget: we don't track individual water surface handles precisely
-                    // The removal path will batch-remove by chunk key
+                    // Use fire-and-forget via command queue; the physics thread
+                    // will insert the body and complete the future.
+                    // We need to block briefly to get the handle, since the
+                    // physics thread runs at 60Hz and completes within ~16ms.
                     var future = new CompletableFuture<Long>();
                     commandQueue.submit(new PhysicsCommand.InsertStaticBox(
                             centerX,
@@ -146,11 +148,11 @@ public final class WaterSurfaceColliderManager {
                             0.04, 0.0,
                             future
                     ));
-                    // Non-blocking: use getNow with default, actual handle assigned async
-                    handle = future.getNow(0L);
-                    if (handle == 0L) {
-                        // Future not yet complete — skip this tile (will be rebuilt next cycle)
-                        continue;
+                    try {
+                        // Wait up to 50ms for the physics thread to process
+                        handle = future.get(50, TimeUnit.MILLISECONDS);
+                    } catch (Exception e) {
+                        handle = 0L;
                     }
                 } else {
                     handle = world.addStaticTerrainBox(

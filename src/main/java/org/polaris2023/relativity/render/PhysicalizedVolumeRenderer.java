@@ -256,6 +256,11 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             // For mid-distance large volumes, still render but use the cached mesh
             // (which may be simplified or built asynchronously)
             submitCapturedBlocks(state, poseStack, submitNodeCollector, camera, rotation, centerYOffset);
+        } else if (isLargeVolume && camDist > LOD_FAR_DISTANCE && !state.cells.isEmpty()) {
+            // Even for distant large volumes, render a bounding box wireframe so the
+            // entity is never completely invisible. This prevents the "large entities
+            // have no rendering" issue when the player is far away.
+            renderBoundingBoxWireframe(state, poseStack, submitNodeCollector, rotation, centerYOffset);
         }
         poseStack.popPose();
         super.submit(state, poseStack, submitNodeCollector, camera);
@@ -625,17 +630,28 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             return state.modelMesh;
         }
         // First-frame fallback: if no valid mesh exists at all but cells are available,
-        // render a simple bounding-box outline to prevent the entity from being invisible.
-        // We do NOT tessellate real block models here — that would block the render
-        // thread for 250ms+ on 100K-block volumes, dropping FPS to ~1.
+        // render a simplified mesh to prevent the entity from being invisible.
+        // We build a subset of shell cells synchronously — enough to show the volume
+        // outline without blocking the render thread. For very large volumes (>10K),
+        // we use a larger subset (up to 500 cells) since 200 may not be enough to
+        // produce any visible geometry after occlusion culling.
         // The async full build completes in 1-2 frames and replaces this placeholder.
         if (state.modelMesh.isEmpty() && state.lastValidModelMesh.isEmpty() && !state.cells.isEmpty()) {
-            // Build a minimal bounding-box mesh as a visual placeholder.
-            // This is just 12 triangles (6 faces) — negligible render cost.
-            PhysicalizedVolumeRenderState.CachedModelMesh fallback = buildBoundingBoxMesh(state);
+            int maxCells = state.blockCount > SHELL_RENDER_THRESHOLD
+                    ? Math.min(500, state.blockCount)
+                    : Math.min(200, state.blockCount);
+            PhysicalizedVolumeRenderState.CachedModelMesh fallback = buildCachedModelMeshSubset(
+                    state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves, maxCells);
             if (!fallback.isEmpty()) {
                 state.modelMesh = fallback;
                 state.lastValidModelMesh = fallback;
+            } else {
+                // If even the subset build fails, use bounding box corners as last resort
+                PhysicalizedVolumeRenderState.CachedModelMesh bboxFallback = buildBoundingBoxMesh(state);
+                if (!bboxFallback.isEmpty()) {
+                    state.modelMesh = bboxFallback;
+                    state.lastValidModelMesh = bboxFallback;
+                }
             }
             return state.modelMesh;
         }
@@ -828,6 +844,60 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
     }
 
     /**
+     * Render a simple bounding-box wireframe for distant large volumes.
+     * This is always called from the render thread (submit path) and uses
+     * direct PoseStack + VertexConsumer submission — no CachedModelMesh needed.
+     * Renders 8 corner blocks with a neutral stone texture so the entity
+     * is never completely invisible regardless of LOD distance.
+     */
+    private static void renderBoundingBoxWireframe(
+            PhysicalizedVolumeRenderState state,
+            PoseStack poseStack,
+            SubmitNodeCollector nodeCollector,
+            Quaternionf rotation,
+            float centerYOffset
+    ) {
+        net.minecraft.world.level.block.state.BlockState placeholderState =
+                net.minecraft.world.level.block.Blocks.STONE.defaultBlockState();
+        Minecraft minecraft = Minecraft.getInstance();
+        BlockStateModelSetAccess modelSet = new BlockStateModelSetAccess(minecraft);
+        BlockStateModel model = modelSet.get(placeholderState);
+        ModelBlockRenderer blockRenderer = new ModelBlockRenderer(false, true, minecraft.getBlockColors());
+        long seed = placeholderState.getSeed(net.minecraft.core.BlockPos.ZERO);
+
+        int ox = (int) state.localOriginX;
+        int oy = (int) state.localOriginY;
+        int oz = (int) state.localOriginZ;
+        int sx = (int) state.sizeX;
+        int sy = (int) state.sizeY;
+        int sz = (int) state.sizeZ;
+
+        Quaternionf neutralRot = new Quaternionf();
+        SnapshotRenderLevel renderLevel = new SnapshotRenderLevel(state, neutralRot, 0);
+
+        for (int cx : new int[]{ox, ox + sx - 1}) {
+            for (int cy : new int[]{oy, oy + sy - 1}) {
+                for (int cz : new int[]{oz, oz + sz - 1}) {
+                    net.minecraft.core.BlockPos pos = new net.minecraft.core.BlockPos(cx, cy, cz);
+                    poseStack.pushPose();
+                    poseStack.translate(cx - state.localOriginX, cy - state.localOriginY, cz - state.localOriginZ);
+                    blockRenderer.tesselateBlock(
+                            (x, y, z, quad, instance) -> {
+                                nodeCollector.submitCustomGeometry(
+                                        poseStack,
+                                        net.minecraft.client.renderer.rendertype.RenderTypes.solidMovingBlock(),
+                                        (pose, buffer) -> buffer.putBakedQuad(pose, quad, instance)
+                                );
+                            },
+                            0.0F, 0.0F, 0.0F, renderLevel, pos, placeholderState, model, seed
+                    );
+                    poseStack.popPose();
+                }
+            }
+        }
+    }
+
+    /**
      * Synchronous mesh build for large volumes. Uses captured state to avoid touching
      * render thread data. This is safe because PhysicalizedVolumeSnapshot is immutable
      * and cellsByKey is an unmodifiable map.
@@ -851,10 +921,12 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             );
             BlockStateModelSetAccess modelSet = new BlockStateModelSetAccess(minecraft);
             // Lightweight render level for off-thread use (only needs blockState lookups + light)
+            ClientLevel clientLevel = minecraft.level;
             OffThreadSnapshotRenderLevel renderLevel = new OffThreadSnapshotRenderLevel(
                     cellsByKey, localOriginX, localOriginY, localOriginZ,
                     posX, posY, posZ, rotation, centerYOffset,
-                    snapshot.sizeY()
+                    snapshot.sizeY(),
+                    clientLevel
             );
             Map<ChunkSectionLayer, List<PhysicalizedVolumeRenderState.CachedQuad>> layers = new EnumMap<>(ChunkSectionLayer.class);
 
@@ -987,20 +1059,38 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             ChunkSectionLayer layer,
             float centerYOffset
     ) {
+        List<PhysicalizedVolumeRenderState.CachedQuad> quads = state.modelMesh.quads(layer);
+        if (quads.isEmpty()) {
+            return;
+        }
+
+        // Fast path: single cell — use base pose directly, no pose stack needed
+        if (quads.size() <= 6) {
+            PoseStack workingPose = new PoseStack();
+            workingPose.last().set(basePose);
+            for (PhysicalizedVolumeRenderState.CachedQuad cachedQuad : quads) {
+                workingPose.pushPose();
+                PhysicalizedVolumeRenderState.AnimationOffset offset = state.cellAnimationOffsets.get(cachedQuad.cellKey());
+                workingPose.translate(
+                        cachedQuad.x() - state.localOriginX + (offset == null ? 0.0F : offset.x()),
+                        cachedQuad.y() - state.localOriginY + (offset == null ? 0.0F : offset.y()),
+                        cachedQuad.z() - state.localOriginZ + (offset == null ? 0.0F : offset.z())
+                );
+                buffer.putBakedQuad(workingPose.last(), cachedQuad.quad(), cachedQuad.instance());
+                workingPose.popPose();
+            }
+            return;
+        }
+
+        // For larger volumes, batch quads by cell to reduce PoseStack overhead
         PoseStack workingPose = new PoseStack();
         workingPose.last().set(basePose);
-
-        // For large volumes (>4096 blocks), quads from the same cell share a
-        // translation. Batch them to reduce PoseStack push/pop from ~50k to ~50k/N
-        // where N is faces per cell (typically 1-6).
         boolean batchMode = state.blockCount > FULL_DETAIL_MAX_BLOCKS;
         long activeCellKey = Long.MIN_VALUE;
+        float activeOffX = 0f, activeOffY = 0f, activeOffZ = 0f;
+        boolean hasPushedPose = false;
 
-        // For very large volumes, use instance-grouped rendering to reduce draw calls.
-        // Quads of the same block type are submitted continuously without PoseStack changes.
-        boolean instanceMode = ENABLE_INSTANCED_RENDERING && state.blockCount > SHELL_RENDER_THRESHOLD && !batchMode;
-
-        for (PhysicalizedVolumeRenderState.CachedQuad cachedQuad : state.modelMesh.quads(layer)) {
+        for (PhysicalizedVolumeRenderState.CachedQuad cachedQuad : quads) {
             long cellKey = cachedQuad.cellKey();
             PhysicalizedVolumeRenderState.AnimationOffset offset = state.cellAnimationOffsets.get(cellKey);
 
@@ -1010,21 +1100,34 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                 continue;
             }
 
-            // Different cell: pop previous, push new
-            if (activeCellKey != Long.MIN_VALUE) {
+            // Pre-compute translation to avoid repeated subtraction
+            float tx = cachedQuad.x() - state.localOriginX + (offset == null ? 0.0F : offset.x());
+            float ty = cachedQuad.y() - state.localOriginY + (offset == null ? 0.0F : offset.y());
+            float tz = cachedQuad.z() - state.localOriginZ + (offset == null ? 0.0F : offset.z());
+
+            // In non-batch mode, if translation is identical to previous AND we still
+            // have a pushed pose, reuse it (avoids unnecessary push/pop)
+            if (!batchMode && hasPushedPose && activeOffX == tx && activeOffY == ty && activeOffZ == tz) {
+                buffer.putBakedQuad(workingPose.last(), cachedQuad.quad(), cachedQuad.instance());
+                continue;
+            }
+
+            // Different cell or different translation: pop previous, push new
+            if (hasPushedPose) {
                 workingPose.popPose();
+                hasPushedPose = false;
             }
             activeCellKey = cellKey;
+            activeOffX = tx;
+            activeOffY = ty;
+            activeOffZ = tz;
 
             workingPose.pushPose();
-            workingPose.translate(
-                    cachedQuad.x() - state.localOriginX + (offset == null ? 0.0F : offset.x()),
-                    cachedQuad.y() - state.localOriginY + (offset == null ? 0.0F : offset.y()),
-                    cachedQuad.z() - state.localOriginZ + (offset == null ? 0.0F : offset.z())
-            );
+            hasPushedPose = true;
+            workingPose.translate(tx, ty, tz);
             buffer.putBakedQuad(workingPose.last(), cachedQuad.quad(), cachedQuad.instance());
         }
-        if (activeCellKey != Long.MIN_VALUE) {
+        if (hasPushedPose) {
             workingPose.popPose();
         }
 
@@ -1400,13 +1503,15 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         private final Quaternionf rotation;
         private final float centerYOffset;
         private final int height;
+        private final ClientLevel clientLevel;
 
         OffThreadSnapshotRenderLevel(
                 Map<Long, PhysicalizedBlockSnapshot> cells,
                 float localOriginX, float localOriginY, float localOriginZ,
                 double posX, double posY, double posZ,
                 Quaternionf rotation, float centerYOffset,
-                int height
+                int height,
+                ClientLevel clientLevel
         ) {
             this.cells = cells;
             this.localOriginX = localOriginX;
@@ -1418,6 +1523,7 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             this.rotation = new Quaternionf(rotation);
             this.centerYOffset = centerYOffset;
             this.height = Math.max(1, height);
+            this.clientLevel = clientLevel;
         }
 
         @Override
@@ -1432,9 +1538,6 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
 
         @Override
         public int getBlockTint(BlockPos pos, ColorResolver color) {
-            // Use a neutral tint for off-thread; the mesh will be rebuilt
-            // with accurate tints once the result lands on the render thread
-            ClientLevel clientLevel = Minecraft.getInstance().level;
             if (clientLevel != null) {
                 try {
                     return clientLevel.getBlockTint(worldPos(pos), color);

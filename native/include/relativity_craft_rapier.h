@@ -252,7 +252,9 @@ RcRigidBodyHandle rc_world_insert_static_trimesh(struct RcWorldHandle *world,
                                                  const uint32_t *indices,
                                                  uint32_t index_len,
                                                  double friction,
-                                                 double restitution);
+                                                 double restitution,
+                                                 struct RcInteractionGroups collision_groups,
+                                                 struct RcInteractionGroups solver_groups);
 
 uint32_t rc_query_intersect_aabb_rigid_body_count(const struct RcWorldHandle *world,
                                                   struct RcAabb aabb,

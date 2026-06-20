@@ -4,8 +4,6 @@ import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.renderer.SubmitNodeCollector;
-import net.minecraft.client.renderer.block.BlockQuadOutput;
-import net.minecraft.client.renderer.block.ModelBlockRenderer;
 import net.minecraft.client.renderer.block.dispatch.BlockStateModel;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderDispatcher;
 import net.minecraft.client.renderer.blockentity.BlockEntityRenderer;
@@ -18,15 +16,10 @@ import net.minecraft.client.renderer.rendertype.RenderTypes;
 import net.minecraft.client.renderer.state.level.CameraRenderState;
 import net.minecraft.core.BlockPos;
 import net.minecraft.core.Direction;
-import net.minecraft.world.level.CardinalLighting;
-import net.minecraft.world.level.ColorResolver;
-import net.minecraft.world.level.LightLayer;
-import net.minecraft.world.level.block.Blocks;
 import net.minecraft.world.level.block.ChestBlock;
 import net.minecraft.world.level.block.CopperChestBlock;
 import net.minecraft.world.level.block.EnderChestBlock;
 import net.minecraft.world.level.block.EntityBlock;
-import net.minecraft.world.level.block.RenderShape;
 import net.minecraft.world.level.block.entity.BlockEntity;
 import net.minecraft.world.level.block.entity.ChestBlockEntity;
 import net.minecraft.world.level.block.entity.EnderChestBlockEntity;
@@ -34,20 +27,12 @@ import net.minecraft.world.level.block.entity.LidBlockEntity;
 import net.minecraft.world.level.block.entity.TrappedChestBlockEntity;
 import net.minecraft.world.level.block.state.BlockState;
 import net.minecraft.world.level.block.state.properties.ChestType;
-import net.minecraft.world.level.lighting.LevelLightEngine;
-import net.minecraft.world.level.material.FluidState;
 import net.minecraft.world.phys.AABB;
-import net.minecraft.world.phys.Vec3;
-import org.jetbrains.annotations.Nullable;
 import org.joml.Quaternionf;
-import org.joml.Vector3f;
 import org.polaris2023.relativity.enclave.*;
 import org.polaris2023.relativity.entity.EnclaveEntity;
 
-import java.util.ArrayList;
-import java.util.EnumMap;
 import java.util.List;
-import java.util.Map;
 
 /**
  * Entity renderer for {@link EnclaveEntity}.
@@ -233,87 +218,33 @@ public final class EnclaveRenderer extends EntityRenderer<EnclaveEntity, Enclave
             ChunkSectionLayer layer,
             float centerYOffset
     ) {
-        Minecraft minecraft = Minecraft.getInstance();
-        ModelBlockRenderer blockRenderer = new ModelBlockRenderer(
-                minecraft.options.ambientOcclusion().get(),
-                true,
-                minecraft.getBlockColors()
-        );
-        boolean cutoutLeaves = minecraft.options.cutoutLeaves().get();
-
-        PoseStack workingPose = new PoseStack();
-        workingPose.last().set(basePose);
-
         EnclaveMirror mirror = state.mirror;
         if (mirror == null) return;
 
-        EnclaveBlockView blockView = new EnclaveBlockView(mirror.storage());
-        long activeSectionKey = Long.MIN_VALUE;
+        PoseStack workingPose = new PoseStack();
+        workingPose.last().set(basePose);
 
         for (var entry : state.sectionMeshes.entrySet()) {
             EnclaveRenderState.SectionMeshCache mesh = entry.getValue();
             List<EnclaveRenderState.CachedQuad> quads = mesh.quads(layer);
             if (quads.isEmpty()) continue;
 
-            long sectionKey = entry.getKey();
+            // Per-section: push the section translation once
+            workingPose.pushPose();
 
-            // Use cached quads as hints to tessellate actual block models
-            // Each CachedQuad represents a visible face we need to render
+            // Write cached BakedQuads directly — no re-tessellation needed.
+            // Use per-quad push/pop to avoid the double-translate pattern.
             for (EnclaveRenderState.CachedQuad quad : quads) {
-                if (sectionKey != activeSectionKey) {
-                    if (activeSectionKey != Long.MIN_VALUE) {
-                        workingPose.popPose();
-                    }
-                    activeSectionKey = sectionKey;
-                    workingPose.pushPose();
-                }
-
-                int blockX = (int) quad.x();
-                int blockY = (int) quad.y();
-                int blockZ = (int) quad.z();
-                BlockPos localPos = new BlockPos(blockX, blockY, blockZ);
-                BlockState blockState = mirror.getBlock(blockX, blockY, blockZ);
-
-                if (blockState.isAir() || blockState.getRenderShape() != RenderShape.MODEL) {
-                    continue;
-                }
-
-                // Translate to block position relative to origin
+                workingPose.pushPose();
                 workingPose.translate(
-                        blockX - state.originX,
-                        blockY - state.originY,
-                        blockZ - state.originZ
+                        quad.x() - state.originX,
+                        quad.y() - state.originY,
+                        quad.z() - state.originZ
                 );
-
-                BlockStateModel model = minecraft.getModelManager()
-                        .getBlockStateModelSet().get(blockState);
-                boolean forceSolid = ModelBlockRenderer.forceOpaque(cutoutLeaves, blockState);
-                long seed = blockState.getSeed(localPos);
-
-                PoseStack.Pose cellPose = workingPose.last();
-                BlockQuadOutput output = (x, y, z, bakedQuad, instance) -> {
-                    ChunkSectionLayer quadLayer = forceSolid
-                            ? ChunkSectionLayer.SOLID
-                            : bakedQuad.materialInfo().layer();
-                    if (quadLayer == layer) {
-                        cellPose.translate(x, y, z);
-                        buffer.putBakedQuad(cellPose, bakedQuad, instance);
-                        cellPose.translate(-x, -y, -z);
-                    }
-                };
-
-                blockRenderer.tesselateBlock(output, 0.0F, 0.0F, 0.0F,
-                        blockView, localPos, blockState, model, seed);
-
-                workingPose.translate(
-                        -(blockX - state.originX),
-                        -(blockY - state.originY),
-                        -(blockZ - state.originZ)
-                );
+                buffer.putBakedQuad(workingPose.last(), quad.quad(), quad.instance());
+                workingPose.popPose();
             }
-        }
 
-        if (activeSectionKey != Long.MIN_VALUE) {
             workingPose.popPose();
         }
     }

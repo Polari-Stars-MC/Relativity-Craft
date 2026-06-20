@@ -75,58 +75,64 @@ public final class PhysicsTickerThread extends Thread {
         long nextStepTime = System.nanoTime();
 
         while (running) {
-            if (paused) {
-                sleepQuietly(50);
-                nextStepTime = System.nanoTime();
-                continue;
-            }
-
-            long now = System.nanoTime();
-            int stepsNeeded = 0;
-            while (nextStepTime <= now && stepsNeeded < MAX_CATCHUP_STEPS) {
-                nextStepTime += STEP_NANOS;
-                stepsNeeded++;
-            }
-
-            if (stepsNeeded == 0) {
-                // Sleep until next step is due
-                long sleepNanos = nextStepTime - System.nanoTime();
-                if (sleepNanos > 500_000L) {
-                    sleepQuietly(sleepNanos / 1_000_000L);
-                } else {
-                    Thread.onSpinWait();
-                }
-                continue;
-            }
-
-            // If we fell too far behind, reset the clock
-            if (stepsNeeded >= MAX_CATCHUP_STEPS) {
-                nextStepTime = System.nanoTime() + STEP_NANOS;
-            }
-
-            // Acquire write lock for the entire physics cycle.
-            // Server thread uses tryLock() for queries and falls back gracefully.
-            worldLock.writeLock().lock();
             try {
-                // Process commands (body insert/remove/force/velocity)
-                commandQueue.drain(this::processCommand);
-
-                // Step physics
-                long stepStart = System.nanoTime();
-                for (int i = 0; i < stepsNeeded; i++) {
-                    world.step(STEP_DT);
+                if (paused) {
+                    sleepQuietly(50);
+                    nextStepTime = System.nanoTime();
+                    continue;
                 }
-                lastStepNanos = System.nanoTime() - stepStart;
-                stepsPerPublish = stepsNeeded;
 
-                // Drain again after step to minimize latency for pending futures
-                commandQueue.drain(this::processCommand);
+                long now = System.nanoTime();
+                int stepsNeeded = 0;
+                while (nextStepTime <= now && stepsNeeded < MAX_CATCHUP_STEPS) {
+                    nextStepTime += STEP_NANOS;
+                    stepsNeeded++;
+                }
 
-                // Publish snapshot
-                double[] snapshot = world.snapshot();
-                snapshotBuffer.publish(snapshot);
-            } finally {
-                worldLock.writeLock().unlock();
+                if (stepsNeeded == 0) {
+                    // Sleep until next step is due
+                    long sleepNanos = nextStepTime - System.nanoTime();
+                    if (sleepNanos > 500_000L) {
+                        sleepQuietly(sleepNanos / 1_000_000L);
+                    } else {
+                        Thread.onSpinWait();
+                    }
+                    continue;
+                }
+
+                // If we fell too far behind, reset the clock
+                if (stepsNeeded >= MAX_CATCHUP_STEPS) {
+                    nextStepTime = System.nanoTime() + STEP_NANOS;
+                }
+
+                // Acquire write lock for the entire physics cycle.
+                // Server thread uses tryLock() for queries and falls back gracefully.
+                worldLock.writeLock().lock();
+                try {
+                    // Process commands (body insert/remove/force/velocity)
+                    commandQueue.drain(this::processCommand);
+
+                    // Step physics
+                    long stepStart = System.nanoTime();
+                    for (int i = 0; i < stepsNeeded; i++) {
+                        world.step(STEP_DT);
+                    }
+                    lastStepNanos = System.nanoTime() - stepStart;
+                    stepsPerPublish = stepsNeeded;
+
+                    // Drain again after step to minimize latency for pending futures
+                    commandQueue.drain(this::processCommand);
+
+                    // Publish snapshot
+                    double[] snapshot = world.snapshot();
+                    snapshotBuffer.publish(snapshot);
+                } finally {
+                    worldLock.writeLock().unlock();
+                }
+            } catch (Exception e) {
+                RelativityCraft.LOGGER.error("Physics ticker thread error (recovering): {}", e.getMessage(), e);
+                // Reset timing to prevent spiral-of-death after recovery
+                nextStepTime = System.nanoTime() + STEP_NANOS;
             }
         }
 
@@ -134,62 +140,79 @@ public final class PhysicsTickerThread extends Thread {
     }
 
     private void processCommand(PhysicsCommand command) {
-        switch (command) {
-            case PhysicsCommand.InsertBody insert -> handleInsertBody(insert);
-            case PhysicsCommand.RemoveBody remove -> {
-                if (remove.bodyHandle() != 0L) world.removeBody(remove.bodyHandle());
-            }
-            case PhysicsCommand.SetPose pose -> world.setBodyPose(
-                    pose.bodyHandle(),
-                    pose.posX(), pose.posY(), pose.posZ(),
-                    pose.qx(), pose.qy(), pose.qz(), pose.qw()
-            );
-            case PhysicsCommand.SetLinearVelocity vel -> world.setBodyLinearVelocity(
-                    vel.bodyHandle(), new Vec3(vel.vx(), vel.vy(), vel.vz()), vel.wakeUp()
-            );
-            case PhysicsCommand.SetAngularVelocity vel -> world.setBodyAngularVelocity(
-                    vel.bodyHandle(), new Vec3(vel.vx(), vel.vy(), vel.vz()), vel.wakeUp()
-            );
-            case PhysicsCommand.AddForce force -> world.addBodyForce(
-                    force.bodyHandle(), force.fx(), force.fy(), force.fz()
-            );
-            case PhysicsCommand.ApplyImpulse impulse -> world.applyBodyImpulse(
-                    impulse.bodyHandle(), impulse.ix(), impulse.iy(), impulse.iz()
-            );
-            case PhysicsCommand.ApplyTorqueImpulse torque -> world.applyBodyTorqueImpulse(
-                    torque.bodyHandle(), torque.tx(), torque.ty(), torque.tz()
-            );
-            case PhysicsCommand.WakeUp wake -> world.wakeUp(wake.bodyHandle());
-            case PhysicsCommand.ForceSleep sleep -> world.forceSleep(sleep.bodyHandle());
-            case PhysicsCommand.InsertStaticTriMesh mesh -> {
-                long handle = 0L;
-                if (mesh.vertices().length >= 9 && mesh.indices().length >= 3) {
-                    handle = world.addStaticTriMesh(mesh.vertices(), mesh.indices(), mesh.friction(), mesh.restitution());
+        try {
+            switch (command) {
+                case PhysicsCommand.InsertBody insert -> handleInsertBody(insert);
+                case PhysicsCommand.RemoveBody remove -> {
+                    if (remove.bodyHandle() != 0L) world.removeBody(remove.bodyHandle());
                 }
-                mesh.resultFuture().complete(handle);
-            }
-            case PhysicsCommand.ReplaceStaticTriMesh replace -> {
-                // Remove old body first
-                if (replace.previousHandle() != 0L && replace.previousHandle() != -1L) {
-                    world.removeBody(replace.previousHandle());
-                }
-                // Insert new mesh
-                if (replace.vertices().length >= 9 && replace.indices().length >= 3) {
-                    world.addStaticTriMesh(replace.vertices(), replace.indices(), replace.friction(), replace.restitution());
-                }
-            }
-            case PhysicsCommand.RemoveStaticBody removeStatic -> {
-                if (removeStatic.bodyHandle() != 0L) world.removeBody(removeStatic.bodyHandle());
-            }
-            case PhysicsCommand.InsertStaticBox box -> {
-                long handle = world.addStaticTerrainBox(
-                        box.x(), box.y(), box.z(),
-                        box.halfX(), box.halfY(), box.halfZ(),
-                        box.friction(), box.restitution()
+                case PhysicsCommand.SetPose pose -> world.setBodyPose(
+                        pose.bodyHandle(),
+                        pose.posX(), pose.posY(), pose.posZ(),
+                        pose.qx(), pose.qy(), pose.qz(), pose.qw()
                 );
-                box.resultFuture().complete(handle);
+                case PhysicsCommand.SetLinearVelocity vel -> world.setBodyLinearVelocity(
+                        vel.bodyHandle(), new Vec3(vel.vx(), vel.vy(), vel.vz()), vel.wakeUp()
+                );
+                case PhysicsCommand.SetAngularVelocity vel -> world.setBodyAngularVelocity(
+                        vel.bodyHandle(), new Vec3(vel.vx(), vel.vy(), vel.vz()), vel.wakeUp()
+                );
+                case PhysicsCommand.AddForce force -> world.addBodyForce(
+                        force.bodyHandle(), force.fx(), force.fy(), force.fz()
+                );
+                case PhysicsCommand.ApplyImpulse impulse -> world.applyBodyImpulse(
+                        impulse.bodyHandle(), impulse.ix(), impulse.iy(), impulse.iz()
+                );
+                case PhysicsCommand.ApplyTorqueImpulse torque -> world.applyBodyTorqueImpulse(
+                        torque.bodyHandle(), torque.tx(), torque.ty(), torque.tz()
+                );
+                case PhysicsCommand.WakeUp wake -> world.wakeUp(wake.bodyHandle());
+                case PhysicsCommand.ForceSleep sleep -> world.forceSleep(sleep.bodyHandle());
+                case PhysicsCommand.InsertStaticTriMesh mesh -> {
+                    long handle = 0L;
+                    if (mesh.vertices().length >= 9 && mesh.indices().length >= 3) {
+                        handle = world.addStaticTriMesh(mesh.vertices(), mesh.indices(), mesh.friction(), mesh.restitution());
+                    }
+                    mesh.resultFuture().complete(handle);
+                }
+                case PhysicsCommand.ReplaceStaticTriMesh replace -> {
+                    // Remove old body first
+                    if (replace.previousHandle() != 0L && replace.previousHandle() != -1L) {
+                        world.removeBody(replace.previousHandle());
+                    }
+                    // Insert new mesh
+                    long newHandle = 0L;
+                    if (replace.vertices().length >= 9 && replace.indices().length >= 3) {
+                        newHandle = world.addStaticTriMesh(replace.vertices(), replace.indices(), replace.friction(), replace.restitution());
+                    }
+                    // Report the new handle back so the terrain manager can track it
+                    replace.resultFuture().complete(newHandle);
+                }
+                case PhysicsCommand.RemoveStaticBody removeStatic -> {
+                    if (removeStatic.bodyHandle() != 0L) world.removeBody(removeStatic.bodyHandle());
+                }
+                case PhysicsCommand.InsertStaticBox box -> {
+                    long handle = world.addStaticTerrainBox(
+                            box.x(), box.y(), box.z(),
+                            box.halfX(), box.halfY(), box.halfZ(),
+                            box.friction(), box.restitution()
+                    );
+                    box.resultFuture().complete(handle);
+                }
+                default -> {}
             }
-            default -> {}
+        } catch (Exception e) {
+            RelativityCraft.LOGGER.error("Physics command processing error: {}", e.getMessage(), e);
+            // Complete any pending future with failure so the caller doesn't hang
+            if (command instanceof PhysicsCommand.InsertBody insert) {
+                insert.resultFuture().completeExceptionally(e);
+            } else if (command instanceof PhysicsCommand.InsertStaticTriMesh mesh) {
+                mesh.resultFuture().completeExceptionally(e);
+            } else if (command instanceof PhysicsCommand.ReplaceStaticTriMesh replace) {
+                replace.resultFuture().completeExceptionally(e);
+            } else if (command instanceof PhysicsCommand.InsertStaticBox box) {
+                box.resultFuture().completeExceptionally(e);
+            }
         }
     }
 

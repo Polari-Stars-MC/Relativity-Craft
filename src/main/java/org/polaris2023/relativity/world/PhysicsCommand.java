@@ -54,14 +54,16 @@ public sealed interface PhysicsCommand {
             java.util.concurrent.CompletableFuture<Long> resultFuture
     ) implements PhysicsCommand {}
 
-    /** Fire-and-forget terrain mesh replacement. Physics thread handles old body removal internally. */
+    /** Fire-and-forget terrain mesh replacement. Physics thread handles old body removal internally.
+     * The resultFuture receives the new body handle (or 0L on failure). */
     record ReplaceStaticTriMesh(
             Object key,
             long previousHandle,
             double[] vertices,
             int[] indices,
             double friction,
-            double restitution
+            double restitution,
+            java.util.concurrent.CompletableFuture<Long> resultFuture
     ) implements PhysicsCommand {}
 
     record RemoveStaticBody(Object key, long bodyHandle) implements PhysicsCommand {}

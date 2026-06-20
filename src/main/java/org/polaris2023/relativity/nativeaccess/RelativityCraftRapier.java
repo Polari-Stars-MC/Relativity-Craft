@@ -311,7 +311,9 @@ public final class RelativityCraftRapier {
             ValueLayout.ADDRESS,
             ValueLayout.JAVA_INT,
             ValueLayout.JAVA_DOUBLE,
-            ValueLayout.JAVA_DOUBLE
+            ValueLayout.JAVA_DOUBLE,
+            RC_INTERACTION_GROUPS,
+            RC_INTERACTION_GROUPS
         )
     );
     private static final MethodHandle RC_GREEDY_MERGE_CUBOIDS = optionalDowncall(
@@ -1021,7 +1023,7 @@ public final class RelativityCraftRapier {
         }
     }
 
-    static long worldInsertStaticTriMesh(MemorySegment world, double[] vertices, int[] indices, double friction, double restitution) {
+    static long worldInsertStaticTriMesh(MemorySegment world, double[] vertices, int[] indices, double friction, double restitution, RcInteractionGroups collisionGroups, RcInteractionGroups solverGroups) {
         try (Arena arena = Arena.ofConfined()) {
             MemorySegment vertexBuffer = arena.allocate(ValueLayout.JAVA_DOUBLE, vertices.length);
             double[] vertexValues = vertices;
@@ -1039,7 +1041,9 @@ public final class RelativityCraftRapier {
                 indexBuffer,
                 (int) indices.length,
                 friction,
-                restitution
+                restitution,
+                encodeInteractionGroups(arena, collisionGroups),
+                encodeInteractionGroups(arena, solverGroups)
             );
         } catch (Throwable t) {
             throw new IllegalStateException("Failed to call rc_world_insert_static_trimesh", t);

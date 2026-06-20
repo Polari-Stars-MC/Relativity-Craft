@@ -5,6 +5,8 @@ import org.polaris2023.relativity.physicalization.ChunkSectionKey;
 
 import it.unimi.dsi.fastutil.objects.Object2LongOpenHashMap;
 
+import java.util.concurrent.CompletableFuture;
+
 /**
  * Manages static terrain colliders. All mutations are fire-and-forget via the command queue.
  * The physics thread handles body creation/removal internally.
@@ -25,9 +27,17 @@ public final class WorldTerrainColliderManager {
         }
 
         long previousHandle = terrainBodies.put(key, -1L); // -1 = pending
-        // Fire-and-forget: physics thread will insert the mesh and remove old body
+        CompletableFuture<Long> resultFuture = new CompletableFuture<>();
+        // Update terrainBodies map when the physics thread completes insertion
+        resultFuture.thenAccept(newHandle -> {
+            if (newHandle != 0L) {
+                terrainBodies.put(key, newHandle);
+            } else {
+                terrainBodies.removeLong(key);
+            }
+        });
         commandQueue.submit(new PhysicsCommand.ReplaceStaticTriMesh(
-                key, previousHandle, vertices, indices, 0.75, 0.05
+                key, previousHandle, vertices, indices, 0.75, 0.05, resultFuture
         ));
     }
 

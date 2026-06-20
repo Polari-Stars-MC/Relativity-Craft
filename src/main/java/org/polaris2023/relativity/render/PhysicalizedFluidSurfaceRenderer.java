@@ -34,7 +34,7 @@ import net.neoforged.neoforge.client.event.SubmitCustomGeometryEvent;
 import it.unimi.dsi.fastutil.longs.LongOpenHashSet;
 import it.unimi.dsi.fastutil.longs.LongSet;
 import java.util.ArrayList;
-import java.util.HashMap;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
@@ -90,8 +90,8 @@ public final class PhysicalizedFluidSurfaceRenderer {
     private static final double FLOW_RIBBON_WIDTH = 0.92;
     private static final double FLOW_RIBBON_SEAM_OVERLAP = 0.045;
     private static final int FLOW_RIBBON_WIDTH_SUBDIVISIONS = 6;
-    private static final Map<ChunkSurfaceKey, SurfaceCache> SURFACE_CACHES = new HashMap<>();
-    private static final Map<String, BodyWakeTracker> BODY_WAKE_TRACKERS = new HashMap<>();
+    private static final Map<ChunkSurfaceKey, SurfaceCache> SURFACE_CACHES = new ConcurrentHashMap<>();
+    private static final Map<String, BodyWakeTracker> BODY_WAKE_TRACKERS = new ConcurrentHashMap<>();
 
     private PhysicalizedFluidSurfaceRenderer() {
     }
