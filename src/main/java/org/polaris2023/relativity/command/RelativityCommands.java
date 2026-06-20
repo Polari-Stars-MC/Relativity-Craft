@@ -109,9 +109,14 @@ public final class RelativityCommands {
 
     private static void removeBlocksNow(ServerLevel level, BlockBox box) {
         BlockPos.MutableBlockPos pos = new BlockPos.MutableBlockPos();
-        int removeFlags = net.minecraft.world.level.block.Block.UPDATE_CLIENTS
-                | net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
-                | net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS;
+        // Use UPDATE_SUPPRESS_DROPS | UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS to avoid
+        // expensive drop calculations and block entity side effects.
+        // UPDATE_CLIENTS is NOT included — the client will receive chunk updates
+        // naturally when the chunks are re-sent. This avoids sending 100k individual
+        // block change packets.
+        int removeFlags = net.minecraft.world.level.block.Block.UPDATE_SUPPRESS_DROPS
+                | net.minecraft.world.level.block.Block.UPDATE_SKIP_BLOCK_ENTITY_SIDEEFFECTS
+                | net.minecraft.world.level.block.Block.UPDATE_INVISIBLE;
         for (int y = box.minY(); y <= box.maxY(); y++) {
             for (int z = box.minZ(); z <= box.maxZ(); z++) {
                 for (int x = box.minX(); x <= box.maxX(); x++) {

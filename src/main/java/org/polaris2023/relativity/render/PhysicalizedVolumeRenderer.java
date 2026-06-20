@@ -535,6 +535,10 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
                         state.lastValidModelMesh = result;
                     }
                     state.modelMeshSnapshot = state.pendingMeshBuildSnapshot;
+                    state.modelMeshSnapshotBlockCount = state.pendingMeshBuildBlockCount;
+                    state.modelMeshSizeX = state.pendingMeshBuildSizeX;
+                    state.modelMeshSizeY = state.pendingMeshBuildSizeY;
+                    state.modelMeshSizeZ = state.pendingMeshBuildSizeZ;
                     state.modelMeshAmbientOcclusion = ambientOcclusion;
                     state.modelMeshCutoutLeaves = cutoutLeaves;
                 }
@@ -544,10 +548,19 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
             state.pendingMeshBuildSnapshot = null;
         }
 
-        // If current mesh matches the render snapshot, use it
-        if (state.modelMeshSnapshot == state.renderSnapshot
+        // Use blockCount as a lightweight content check instead of identity (==).
+        // The client creates a new snapshot object every time the server sends data,
+        // so identity comparison always fails, causing async mesh rebuilds every frame.
+        // Block count + size is a reliable indicator of whether the snapshot changed.
+        boolean snapshotSame = state.modelMeshSnapshotBlockCount == state.blockCount
+                && state.modelMeshSizeX == (int) state.sizeX
+                && state.modelMeshSizeY == (int) state.sizeY
+                && state.modelMeshSizeZ == (int) state.sizeZ
                 && state.modelMeshAmbientOcclusion == ambientOcclusion
-                && state.modelMeshCutoutLeaves == cutoutLeaves) {
+                && state.modelMeshCutoutLeaves == cutoutLeaves;
+
+        // If current mesh matches the render snapshot (by content), use it
+        if (snapshotSame) {
             if (!state.modelMesh.isEmpty()) {
                 return state.modelMesh;
             }
@@ -577,6 +590,10 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         // For small volumes (<=500 blocks), build synchronously for instant feedback
         if (state.blockCount <= 500) {
             state.modelMeshSnapshot = state.renderSnapshot;
+            state.modelMeshSnapshotBlockCount = state.blockCount;
+            state.modelMeshSizeX = (int) state.sizeX;
+            state.modelMeshSizeY = (int) state.sizeY;
+            state.modelMeshSizeZ = (int) state.sizeZ;
             state.modelMeshAmbientOcclusion = ambientOcclusion;
             state.modelMeshCutoutLeaves = cutoutLeaves;
             state.modelMesh = buildCachedModelMesh(state, minecraft, rotation, centerYOffset, ambientOcclusion, cutoutLeaves);
@@ -587,12 +604,20 @@ public final class PhysicalizedVolumeRenderer extends EntityRenderer<Physicalize
         }
 
         // For large volumes, build asynchronously
-        // Only submit a new build if one isn't already pending for this snapshot
-        if (state.pendingMeshFuture == null || state.pendingMeshBuildSnapshot != state.renderSnapshot) {
+        // Only submit a new build if one isn't already pending for this snapshot content.
+        boolean snapshotChanged = state.pendingMeshBuildBlockCount != state.blockCount
+                || state.pendingMeshBuildSizeX != (int) state.sizeX
+                || state.pendingMeshBuildSizeY != (int) state.sizeY
+                || state.pendingMeshBuildSizeZ != (int) state.sizeZ;
+        if (state.pendingMeshFuture == null || snapshotChanged) {
             if (state.pendingMeshFuture != null) {
                 state.pendingMeshFuture.cancel(false);
             }
             state.pendingMeshBuildSnapshot = state.renderSnapshot;
+            state.pendingMeshBuildBlockCount = state.blockCount;
+            state.pendingMeshBuildSizeX = (int) state.sizeX;
+            state.pendingMeshBuildSizeY = (int) state.sizeY;
+            state.pendingMeshBuildSizeZ = (int) state.sizeZ;
             // Capture all data needed for off-thread build
             final PhysicalizedVolumeSnapshot buildSnapshot = state.renderSnapshot;
             final List<PhysicalizedBlockSnapshot> buildCells = state.cells;

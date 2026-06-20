@@ -44,6 +44,10 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public String blockEntityCacheVolumeId = "";
     public final Map<Long, CachedBlockEntity> blockEntityCache = new Long2ObjectOpenHashMap<>();
     public PhysicalizedVolumeSnapshot modelMeshSnapshot = PhysicalizedVolumeSnapshot.EMPTY;
+    public int modelMeshSnapshotBlockCount;
+    public int modelMeshSizeX;
+    public int modelMeshSizeY;
+    public int modelMeshSizeZ;
     public boolean modelMeshAmbientOcclusion;
     public boolean modelMeshCutoutLeaves;
     public double modelMeshSampleX = Double.NaN;
@@ -62,6 +66,10 @@ public final class PhysicalizedVolumeRenderState extends EntityRenderState {
     public long lastMeshRebuildNanos;
     public CompletableFuture<CachedModelMesh> pendingMeshFuture;
     public PhysicalizedVolumeSnapshot pendingMeshBuildSnapshot;
+    public int pendingMeshBuildBlockCount;
+    public int pendingMeshBuildSizeX;
+    public int pendingMeshBuildSizeY;
+    public int pendingMeshBuildSizeZ;
     public ClientLevel clientLevel;
     public int breakLocalX = -1;
     public int breakLocalY = -1;

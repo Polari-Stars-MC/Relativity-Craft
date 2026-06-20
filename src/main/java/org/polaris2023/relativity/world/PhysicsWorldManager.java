@@ -958,7 +958,14 @@ public final class PhysicsWorldManager {
                     ? System.nanoTime() + 5_000_000L  // large queue: cap at 5ms
                     : Long.MAX_VALUE;                  // small queue: finish immediately
             drainTerrainJobs(level, priorityTerrainJobs, priorityQueuedSections, priorityBudget);
-            drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections, System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
+            // Background terrain: only drain every 4 ticks when there are bodies to
+            // process. This prevents terrain rebuild from consuming 1.5ms every single
+            // tick when there are many pending jobs (e.g., after physicalizing a large
+            // volume). The terrain will rebuild over more ticks but TPS stays stable.
+            if ((level.getGameTime() & 3L) == 0L || backgroundTerrainJobs.size() <= 2) {
+                drainTerrainJobs(level, backgroundTerrainJobs, backgroundQueuedSections,
+                        System.nanoTime() + BACKGROUND_TERRAIN_BUILD_BUDGET_NANOS);
+            }
             if ((level.getGameTime() & 7L) == 0L) {
                 updateWaterSurfaceColliders(level);
             }
