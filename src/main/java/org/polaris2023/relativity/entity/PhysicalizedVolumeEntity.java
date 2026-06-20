@@ -899,19 +899,18 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
 
     @Override
     public void writeSpawnData(RegistryFriendlyByteBuf buffer) {
-        // For large volumes (>4096 blocks), the full snapshot would exceed
-        // Minecraft's ~2MB packet size limit, causing the spawn packet to be
-        // dropped and the entity to never appear on the client.
-        // Instead, write a compact header and send the snapshot separately
-        // via PhysicalizedInteractionNetwork.sendSnapshot().
+        // For large volumes, write a compact header only. The full snapshot
+        // would exceed Minecraft's ~2MB packet limit. The client renders a
+        // wireframe bounding box until the snapshot arrives via the attached
+        // data sync or a separate snapshot packet.
         if (this.snapshot.blockCount() > LARGE_SPAWN_THRESHOLD) {
-            buffer.writeBoolean(true); // isLargeSpawn flag
-            buffer.writeVarInt(0); // placeholder cell count
+            buffer.writeBoolean(true); // isLargeSpawn
             buffer.writeVarInt(this.snapshot.sizeX());
             buffer.writeVarInt(this.snapshot.sizeY());
             buffer.writeVarInt(this.snapshot.sizeZ());
+            buffer.writeVarInt(this.snapshot.blockCount());
         } else {
-            buffer.writeBoolean(false); // isLargeSpawn flag
+            buffer.writeBoolean(false);
             this.snapshot.write(buffer);
         }
         buffer.writeFloat((float) this.localOriginX());
@@ -932,11 +931,13 @@ public final class PhysicalizedVolumeEntity extends Entity implements IEntityWit
         boolean isLargeSpawn = additionalData.readBoolean();
         PhysicalizedVolumeSnapshot snapshot;
         if (isLargeSpawn) {
-            // Large entity: snapshot sent separately. Read placeholder.
-            int cellCount = additionalData.readVarInt(); // 0
             int sizeX = additionalData.readVarInt();
             int sizeY = additionalData.readVarInt();
             int sizeZ = additionalData.readVarInt();
+            int blockCount = additionalData.readVarInt();
+            // Create an empty snapshot with the correct dimensions.
+            // The entity will render a wireframe bounding box until the
+            // full snapshot arrives via attached data sync.
             snapshot = new PhysicalizedVolumeSnapshot(sizeX, sizeY, sizeZ, List.of());
         } else {
             snapshot = PhysicalizedVolumeSnapshot.read(additionalData);

@@ -104,13 +104,6 @@ public final class RelativityCommands {
         level.addFreshEntity(entity);
         PhysicsWorldManager.global().register(entity);
 
-        // For large entities, the spawn packet skips the full snapshot to avoid
-        // exceeding Minecraft's ~2MB packet limit. Send the snapshot separately
-        // now that the entity is tracked.
-        if (snapshot.blockCount() > 4096) {
-            org.polaris2023.relativity.network.PhysicalizedInteractionNetwork.sendSnapshot(entity);
-        }
-
         return 1;
     }
 
