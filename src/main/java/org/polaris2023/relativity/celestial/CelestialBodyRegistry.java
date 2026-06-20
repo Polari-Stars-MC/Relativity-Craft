@@ -5,6 +5,7 @@ import it.unimi.dsi.fastutil.objects.Object2ObjectOpenHashMap;
 import net.minecraft.core.HolderLookup;
 import net.minecraft.nbt.CompoundTag;
 import net.minecraft.server.level.ServerLevel;
+import net.minecraft.world.phys.Vec3;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -88,14 +89,19 @@ public final class CelestialBodyRegistry {
 
     // ---- tick ----
 
+    private long lastPoseTick;
+
     public void tick(ServerLevel level) {
         // Process removal queue
         if (!removalQueue.isEmpty()) {
             for (CelestialBody body : removalQueue) {
+                CelestialBodyNetwork.sendRemoveToTracking(level, body);
                 unregister(body.id());
             }
             removalQueue.clear();
         }
+
+        long gameTime = level.getGameTime();
 
         // Tick all bodies
         for (CelestialBody body : bodiesById.values()) {
@@ -104,6 +110,28 @@ public final class CelestialBodyRegistry {
                 continue;
             }
             body.tick(level);
+
+            // Send init to new players who don't know about this body yet.
+            // For simplicity, we send init every ~2 seconds to all nearby players.
+            // The client handles duplicate inits by checking mirror version.
+            if (gameTime % 40L == 0L && body.blockCount() > 0) {
+                CelestialBodyNetwork.sendInitToTracking(level, body);
+            }
+
+            // Send pose updates:
+            // - Moving bodies: every tick
+            // - Stationary bodies: every 4 ticks
+            Vec3 delta = body.deltaMovement();
+            boolean moved = delta != null && delta.lengthSqr() > 1.0E-8;
+            int poseInterval = moved ? 1 : 4;
+            if (gameTime % poseInterval == 0L) {
+                CelestialBodyNetwork.sendPoseToTracking(level, body, moved);
+            }
+
+            // Update client interpolation state on the body
+            if (moved) {
+                body.updateInterpolation();
+            }
         }
     }
 

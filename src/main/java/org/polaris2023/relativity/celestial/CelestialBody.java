@@ -233,6 +233,17 @@ public final class CelestialBody {
         this.deltaMovement = position().subtract(prevPos);
     }
 
+    /**
+     * Called every tick to update client-side interpolation state.
+     * This captures the current position as the interpolation target
+     * so the client can smoothly lerp between server states.
+     */
+    public void updateInterpolation() {
+        // This runs on server; the client receives pose packets and
+        // handles its own interpolation in CelestialBodyRenderer.
+        // No-op on server — just a hook for future use.
+    }
+
     // ---- physics isolation ----
 
     public void isolatePhysics(int ticks, long gameTime) {

@@ -4,6 +4,7 @@ import net.minecraft.network.RegistryFriendlyByteBuf;
 import net.minecraft.network.codec.StreamCodec;
 import net.minecraft.network.protocol.common.custom.CustomPacketPayload;
 import net.minecraft.resources.Identifier;
+import net.minecraft.server.level.ServerLevel;
 import net.minecraft.server.level.ServerPlayer;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.network.PacketDistributor;
@@ -23,6 +24,9 @@ import java.util.List;
  */
 public final class CelestialBodyNetwork {
 
+    /** Tracking range: players within 64 blocks receive updates. */
+    private static final double TRACKING_RANGE_SQR = 64.0 * 64.0;
+
     private CelestialBodyNetwork() {}
 
     public static void registerPayloads(RegisterPayloadHandlersEvent event) {
@@ -37,6 +41,33 @@ public final class CelestialBodyNetwork {
 
     // ---- send helpers ----
 
+    /**
+     * Send init to all players tracking this body.
+     * Players are considered "tracking" if they are within range (64 blocks).
+     */
+    public static void sendInitToTracking(ServerLevel level, CelestialBody body) {
+        if (body.enclave() == null) return;
+        List<BlockStorage.SectionEntry> sections = new ArrayList<>();
+        for (var entry : body.enclave().storage()) {
+            sections.add(entry);
+        }
+        Vec3 center = body.entityCenter();
+        InitPayload payload = new InitPayload(
+                body.id(), center.x, center.y, center.z,
+                body.rotQx(), body.rotQy(), body.rotQz(), body.rotQw(),
+                body.sizeX(), body.sizeY(), body.sizeZ(),
+                body.originX(), body.originY(), body.originZ(),
+                sections);
+        for (ServerPlayer player : level.players()) {
+            if (player.distanceToSqr(center.x, center.y, center.z) < TRACKING_RANGE_SQR) {
+                PacketDistributor.sendToPlayer(player, payload);
+            }
+        }
+    }
+
+    /**
+     * Send init to a specific player.
+     */
     public static void sendInit(ServerPlayer player, CelestialBody body) {
         if (body.enclave() == null) return;
         List<BlockStorage.SectionEntry> sections = new ArrayList<>();
@@ -50,6 +81,40 @@ public final class CelestialBodyNetwork {
                 body.sizeX(), body.sizeY(), body.sizeZ(),
                 body.originX(), body.originY(), body.originZ(),
                 sections));
+    }
+
+    /**
+     * Send pose to all players tracking this body.
+     * Uses a simple distance check — players within 64 blocks get updates.
+     * Moving bodies get updates every tick; stationary bodies every 4 ticks.
+     */
+    public static void sendPoseToTracking(ServerLevel level, CelestialBody body, boolean moved) {
+        Vec3 center = body.entityCenter();
+        PosePayload payload = new PosePayload(
+                body.id(), center.x, center.y, center.z,
+                body.rotQx(), body.rotQy(), body.rotQz(), body.rotQw());
+        for (ServerPlayer player : level.players()) {
+            if (player.distanceToSqr(center.x, center.y, center.z) < TRACKING_RANGE_SQR) {
+                PacketDistributor.sendToPlayer(player, payload);
+            }
+        }
+    }
+
+    /**
+     * Send remove to all players tracking this body.
+     */
+    public static void sendRemoveToTracking(ServerLevel level, CelestialBody body) {
+        RemovePayload payload = new RemovePayload(body.id());
+        Vec3 center = body.entityCenter();
+        for (ServerPlayer player : level.players()) {
+            if (player.distanceToSqr(center.x, center.y, center.z) < TRACKING_RANGE_SQR) {
+                PacketDistributor.sendToPlayer(player, payload);
+            }
+        }
+        // Also send to all players (stale state cleanup)
+        for (ServerPlayer player : level.players()) {
+            PacketDistributor.sendToPlayer(player, payload);
+        }
     }
 
     public static void sendSection(ServerPlayer player, int celestialId,

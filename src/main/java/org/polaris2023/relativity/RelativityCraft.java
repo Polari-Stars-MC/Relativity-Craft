@@ -2,6 +2,7 @@ package org.polaris2023.relativity;
 
 import com.mojang.logging.LogUtils;
 import org.polaris2023.relativity.celestial.CelestialBodyNetwork;
+import org.polaris2023.relativity.celestial.CelestialBodyRegistry;
 import org.polaris2023.relativity.command.RelativityCommands;
 import org.polaris2023.relativity.entity.EnclaveEntity;
 import org.polaris2023.relativity.entity.PhysicalizedVolumeEntity;
@@ -123,6 +124,7 @@ public final class RelativityCraft {
             PhysicsWorldManager.global().tick(level);
             PhysicalizedCollisionShapes.pushIntersectingEntities(level);
             PhysicalizedRedstoneMapping.global().tick(level);
+            CelestialBodyRegistry.of(level).tick(level);
         }
     }
 
