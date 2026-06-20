@@ -149,19 +149,12 @@ final class PhysicalizedLogicBodyRedstone {
         body.updateWorldLevel(worldLevel);
         body.ensureForced(logicLevel, entity.snapshot());
         body.keepForced(logicLevel);
-        // Use content-based comparison instead of object identity (==).
-        // Entity snapshots are immutable and may be different objects even
-        // when the content is the same. Object identity comparison causes
-        // false matches, preventing writeSnapshot from syncing cells to the
-        // logic body. Without those cells, readSnapshot returns an incomplete
-        // snapshot and syncFromLogicBody replaces the entity's snapshot,
-        // deleting all non-redstone blocks.
-        boolean snapshotChanged = body.snapshot != entity.snapshot()
-                && (body.snapshot == null
-                    || body.snapshot.blockCount() != entity.snapshot().blockCount()
-                    || body.snapshot.sizeX() != entity.snapshot().sizeX()
-                    || body.snapshot.sizeY() != entity.snapshot().sizeY()
-                    || body.snapshot.sizeZ() != entity.snapshot().sizeZ());
+        // Always write the full snapshot to the logic body when it has changed.
+        // The logic body must always have a complete copy of the entity snapshot
+        // so readSnapshot can return correct results. Using a simple identity
+        // check first avoids the O(n) comparison when the snapshot hasn't changed
+        // at all (same object reference).
+        boolean snapshotChanged = body.snapshot != entity.snapshot();
 
         if (snapshotChanged) {
             applyingLogicBody = true;
@@ -550,16 +543,15 @@ final class PhysicalizedLogicBodyRedstone {
             return;
         }
 
-        // When the logic body snapshot is significantly smaller than the entity
-        // snapshot (>64 cells difference), the logic body doesn't have a full
-        // copy yet (ensureBody may have skipped the write due to the identity
-        // comparison bug, or logic chunks aren't loaded). In this case, DON'T
-        // replace the entity snapshot with the incomplete readSnapshot result
-        // — that would delete all non-redstone blocks. Just skip the sync;
-        // the next ensureBody+writeSnapshot cycle will fix the logic body.
-        boolean hasNonRedstoneCells = current.blockCount() > next.blockCount() + 64;
-        if (hasNonRedstoneCells && read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0) {
-            body.snapshot = current;
+        // SAFETY CHECK: If the logic body snapshot is significantly smaller than
+        // the entity snapshot, the logic body doesn't have a full copy. This can
+        // happen when ensureBody's identity check (body.snapshot != entity.snapshot())
+        // returns false because the snapshot object was reused. In this case,
+        // DO NOT replace the entity snapshot — that would delete all blocks.
+        // Instead, force a full write on the next ensureBody cycle.
+        if (current.blockCount() > next.blockCount() + 64
+                && read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0) {
+            body.snapshot = null; // Force full write next time
             body.updateProjectionIndex(worldLevel, entity, current);
             return;
         }
