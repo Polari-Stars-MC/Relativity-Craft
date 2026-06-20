@@ -149,7 +149,19 @@ final class PhysicalizedLogicBodyRedstone {
         body.updateWorldLevel(worldLevel);
         body.ensureForced(logicLevel, entity.snapshot());
         body.keepForced(logicLevel);
-        boolean snapshotChanged = body.snapshot != entity.snapshot();
+        // Use content-based comparison instead of object identity (==).
+        // Entity snapshots are immutable and may be different objects even
+        // when the content is the same. Object identity comparison causes
+        // false matches, preventing writeSnapshot from syncing cells to the
+        // logic body. Without those cells, readSnapshot returns an incomplete
+        // snapshot and syncFromLogicBody replaces the entity's snapshot,
+        // deleting all non-redstone blocks.
+        boolean snapshotChanged = body.snapshot != entity.snapshot()
+                && (body.snapshot == null
+                    || body.snapshot.blockCount() != entity.snapshot().blockCount()
+                    || body.snapshot.sizeX() != entity.snapshot().sizeX()
+                    || body.snapshot.sizeY() != entity.snapshot().sizeY()
+                    || body.snapshot.sizeZ() != entity.snapshot().sizeZ());
 
         if (snapshotChanged) {
             applyingLogicBody = true;
@@ -538,33 +550,17 @@ final class PhysicalizedLogicBodyRedstone {
             return;
         }
 
-        // For volumes with non-redstone cells, merge instead of replace.
-        // readSnapshot only returns redstone-related cells from the logic body.
-        // If we replace the entity's snapshot with just those cells, all
-        // non-redstone blocks get deleted. Instead, compute which redstone
-        // cells changed and only update those on top of the current snapshot.
+        // When the logic body snapshot is significantly smaller than the entity
+        // snapshot (>64 cells difference), the logic body doesn't have a full
+        // copy yet (ensureBody may have skipped the write due to the identity
+        // comparison bug, or logic chunks aren't loaded). In this case, DON'T
+        // replace the entity snapshot with the incomplete readSnapshot result
+        // — that would delete all non-redstone blocks. Just skip the sync;
+        // the next ensureBody+writeSnapshot cycle will fix the logic body.
         boolean hasNonRedstoneCells = current.blockCount() > next.blockCount() + 64;
         if (hasNonRedstoneCells && read.shiftX() == 0 && read.shiftY() == 0 && read.shiftZ() == 0) {
-            // Merge: update only the redstone cells that changed in the logic body.
-            // Non-redstone cells are preserved from the current snapshot.
-            List<PhysicalizedBlockSnapshot> changed = changedCells(current, next);
-            // Also detect removals: cells in current that are redstone but absent from next
-            for (PhysicalizedBlockSnapshot cell : current.cells()) {
-                if (isProjectedRedstoneState(cell.state())) {
-                    PhysicalizedBlockSnapshot inNext = next.cellAtOrNull(cell.localX(), cell.localY(), cell.localZ());
-                    if (inNext == null) {
-                        changed.add(new PhysicalizedBlockSnapshot(cell.localX(), cell.localY(), cell.localZ(),
-                                net.minecraft.world.level.block.Block.getId(net.minecraft.world.level.block.Blocks.AIR.defaultBlockState()), null));
-                    }
-                }
-            }
-            if (!changed.isEmpty()) {
-                PhysicalizedVolumeSnapshot merged = current.withCellsUpdated(changed);
-                entity.updateSnapshot(merged);
-            }
-            body.snapshot = next;
-            body.rememberWrittenCells(next);
-            body.updateProjectionIndex(worldLevel, entity, entity.snapshot());
+            body.snapshot = current;
+            body.updateProjectionIndex(worldLevel, entity, current);
             return;
         }
 
